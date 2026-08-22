@@ -13,6 +13,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 180
     steps:
+      - name: Preserve frozen source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Select CPython 3.12
@@ -23,9 +26,30 @@ jobs:
       - name: Install uv
         shell: pwsh
         run: python -m pip install --disable-pip-version-check uv==0.11.17
+      - name: Prepare isolated Windows runner roots
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'ai-mechanical-3dcad-uv-cache'
+          $secondVolume = Join-Path $env:RUNNER_TEMP 'ai-mechanical-3dcad-second-ntfs'
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          New-Item -ItemType Directory -Force -Path $secondVolume | Out-Null
+          "UV_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Resolve the frozen test environment
         shell: pwsh
         run: uv sync --frozen --group test --python 3.12
+      - name: Prewarm the pinned build and runtime dependencies
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'public-build-prewarm'
+          $venv = Join-Path $env:RUNNER_TEMP 'public-install-prewarm'
+          $constraints = Join-Path $env:RUNNER_TEMP 'public-test-constraints.txt'
+          uv build --wheel --sdist --out-dir $dist
+          uv export --frozen --group test --format requirements-txt --no-emit-project --no-hashes --output-file $constraints
+          uv venv --python 3.12 $venv
+          $python = Join-Path $venv 'Scripts/python.exe'
+          $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
+          uv pip install --python $python --constraint $constraints $wheel.FullName
       - name: Run the complete non-interactive suite offline
         shell: pwsh
         run: |

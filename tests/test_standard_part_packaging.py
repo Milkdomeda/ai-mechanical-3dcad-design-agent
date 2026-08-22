@@ -142,7 +142,7 @@ def test_clean_installed_wheel_standard_part_configuration_lifecycle() -> None:
 
         environment = dict(os.environ)
         environment["HOME"] = str(home)
-        environment["UV_CACHE_DIR"] = "/private/tmp/mechanical-design-uv-cache"
+        environment.setdefault("UV_CACHE_DIR", str(root / "uv-cache"))
         for name in CLEAN_ENVIRONMENT_KEYS:
             environment.pop(name, None)
 

@@ -119,7 +119,7 @@ CLEAN_ENVIRONMENT_KEYS = {
 def clean_environment(root: Path) -> dict[str, str]:
     environment = dict(os.environ)
     environment["HOME"] = str(root / "home")
-    environment["UV_CACHE_DIR"] = "/private/tmp/codex-uv-cache-portable-bootstrap"
+    environment.setdefault("UV_CACHE_DIR", str(root / "uv-cache"))
     for name in CLEAN_ENVIRONMENT_KEYS:
         environment.pop(name, None)
     return environment

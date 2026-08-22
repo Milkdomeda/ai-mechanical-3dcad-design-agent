@@ -210,7 +210,13 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
     ]
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", item) for item in uses)
     for required in (
+        "git config --global core.autocrlf false",
         "uv sync --frozen --group test --python 3.12",
+        "UV_CACHE_DIR=$cache",
+        "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume",
+        "Prewarm the pinned build and runtime dependencies",
+        "uv export --frozen --group test",
+        "uv pip install --python $python --constraint $constraints $wheel.FullName",
         "UV_OFFLINE",
         "pytest -q",
         "--junitxml=windows-public-offline.xml",

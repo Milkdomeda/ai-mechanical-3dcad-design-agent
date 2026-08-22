@@ -313,6 +313,23 @@ def test_run_checked_propagates_utf8_without_mutating_parent_environment(
     } == parent_before
 
 
+def test_clean_deployment_environment_preserves_explicit_prepared_cache(
+    tmp_path: Path,
+) -> None:
+    prepared_cache = tmp_path / "prepared uv cache"
+    prepared_cache.mkdir()
+    original = {
+        "PATH": os.environ["PATH"],
+        "UV_CACHE_DIR": str(prepared_cache),
+    }
+    before = dict(original)
+
+    environment = clean_deployment_environment(tmp_path / "attempt", environ=original)
+
+    assert environment["UV_CACHE_DIR"] == str(prepared_cache.resolve())
+    assert original == before
+
+
 def test_clean_deployment_environment_preserves_explicit_docker_config(
     tmp_path: Path,
 ) -> None:

@@ -233,13 +233,18 @@ def clean_deployment_environment(
     canonical_root = root.resolve()
     environment = dict(os.environ if environ is None else environ)
     original_home = environment.get("HOME", "").strip()
+    prepared_cache = environment.get("UV_CACHE_DIR", "").strip()
     docker_config = environment.get("DOCKER_CONFIG", "").strip()
     if not docker_config and original_home:
         docker_config = str(Path(original_home).expanduser() / ".docker")
     for key in _CLEAN_ENVIRONMENT_KEYS:
         environment.pop(key, None)
     home = canonical_root / "home"
-    cache = canonical_root / "uv-cache"
+    cache = (
+        Path(prepared_cache).expanduser().resolve()
+        if prepared_cache
+        else canonical_root / "uv-cache"
+    )
     home.mkdir(parents=True, exist_ok=True)
     cache.mkdir(parents=True, exist_ok=True)
     environment["HOME"] = str(home)
