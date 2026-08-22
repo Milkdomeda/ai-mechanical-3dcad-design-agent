@@ -1,0 +1,1332 @@
+schema_version = "ThirdPartyComponents/v1"
+project_distribution = "ai-mechanical-3dcad-design-agent"
+project_version = "0.1.0"
+audit_date = 2026-08-16
+lockfile = "uv.lock"
+provider_config = "src/mechanical_design_agent/resources/config/standard_part_providers.json"
+local_provider_ids = ["verified-local"]
+
+[[components]]
+id = "actions-checkout"
+name = "GitHub Actions checkout"
+component_kind = "github_action"
+scope = "build"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+tag = "v4.4.0"
+commit = "11d5960a326750d5838078e36cf38b85af677262"
+spdx = "MIT"
+attribution = "GitHub, Inc. and actions/checkout contributors"
+source_url = "https://github.com/actions/checkout"
+license_url = "https://github.com/actions/checkout/blob/11d5960a326750d5838078e36cf38b85af677262/LICENSE"
+purpose = "Immutable source checkout for the public Windows build workflow."
+evidence_source = "https://github.com/actions/checkout/tree/11d5960a326750d5838078e36cf38b85af677262"
+audit_date = 2026-08-21
+validation_state = "verified"
+
+[[components]]
+id = "actions-setup-python"
+name = "GitHub Actions setup-python"
+component_kind = "github_action"
+scope = "build"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+tag = "v5.6.0"
+commit = "a26af69be951a213d495a4c3e4e4022e16d87065"
+spdx = "MIT"
+attribution = "GitHub, Inc. and actions/setup-python contributors"
+source_url = "https://github.com/actions/setup-python"
+license_url = "https://github.com/actions/setup-python/blob/a26af69be951a213d495a4c3e4e4022e16d87065/LICENSE"
+purpose = "Immutable CPython setup for the public Windows build workflow."
+evidence_source = "https://github.com/actions/setup-python/tree/a26af69be951a213d495a4c3e4e4022e16d87065"
+audit_date = 2026-08-21
+validation_state = "verified"
+
+[[components]]
+id = "annotated-doc"
+name = "annotated-doc"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.0.5"
+spdx = "MIT"
+attribution = "Sebastián Ramírez"
+source_url = "https://pypi.org/project/annotated-doc/0.0.5/"
+license_url = "https://pypi.org/project/annotated-doc/0.0.5/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz"
+evidence_sha256 = "c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "annotated-types"
+name = "annotated-types"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.8.0"
+spdx = "MIT"
+attribution = "Adrian Garcia Badaracco, Samuel Colvin, and Zac Hatfield-Dodds"
+source_url = "https://pypi.org/project/annotated-types/0.8.0/"
+license_url = "https://pypi.org/project/annotated-types/0.8.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/5f/56/a8120250d128bed162cd73c76d45f6ef9991f3e068f62a8ee060afa3104a/annotated_types-0.8.0.tar.gz"
+evidence_sha256 = "13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "anyio"
+name = "anyio"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "4.14.2"
+spdx = "MIT"
+attribution = "Alex Grönholm and AnyIO contributors"
+source_url = "https://pypi.org/project/anyio/4.14.2/"
+license_url = "https://pypi.org/project/anyio/4.14.2/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz"
+evidence_sha256 = "cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "attrs"
+name = "attrs"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "26.1.0"
+spdx = "MIT"
+attribution = "Hynek Schlawack and attrs contributors"
+source_url = "https://pypi.org/project/attrs/26.1.0/"
+license_url = "https://pypi.org/project/attrs/26.1.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c03148528be8cac2408564a6c9a0cc7e9171802bc1d26985/attrs-26.1.0.tar.gz"
+evidence_sha256 = "d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "certifi"
+name = "certifi"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2026.7.22"
+spdx = "MPL-2.0"
+attribution = "Kenneth Reitz and certifi contributors"
+source_url = "https://pypi.org/project/certifi/2026.7.22/"
+license_url = "https://pypi.org/project/certifi/2026.7.22/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz"
+evidence_sha256 = "741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "cffi"
+name = "cffi"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.1.1"
+spdx = "MIT-0"
+attribution = "Armin Rigo, Maciej Fijalkowski, and CFFI contributors"
+source_url = "https://pypi.org/project/cffi/2.1.1/"
+license_url = "https://pypi.org/project/cffi/2.1.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz"
+evidence_sha256 = "dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "click"
+name = "click"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "8.4.2"
+spdx = "BSD-3-Clause"
+attribution = "Pallets and Click contributors"
+source_url = "https://pypi.org/project/click/8.4.2/"
+license_url = "https://pypi.org/project/click/8.4.2/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz"
+evidence_sha256 = "9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "colorama"
+name = "colorama"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.4.6"
+spdx = "BSD-3-Clause"
+attribution = "Jonathan Hartley and Colorama contributors"
+source_url = "https://pypi.org/project/colorama/0.4.6/"
+license_url = "https://pypi.org/project/colorama/0.4.6/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz"
+evidence_sha256 = "08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "cryptography"
+name = "cryptography"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "50.0.0"
+spdx = "Apache-2.0 OR BSD-3-Clause"
+attribution = "Python Cryptographic Authority and contributors"
+source_url = "https://pypi.org/project/cryptography/50.0.0/"
+license_url = "https://pypi.org/project/cryptography/50.0.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz"
+evidence_sha256 = "eeac2acb5a20ed25e0ad6d1df9891a520b78b404266b6d11778f25d5d691a6c9"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "h11"
+name = "h11"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.16.0"
+spdx = "MIT"
+attribution = "Nathaniel J. Smith and h11 contributors"
+source_url = "https://pypi.org/project/h11/0.16.0/"
+license_url = "https://pypi.org/project/h11/0.16.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz"
+evidence_sha256 = "4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "httpcore"
+name = "httpcore"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "1.0.9"
+spdx = "BSD-3-Clause"
+attribution = "Tom Christie and HTTP Core contributors"
+source_url = "https://pypi.org/project/httpcore/1.0.9/"
+license_url = "https://pypi.org/project/httpcore/1.0.9/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz"
+evidence_sha256 = "6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "httpx"
+name = "httpx"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.28.1"
+spdx = "BSD-3-Clause"
+attribution = "Tom Christie and HTTPX contributors"
+source_url = "https://pypi.org/project/httpx/0.28.1/"
+license_url = "https://pypi.org/project/httpx/0.28.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz"
+evidence_sha256 = "75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "httpx-sse"
+name = "httpx-sse"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.4.3"
+spdx = "MIT"
+attribution = "Florimond Manca and contributors"
+source_url = "https://pypi.org/project/httpx-sse/0.4.3/"
+license_url = "https://pypi.org/project/httpx-sse/0.4.3/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz"
+evidence_sha256 = "9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "idna"
+name = "idna"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "3.18"
+spdx = "BSD-3-Clause"
+attribution = "Kim Davies and idna contributors"
+source_url = "https://pypi.org/project/idna/3.18/"
+license_url = "https://pypi.org/project/idna/3.18/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/cd/63/9496c57188a2ee585e0f1db071d75089a11e98aa86eb99d9d7618fc1edce/idna-3.18.tar.gz"
+evidence_sha256 = "ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "iniconfig"
+name = "iniconfig"
+component_kind = "python_distribution"
+scope = "test"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.3.0"
+spdx = "MIT"
+attribution = "Ronny Pfannschmidt, Holger Krekel, and contributors"
+source_url = "https://pypi.org/project/iniconfig/2.3.0/"
+license_url = "https://pypi.org/project/iniconfig/2.3.0/"
+purpose = "Installed dependency used only by the release test suite."
+evidence_source = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz"
+evidence_sha256 = "c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "jsonschema"
+name = "jsonschema"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "4.26.0"
+spdx = "MIT"
+attribution = "Julian Berman and jsonschema contributors"
+source_url = "https://pypi.org/project/jsonschema/4.26.0/"
+license_url = "https://pypi.org/project/jsonschema/4.26.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/b3/fc/e067678238fa451312d4c62bf6e6cf5ec56375422aee02f9cb5f909b3047/jsonschema-4.26.0.tar.gz"
+evidence_sha256 = "0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "jsonschema-specifications"
+name = "jsonschema-specifications"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2025.9.1"
+spdx = "MIT"
+attribution = "Julian Berman and contributors"
+source_url = "https://pypi.org/project/jsonschema-specifications/2025.9.1/"
+license_url = "https://pypi.org/project/jsonschema-specifications/2025.9.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz"
+evidence_sha256 = "b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "markdown-it-py"
+name = "markdown-it-py"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "4.2.0"
+spdx = "MIT"
+attribution = "Chris Sewell and markdown-it-py contributors"
+source_url = "https://pypi.org/project/markdown-it-py/4.2.0/"
+license_url = "https://pypi.org/project/markdown-it-py/4.2.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz"
+evidence_sha256 = "04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "mcp"
+name = "mcp"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "1.29.0"
+spdx = "MIT"
+attribution = "Anthropic PBC and MCP Python SDK contributors"
+source_url = "https://pypi.org/project/mcp/1.29.0/"
+license_url = "https://pypi.org/project/mcp/1.29.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz"
+evidence_sha256 = "52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "mdurl"
+name = "mdurl"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.1.2"
+spdx = "MIT"
+attribution = "Taneli Hukkinen and mdurl contributors"
+source_url = "https://pypi.org/project/mdurl/0.1.2/"
+license_url = "https://pypi.org/project/mdurl/0.1.2/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz"
+evidence_sha256 = "bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "neo4j"
+name = "neo4j"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "6.2.0"
+spdx = "Apache-2.0 AND Python-2.0"
+attribution = "Neo4j, Inc. and Neo4j Python Driver contributors"
+source_url = "https://pypi.org/project/neo4j/6.2.0/"
+license_url = "https://pypi.org/project/neo4j/6.2.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz"
+evidence_sha256 = "e1e246b65b572bd8ea97f9e0e721b7d40a5ce53e53d0007c29aef63e4f9124d9"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "packaging"
+name = "packaging"
+component_kind = "python_distribution"
+scope = "test"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "26.3"
+spdx = "Apache-2.0 OR BSD-2-Clause"
+attribution = "Donald Stufft and Python Packaging Authority contributors"
+source_url = "https://pypi.org/project/packaging/26.3/"
+license_url = "https://pypi.org/project/packaging/26.3/"
+purpose = "Installed dependency used only by the release test suite."
+evidence_source = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz"
+evidence_sha256 = "94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pluggy"
+name = "pluggy"
+component_kind = "python_distribution"
+scope = "test"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "1.6.0"
+spdx = "MIT"
+attribution = "Holger Krekel and pluggy contributors"
+source_url = "https://pypi.org/project/pluggy/1.6.0/"
+license_url = "https://pypi.org/project/pluggy/1.6.0/"
+purpose = "Installed dependency used only by the release test suite."
+evidence_source = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz"
+evidence_sha256 = "7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "psycopg"
+name = "psycopg"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "3.3.4"
+spdx = "LGPL-3.0-only"
+attribution = "Daniele Varrazzo and Psycopg contributors"
+source_url = "https://pypi.org/project/psycopg/3.3.4/"
+license_url = "https://pypi.org/project/psycopg/3.3.4/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/db/2f/cb91e5502ec9de1de6f1b76cfbf69531932725361168bb06963620c77e2e/psycopg-3.3.4.tar.gz"
+evidence_sha256 = "e21207764952cff81b6b8bdacad9a3939f2793367fdac2987b3aac36a651b5bc"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "psycopg-binary"
+name = "psycopg-binary"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "3.3.4"
+spdx = "LGPL-3.0-only"
+attribution = "Daniele Varrazzo and Psycopg contributors"
+source_url = "https://pypi.org/project/psycopg-binary/3.3.4/"
+license_url = "https://pypi.org/project/psycopg-binary/3.3.4/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/95/7d/03818e13ba7f36de93573c93ee3482006d3dfa8b0f8d28df511bad0a1a92/psycopg_binary-3.3.4-cp312-cp312-macosx_10_13_x86_64.whl"
+evidence_sha256 = "5ab28a2a7649df3b72e6b674b4c190e448e8e77cf496a65bd846472048de2089"
+audit_date = 2026-08-16
+validation_state = "verified"
+notes = "direct-through-extra via psycopg[binary]; platform-specific locked wheels remain covered."
+
+[[components]]
+id = "pycparser"
+name = "pycparser"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "3.0"
+spdx = "BSD-3-Clause"
+attribution = "Eli Bendersky and pycparser contributors"
+source_url = "https://pypi.org/project/pycparser/3.0/"
+license_url = "https://pypi.org/project/pycparser/3.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/1b/7d/92392ff7815c21062bea51aa7b87d45576f649f16458d78b7cf94b9ab2e6/pycparser-3.0.tar.gz"
+evidence_sha256 = "600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pydantic"
+name = "pydantic"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.13.4"
+spdx = "MIT"
+attribution = "Pydantic authors and contributors"
+source_url = "https://pypi.org/project/pydantic/2.13.4/"
+license_url = "https://pypi.org/project/pydantic/2.13.4/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/18/a5/b60d21ac674192f8ab0ba4e9fd860690f9b4a6e51ca5df118733b487d8d6/pydantic-2.13.4.tar.gz"
+evidence_sha256 = "c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pydantic-core"
+name = "pydantic-core"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.46.4"
+spdx = "MIT"
+attribution = "Pydantic authors and contributors"
+source_url = "https://pypi.org/project/pydantic-core/2.46.4/"
+license_url = "https://pypi.org/project/pydantic-core/2.46.4/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/9d/56/921726b776ace8d8f5db44c4ef961006580d91dc52b803c489fafd1aa249/pydantic_core-2.46.4.tar.gz"
+evidence_sha256 = "62f875393d7f270851f20523dd2e29f082bcc82292d66db2b64ea71f64b6e1c1"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pydantic-settings"
+name = "pydantic-settings"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.15.0"
+spdx = "MIT"
+attribution = "Pydantic authors and contributors"
+source_url = "https://pypi.org/project/pydantic-settings/2.15.0/"
+license_url = "https://pypi.org/project/pydantic-settings/2.15.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/68/ca/31c57507b13119d7d3cfa1576dad2911a4861e3be07b579395f4e9d393f9/pydantic_settings-2.15.0.tar.gz"
+evidence_sha256 = "694b793e84f766ba76a90ebdefc01d0a9a045dab0382bee70393da93712ad117"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pygments"
+name = "pygments"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.20.0"
+spdx = "BSD-2-Clause"
+attribution = "Georg Brandl and Pygments contributors"
+source_url = "https://pypi.org/project/pygments/2.20.0/"
+license_url = "https://pypi.org/project/pygments/2.20.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz"
+evidence_sha256 = "6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pyjwt"
+name = "pyjwt"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2.13.0"
+spdx = "MIT"
+attribution = "José Padilla and PyJWT contributors"
+source_url = "https://pypi.org/project/pyjwt/2.13.0/"
+license_url = "https://pypi.org/project/pyjwt/2.13.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/3b/81/58d0ac84e1ef3a3843791d6954d94c0b33d526c75eeb1efbce9d0a4c4077/pyjwt-2.13.0.tar.gz"
+evidence_sha256 = "41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pytest"
+name = "pytest"
+component_kind = "python_distribution"
+scope = "test"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "9.1.1"
+spdx = "MIT"
+attribution = "pytest authors and contributors"
+source_url = "https://pypi.org/project/pytest/9.1.1/"
+license_url = "https://pypi.org/project/pytest/9.1.1/"
+purpose = "Installed dependency used only by the release test suite."
+evidence_source = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz"
+evidence_sha256 = "1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "python-dotenv"
+name = "python-dotenv"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "1.2.2"
+spdx = "BSD-3-Clause"
+attribution = "Saurabh Kumar and python-dotenv contributors"
+source_url = "https://pypi.org/project/python-dotenv/1.2.2/"
+license_url = "https://pypi.org/project/python-dotenv/1.2.2/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/82/ed/0301aeeac3e5353ef3d94b6ec08bbcabd04a72018415dcb29e588514bba8/python_dotenv-1.2.2.tar.gz"
+evidence_sha256 = "2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "python-multipart"
+name = "python-multipart"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.0.32"
+spdx = "Apache-2.0"
+attribution = "Andrew Dunham, Marcelo Trylesinski, and contributors"
+source_url = "https://pypi.org/project/python-multipart/0.0.32/"
+license_url = "https://pypi.org/project/python-multipart/0.0.32/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz"
+evidence_sha256 = "be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pytz"
+name = "pytz"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2026.3.post1"
+spdx = "MIT"
+attribution = "Stuart Bishop and pytz contributors"
+source_url = "https://pypi.org/project/pytz/2026.3.post1/"
+license_url = "https://pypi.org/project/pytz/2026.3.post1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/fb/48/fb042503b6ca6cd271261dc559fd6432f7d8c713153e9ec5c591af4dfc1c/pytz-2026.3.post1.tar.gz"
+evidence_sha256 = "2211d3fcf9a797d3405cac96ac7f61d80e6a644f72a3309607282fe8a2010c5d"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pywin32"
+name = "pywin32"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "312"
+spdx = "PSF-2.0"
+attribution = "Mark Hammond and pywin32 contributors"
+source_url = "https://pypi.org/project/pywin32/312/"
+license_url = "https://pypi.org/project/pywin32/312/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/83/ff/32aa7d2ed0ab12b323aaa64f9b75e6ad4f8fd09f9ccfc28c79414d46838d/pywin32-312-cp312-cp312-win32.whl"
+evidence_sha256 = "dab4f65ac9c4e48400a2a0530c46c3c579cd5905ecd11b80692373915269208b"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "referencing"
+name = "referencing"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.37.0"
+spdx = "MIT"
+attribution = "Julian Berman and referencing contributors"
+source_url = "https://pypi.org/project/referencing/0.37.0/"
+license_url = "https://pypi.org/project/referencing/0.37.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz"
+evidence_sha256 = "44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "rich"
+name = "rich"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "15.0.0"
+spdx = "MIT"
+attribution = "Will McGugan and Rich contributors"
+source_url = "https://pypi.org/project/rich/15.0.0/"
+license_url = "https://pypi.org/project/rich/15.0.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz"
+evidence_sha256 = "edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "rpds-py"
+name = "rpds-py"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2026.6.3"
+spdx = "MIT"
+attribution = "Julian Berman and rpds-py contributors"
+source_url = "https://pypi.org/project/rpds-py/2026.6.3/"
+license_url = "https://pypi.org/project/rpds-py/2026.6.3/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/aa/2a/9618a122aeb2a169a28b03889a2995fe297588964333d4a7d67bdf46e147/rpds_py-2026.6.3.tar.gz"
+evidence_sha256 = "1cebd1337c242e4ec2293e541f712b2da849b29f48f0c293684b71c0632625d4"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "shellingham"
+name = "shellingham"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "1.5.4"
+spdx = "ISC"
+attribution = "Tzu-ping Chung and Shellingham contributors"
+source_url = "https://pypi.org/project/shellingham/1.5.4/"
+license_url = "https://pypi.org/project/shellingham/1.5.4/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz"
+evidence_sha256 = "8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "sse-starlette"
+name = "sse-starlette"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "3.4.8"
+spdx = "BSD-3-Clause"
+attribution = "sysid and sse-starlette contributors"
+source_url = "https://pypi.org/project/sse-starlette/3.4.8/"
+license_url = "https://pypi.org/project/sse-starlette/3.4.8/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/f8/00/b42a44342a054d58cb1115d7c8aa9cb4290dd9442f9c1b91a4b8173dba22/sse_starlette-3.4.8.tar.gz"
+evidence_sha256 = "ed89ffbb75cbf78a5fe2f2109cd584792ee7f9dfac96f791db546df8f15f3f9c"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "starlette"
+name = "starlette"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "1.4.1"
+spdx = "BSD-3-Clause"
+attribution = "Tom Christie, Marcelo Trylesinski, and Starlette contributors"
+source_url = "https://pypi.org/project/starlette/1.4.1/"
+license_url = "https://pypi.org/project/starlette/1.4.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/0f/3c/76d2fd1f1357ed0f0108d8a5aa233dcf16e2946a8559c84912fe08e01ac7/starlette-1.4.1.tar.gz"
+evidence_sha256 = "b7332de6e9375593a29ba9eee1e6ecfeb3eb2043e2e19a13b4b71da73ff35540"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "typer"
+name = "typer"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.27.1"
+spdx = "MIT"
+attribution = "Sebastián Ramírez and Typer contributors"
+source_url = "https://pypi.org/project/typer/0.27.1/"
+license_url = "https://pypi.org/project/typer/0.27.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/ae/40/4a3db7990d1f62a53182aa96eaef57aeb2886a27f90a195bc66713565d31/typer-0.27.1.tar.gz"
+evidence_sha256 = "a79bef8469a79c45498e7b814ecf8d603cc7644e9acbd9e19cac0334240b18df"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "typing-extensions"
+name = "typing-extensions"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "4.16.0"
+spdx = "PSF-2.0"
+attribution = "Guido van Rossum, Jukka Lehtosalo, Łukasz Langa, Michael Lee, and contributors"
+source_url = "https://pypi.org/project/typing-extensions/4.16.0/"
+license_url = "https://pypi.org/project/typing-extensions/4.16.0/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz"
+evidence_sha256 = "dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "typing-inspection"
+name = "typing-inspection"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.4.2"
+spdx = "MIT"
+attribution = "Victorien Plot and typing-inspection contributors"
+source_url = "https://pypi.org/project/typing-inspection/0.4.2/"
+license_url = "https://pypi.org/project/typing-inspection/0.4.2/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz"
+evidence_sha256 = "ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "tzdata"
+name = "tzdata"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "2026.3"
+spdx = "Apache-2.0"
+attribution = "Python Software Foundation and tzdata contributors"
+source_url = "https://pypi.org/project/tzdata/2026.3/"
+license_url = "https://pypi.org/project/tzdata/2026.3/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/92/ff/5a28bdfd8c3ebec42564ac7d0e54ca3db65044a9314a97f9564fa7a1e926/tzdata-2026.3.tar.gz"
+evidence_sha256 = "4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "uvicorn"
+name = "uvicorn"
+component_kind = "python_distribution"
+scope = "runtime"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = false
+version = "0.52.1"
+spdx = "BSD-3-Clause"
+attribution = "Tom Christie, Marcelo Trylesinski, and Uvicorn contributors"
+source_url = "https://pypi.org/project/uvicorn/0.52.1/"
+license_url = "https://pypi.org/project/uvicorn/0.52.1/"
+purpose = "Installed Python runtime dependency."
+evidence_source = "https://files.pythonhosted.org/packages/03/18/ccce41535dee1be77735592bd19965f3972c82e07ee703d324709496b716/uvicorn-0.52.1.tar.gz"
+evidence_sha256 = "112ec661814189acbccd3f7b86460147cc065fc92c0821afa78918780e4354dd"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "hatchling"
+name = "Hatchling"
+component_kind = "python_distribution"
+scope = "build"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "1.32.0"
+spdx = "MIT"
+attribution = "Ofek Lev and Python Packaging Authority contributors"
+source_url = "https://pypi.org/project/hatchling/1.32.0/"
+license_url = "https://pypi.org/project/hatchling/1.32.0/"
+purpose = "PEP 517 build backend used to build wheel and sdist artifacts."
+evidence_source = "https://files.pythonhosted.org/packages/69/08/33331757185504aae48b8d9bd78cec03a76e3aecfb52e549d05a2347c0dd/hatchling-1.32.0.tar.gz"
+evidence_sha256 = "0bdbde4a52b06c37e3eca395f85a762bf0ef06fe374fd8ae429dc6be10230f5f"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "freecad"
+name = "FreeCAD"
+component_kind = "desktop_application"
+scope = "integration"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+version = "1.1.1"
+spdx = "LGPL-2.1-or-later"
+attribution = "FreeCAD authors and contributors"
+source_url = "https://github.com/FreeCAD/FreeCAD/releases/tag/1.1.1"
+license_url = "https://www.freecad.org/contributing.php?lang=eng"
+purpose = "Historical macOS integration evidence for the external CAD application and FreeCADCmd runtime; not bundled by this project."
+evidence_source = "https://www.freecad.org/contributing.php?lang=eng"
+evidence_sha256 = "335dc86f06a88721abfcb9ad0d40ebe70d08eece77ad7af77a2a237b594fd3fc"
+audit_date = 2026-08-16
+validation_state = "verified"
+notes = "Historical macOS acceptance only; not release-approved after the upstream FreeCAD 1.1.3 security advisory."
+
+[[components]]
+id = "freecad-1-1-3-windows"
+name = "FreeCAD 1.1.3 (Windows validation)"
+component_kind = "desktop_application"
+scope = "integration"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+version = "1.1.3"
+commit = "145529fe741292ff0b3977a01195bf0247425794"
+spdx = "LGPL-2.1-or-later"
+attribution = "FreeCAD authors and contributors"
+source_url = "https://github.com/FreeCAD/FreeCAD/releases/tag/1.1.3"
+license_url = "https://www.freecad.org/contributing.php?lang=eng"
+purpose = "External CAD application and FreeCADCmd runtime validated on Windows 11 x64; not bundled by this project."
+evidence_source = "https://github.com/FreeCAD/FreeCAD/tree/145529fe741292ff0b3977a01195bf0247425794"
+audit_date = 2026-08-22
+validation_state = "verified"
+
+[[components]]
+id = "freecad-mcp"
+name = "FreeCAD GUI MCP"
+component_kind = "external_mcp_server"
+scope = "integration"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+tag = "none"
+commit = "7667e272e1db669ff61dd5411fb4f622691f2dbc"
+spdx = "MIT"
+attribution = "Copyright 2025 Shirokuma (k tanaka)"
+source_url = "https://github.com/neka-nat/freecad-mcp/tree/7667e272e1db669ff61dd5411fb4f622691f2dbc"
+license_url = "https://github.com/neka-nat/freecad-mcp/blob/7667e272e1db669ff61dd5411fb4f622691f2dbc/LICENSE"
+purpose = "Required external integration for the recommended interactive FreeCAD workflow; not a backend dependency."
+evidence_source = "https://raw.githubusercontent.com/neka-nat/freecad-mcp/7667e272e1db669ff61dd5411fb4f622691f2dbc/LICENSE"
+evidence_sha256 = "396a409dd7ea20bb4f0bf2e2478daae4b8e28648d3c2d5b56f53b5b8715959c1"
+audit_date = 2026-08-16
+validation_state = "verified"
+notes = "Upstream metadata is inconsistent and is preserved without normalization; only this commit is validated."
+declared_project_version = "0.1.19"
+committed_lock_version = "0.1.17"
+
+[[components]]
+id = "freecad-fasteners-workbench"
+name = "FreeCAD Fasteners Workbench"
+component_kind = "freecad_workbench"
+scope = "integration"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+version = "0.5.64"
+commit = "79a06dc067b57ebc89532be835704eb2af5da96c"
+spdx = "GPL-2.0-or-later"
+attribution = "shaise and FreeCAD Fasteners Workbench contributors"
+source_url = "https://github.com/shaise/FreeCAD_FastenersWB/tree/79a06dc067b57ebc89532be835704eb2af5da96c"
+license_url = "https://github.com/shaise/FreeCAD_FastenersWB/blob/79a06dc067b57ebc89532be835704eb2af5da96c/LICENSE"
+purpose = "Optional external standard-fastener workbench/provider."
+evidence_source = "https://raw.githubusercontent.com/shaise/FreeCAD_FastenersWB/79a06dc067b57ebc89532be835704eb2af5da96c/package.xml"
+evidence_sha256 = "7c01b338235e19b8de95cec84292066f1947826d8165aea8a75d16edc2f0bf93"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["freecad-fasteners"]
+
+[[components]]
+id = "freecad-gears-workbench"
+name = "FreeCAD Gears Workbench"
+component_kind = "freecad_workbench"
+scope = "integration"
+relationship = "external_integration"
+distribution = "not_distributed_by_project"
+version = "1.3"
+commit = "790e75c1dbc5c91b4abeee7ba7f972fa5dc7af57"
+spdx = "GPL-3.0-or-later"
+attribution = "looooo and FreeCAD Gears contributors"
+source_url = "https://github.com/looooo/freecad.gears/tree/790e75c1dbc5c91b4abeee7ba7f972fa5dc7af57"
+license_url = "https://github.com/looooo/freecad.gears/blob/790e75c1dbc5c91b4abeee7ba7f972fa5dc7af57/LICENSE"
+purpose = "Optional external gear and worm workbench/provider."
+evidence_source = "https://raw.githubusercontent.com/looooo/freecad.gears/790e75c1dbc5c91b4abeee7ba7f972fa5dc7af57/package.xml"
+evidence_sha256 = "9c49ea45b665ba441cdbd57ddcc868f20fbe22e15ca96259e450d3c044eed38f"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["freecad-gears"]
+
+[[components]]
+id = "postgresql-server"
+name = "PostgreSQL server"
+component_kind = "database_service"
+scope = "integration"
+relationship = "external_service"
+distribution = "not_distributed_by_project"
+version = "18"
+spdx = "PostgreSQL"
+attribution = "PostgreSQL Global Development Group and The Regents of the University of California"
+source_url = "https://www.postgresql.org/download/"
+license_url = "https://www.postgresql.org/about/licence/"
+purpose = "External relational database service configured by the operator."
+evidence_source = "https://www.postgresql.org/about/licence/"
+evidence_sha256 = "002c89281610d3558e1996a60135f8d6bb7877dc2748689fe20edce19f14cd45"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "pgvector-service"
+name = "pgvector PostgreSQL image"
+component_kind = "database_service"
+scope = "integration"
+relationship = "external_service"
+distribution = "not_distributed_by_project"
+image = "pgvector/pgvector:0.8.5-pg18"
+image_digest = "sha256:12a379b47ad65289572ea0756efc11b7c241a6662833e8af7038cd3b73d647e0"
+spdx = "PostgreSQL"
+attribution = "Andrew Kane and pgvector contributors; PostgreSQL image components retain their own licenses"
+source_url = "https://github.com/pgvector/pgvector/tree/v0.8.5"
+license_url = "https://github.com/pgvector/pgvector/blob/v0.8.5/LICENSE"
+purpose = "External PostgreSQL 18 service image with pgvector 0.8.5 for integration testing and deployment evaluation."
+evidence_source = "https://raw.githubusercontent.com/pgvector/pgvector/v0.8.5/LICENSE"
+evidence_sha256 = "6bba9ebeb73e27477463b05e5ef1bf303bccbddb3db9bbc95905d351604d6a87"
+audit_date = 2026-08-16
+validation_state = "verified"
+
+[[components]]
+id = "neo4j-server"
+name = "Neo4j Community Edition server"
+component_kind = "database_service"
+scope = "integration"
+relationship = "external_service"
+distribution = "not_distributed_by_project"
+image = "neo4j:2026.06.0"
+image_digest = "sha256:42fd5b9ead4dd4211f6f91bd831c358e4e2117367d04633fbf88682ca4792b30"
+spdx = "GPL-3.0-only"
+attribution = "Neo4j, Inc. and Neo4j contributors"
+source_url = "https://neo4j.com/docs/operations-manual/current/docker/introduction/"
+license_url = "https://neo4j.com/legal-terms/"
+purpose = "External Community Edition graph database service configured by the operator."
+evidence_source = "https://neo4j.com/docs/operations-manual/current/docker/introduction/"
+evidence_sha256 = "6b7653241a6da7d72f1733a51443574916d2b873eb32dfce0424526b7290b6fe"
+audit_date = 2026-08-16
+validation_state = "verified"
+notes = "The unsuffixed image is the Community Edition image; Enterprise images use an -enterprise suffix."
+
+[[components]]
+id = "step-parts"
+name = "STEP.parts"
+component_kind = "catalog_web_service"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "STEP.parts maintainers and the respective model rights holders"
+source_url = "https://www.step.parts/"
+license_url = "https://github.com/earthtojake/step.parts/blob/main/THIRD_PARTY_NOTICES.md"
+purpose = "External catalog discovery and download provider for standard parts."
+evidence_source = "https://raw.githubusercontent.com/earthtojake/step.parts/main/THIRD_PARTY_NOTICES.md"
+evidence_sha256 = "211b93f1fe7626d812fbadfed4a1f5e30fec4cd5b90aed3dd28275a5b17add99"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["step-parts"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "3dfindit-cadenas"
+name = "3Dfindit / CADENAS"
+component_kind = "catalog_web_service"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "CADENAS GmbH and participating manufacturers"
+source_url = "https://www.3dfindit.com/"
+license_url = "https://www.cadenas.co.jp/jp/support/3dfindit"
+purpose = "External authenticated manufacturer CAD catalog."
+evidence_source = "https://www.cadenas.co.jp/jp/support/3dfindit"
+evidence_sha256 = "cf40d935faf95ce480e1e35a0cd44ea674ab5770e101fb04d2cc5de702c8d4a8"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["3dfindit-cadenas"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "misumi"
+name = "MISUMI CAD Download"
+component_kind = "catalog_web_service"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "MISUMI Group Inc. and relevant product rights holders"
+source_url = "https://us.misumi-ec.com/"
+license_url = "https://us.misumi-ec.com/service/info/terms/"
+purpose = "External authenticated parts catalog and CAD download service."
+evidence_source = "https://us.misumi-ec.com/service/info/terms/"
+evidence_sha256 = "db5f12548e572ffc5c4b6cc5dbfaf39d21431659c4e7f84816408fbeda58fce4"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["misumi"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "traceparts"
+name = "TraceParts"
+component_kind = "catalog_web_service"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "TraceParts S.A.S. and participating manufacturers"
+source_url = "https://www.traceparts.com/"
+license_url = "https://developers.traceparts.com/docs/api-terms-of-use"
+purpose = "External authenticated manufacturer CAD catalog."
+evidence_source = "https://developers.traceparts.com/docs/api-terms-of-use"
+evidence_sha256 = "2940493950564f8597792f26e56340d0372ff1673a1c399316d7d8663c5d4285"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["traceparts"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-thomson"
+name = "Thomson CAD Center"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "Thomson Industries, Inc."
+source_url = "https://www.thomsonlinear.com/en/support"
+license_url = "https://www.thomsonlinear.com.cn/downloads/terms_conditions/THN_TC_Sales_EN.pdf"
+purpose = "Official manufacturer CAD model and engineering resource portal."
+evidence_source = "https://www.thomsonlinear.com.cn/downloads/terms_conditions/THN_TC_Sales_EN.pdf"
+evidence_sha256 = "a171cc73c6172855e2214b9a70b7f3ebc19d2e2d045c6d56f71141097e10a27d"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-hiwin"
+name = "HIWIN Engineering Tools"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "HIWIN Corporation"
+source_url = "https://hiwin.com/engineering-tools/"
+license_url = "https://hiwin.com/standard-terms-and-conditions/"
+purpose = "Official manufacturer engineering tools and CAD resources."
+evidence_source = "https://hiwin.com/standard-terms-and-conditions/"
+evidence_sha256 = "889e9b349183edd8780b444dd1e41566f528f47ad68fd20db98c041c37385653"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-thk"
+name = "THK Online Services"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "THK CO., LTD."
+source_url = "https://www.thk.com/opm/us/en/online_service/explanation/member/"
+license_url = "https://www.thk.com/in/en/terms-of-use/"
+purpose = "Official manufacturer CAD data and engineering service."
+evidence_source = "https://www.thk.com/in/en/terms-of-use/"
+evidence_sha256 = "4651f7be19f41aec0c5b18b846d7e7b20f39c4d29abee68aeba24678989ac29d"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-pmi"
+name = "PMI CAD Download"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "PMI and AMT Linear Motion"
+source_url = "https://pmi-amt.eu/catalog-instruction"
+license_url = "https://pmi-amt.eu/terms-of-use"
+purpose = "Official manufacturer catalog and CAD download portal."
+evidence_source = "https://pmi-amt.eu/catalog-instruction"
+evidence_sha256 = "bd3778a7dc8ff882e6dc746b7c0379bcc9d913b980fb6f119fc39ed72e34eb17"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-tbi"
+name = "TBI Motion 2D/3D CAD"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "TBI MOTION TECHNOLOGY CO., LTD."
+source_url = "https://www.tbimotion.com.tw/en/technical-services/technical-services-10"
+license_url = "https://www.tbimotion.com.tw/en/member/register"
+purpose = "Official manufacturer 2D/3D CAD selection service."
+evidence_source = "https://www.tbimotion.com.tw/en/technical-services/technical-services-10"
+evidence_sha256 = "48307b44e5a3ee2b8c579469b5775f2a3d4ec8dbbd17b774448bf0c545f57833"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-nsk"
+name = "NSK Catalogs and CAD"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "NSK Ltd. and applicable CAD data providers"
+source_url = "https://www.nsk.com/catalogs-and-cad/"
+license_url = "https://www.nsk.com/catalogs-and-cad/"
+purpose = "Official manufacturer catalogs and 2D/3D CAD links."
+evidence_source = "https://www.nsk.com/catalogs-and-cad/"
+evidence_sha256 = "af4e68262255c4a8f6baf7cdf9272ed22b426ecd00d145a3817fd8c17eb383ef"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."
+
+[[components]]
+id = "manufacturer-bosch-rexroth"
+name = "Bosch Rexroth CAD Files"
+component_kind = "manufacturer_catalog"
+scope = "integration"
+relationship = "catalog_web_provider"
+distribution = "not_distributed_by_project"
+identity_not_applicable_reason = "Hosted catalog content changes independently and has no project-pinned software release."
+spdx = "NOASSERTION"
+attribution = "Bosch Rexroth AG"
+source_url = "https://www.boschrexroth.com/en/de/downloads/cad-files/"
+license_url = "https://www.boschrexroth.com/en/de/legal-notice/"
+purpose = "Official manufacturer CAD files and engineering configurators."
+evidence_source = "https://www.boschrexroth.com/en/de/legal-notice/"
+evidence_sha256 = "941ba5675273312cdffbef13d044988ebe8e2515b0520272a4a5395742f17443"
+audit_date = 2026-08-16
+validation_state = "verified"
+provider_ids = ["manufacturer-official"]
+notes = "Rights to downloaded CAD data remain governed by provider and per-item service terms; this is not an open-source software license."

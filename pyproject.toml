@@ -1,0 +1,49 @@
+[project]
+name = "ai-mechanical-3dcad-design-agent"
+version = "0.1.0"
+description = "Deterministic mechanical 3D CAD workflows, knowledge, validation, and MCP tools for coding agents"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.3.0,<2",
+    "neo4j>=5.28.0,<7",
+    "psycopg[binary]>=3.2.0,<4",
+    "pywin32>=312; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+test = [
+    "jsonschema>=4.23.0,<5",
+    "pytest>=8.3.0,<10",
+]
+
+[project.scripts]
+mechanical-design-mcp = "mechanical_design_agent.server:main"
+mechanical-design = "mechanical_design_agent.cli:main"
+
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mechanical_design_agent"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/mechanical_design_agent",
+    ".env.example",
+    "compose.yaml",
+    "THIRD_PARTY_NOTICES.md",
+    "third-party-components.toml",
+    "docs/ARCHITECTURE.md",
+    "docs/DATABASE_DEPLOYMENT.md",
+    "docs/ENGINEER_LEARNING_PLAYBOOK.md",
+    "docs/FREECAD_GUI_MCP_INTEGRATION.md",
+    "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
+    "examples/product_families/example-family.json",
+]
+
+[tool.pyright]
+pythonVersion = "3.12"

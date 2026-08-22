@@ -1,0 +1,45 @@
+name: ai-mechanical-3dcad-design-agent
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.5-pg18@sha256:12a379b47ad65289572ea0756efc11b7c241a6662833e8af7038cd3b73d647e0
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${MECH_DESIGN_POSTGRES_USER:-mechanical_design}"
+      POSTGRES_PASSWORD: "${MECH_DESIGN_POSTGRES_PASSWORD:?set MECH_DESIGN_POSTGRES_PASSWORD in the explicit env file}"
+      POSTGRES_DB: "${MECH_DESIGN_POSTGRES_DB:-mechanical_design}"
+    ports:
+      - "127.0.0.1:${MECH_DESIGN_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:2026.06.0@sha256:42fd5b9ead4dd4211f6f91bd831c358e4e2117367d04633fbf88682ca4792b30
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: "neo4j/${MECH_DESIGN_NEO4J_PASSWORD:?set MECH_DESIGN_NEO4J_PASSWORD in the explicit env file}"
+      NEO4J_dbms_usage__report_enabled: "false"
+      NEO4J_dbms_fleet__manager_enabled: "false"
+      NEO4J_server_fleet__discovery_enabled: "false"
+      NEO4J_server_default__listen__address: 0.0.0.0
+      NEO4J_server_bolt_listen__address: 0.0.0.0:7687
+    ports:
+      - "127.0.0.1:${MECH_DESIGN_NEO4J_BOLT_PORT:-57687}:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://127.0.0.1:7687 -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  neo4j_data:

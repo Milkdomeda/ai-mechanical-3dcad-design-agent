@@ -1,0 +1,190 @@
+schema_version = "PublicRepositoryAllowlist/v1"
+
+root_files = [
+  ".env.example",
+  ".gitignore",
+  "LICENSE",
+  "README.md",
+  "THIRD_PARTY_NOTICES.md",
+  "compose.yaml",
+  "public-repository.toml",
+  "pyproject.toml",
+  "third-party-components.toml",
+  "uv.lock",
+]
+
+public_docs = [
+  "docs/ARCHITECTURE.md",
+  "docs/DATABASE_DEPLOYMENT.md",
+  "docs/ENGINEER_LEARNING_PLAYBOOK.md",
+  "docs/FREECAD_GUI_MCP_INTEGRATION.md",
+  "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
+]
+
+source_trees = [
+  "examples/product_families",
+  "src/mechanical_design_agent",
+]
+
+public_tests = [
+  "tests/conftest.py",
+  "tests/database_deployment_helpers.py",
+  "tests/public_release_helpers.py",
+  "tests/test_assembly.py",
+  "tests/test_bootstrap_diagnostics.py",
+  "tests/test_bootstrap_mcp.py",
+  "tests/test_boundaries.py",
+  "tests/test_context.py",
+  "tests/test_database_deployment.py",
+  "tests/test_database_deployment_live.py",
+  "tests/test_design.py",
+  "tests/test_design_lesson_outbox.py",
+  "tests/test_design_lesson_projection.py",
+  "tests/test_design_lesson_repository.py",
+  "tests/test_design_lesson_reviews.py",
+  "tests/test_design_lesson_search_pagination.py",
+  "tests/test_design_lessons.py",
+  "tests/test_design_lifecycle.py",
+  "tests/test_extractor_math.py",
+  "tests/freecad_gui_mcp_live_helpers.py",
+  "tests/test_freecad_gui_mcp_integration_live.py",
+  "tests/test_freecad_packaging.py",
+  "tests/test_learning.py",
+  "tests/test_legacy_settings.py",
+  "tests/test_library.py",
+  "tests/test_migrations.py",
+  "tests/test_package_resources.py",
+  "tests/test_packaging.py",
+  "tests/test_projection.py",
+  "tests/test_public_documentation.py",
+  "tests/test_public_distribution.py",
+  "tests/test_public_release_contract.py",
+  "tests/test_repository_bootstrap_identity.py",
+  "tests/test_service_rules.py",
+  "tests/test_standard_part_cli.py",
+  "tests/test_standard_part_configuration.py",
+  "tests/test_standard_part_packaging.py",
+  "tests/test_standard_parts.py",
+  "tests/test_third_party_licensing.py",
+  "tests/test_windows_database_live.py",
+  "tests/test_windows_freecad_discovery.py",
+  "tests/test_windows_freecad_gui_mcp_live.py",
+  "tests/test_windows_packaging.py",
+  "tests/test_windows_portability.py",
+  "tests/test_windows_release_evidence.py",
+  "tests/test_windows_secure_fs.py",
+  "tests/third_party_licensing_helpers.py",
+  "tests/windows_freecad_gui_mcp_live_helpers.py",
+  "tests/windows_release_helpers.py",
+  "tests/freecad_gui_mcp_provenance.py",
+  "tests/test_workspace_bootstrap.py",
+]
+
+public_ci = [
+  ".github/workflows/windows.yml",
+]
+
+public_scripts = [
+  "scripts/windows_database_deployment_acceptance.ps1",
+  "scripts/windows_release_acceptance.ps1",
+]
+
+excluded_private_paths = [
+  "config/product_families",
+  "docs/superpowers",
+  "scripts/run_external_step_validation.py",
+  "tests/test_bootstrap_runtime.py",
+  "tests/test_bootstrap_slice2_packaging.py",
+  "tests/test_bootstrap_slice3_packaging.py",
+  "tests/test_documentation.py",
+  "tests/test_private_public_release_gate.py",
+  "tests/test_product_families.py",
+  "tests/test_runtime_hardcode_packaging.py",
+  "tests/test_smoke_runtime.py",
+  "tests/test_workspace_bootstrap_packaging.py",
+]
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/projection.py"
+rule_id = "legacy_projection_owner"
+reason = "Preserves the persisted graph projection namespace."
+
+[[compatibility_paths]]
+path = "tests/test_design_lesson_projection.py"
+rule_id = "legacy_projection_owner"
+reason = "Verifies the persisted graph projection namespace."
+
+[[compatibility_paths]]
+path = "tests/test_design_lesson_reviews.py"
+rule_id = "legacy_projection_owner"
+reason = "Verifies graph compatibility and review behavior."
+
+[[compatibility_paths]]
+path = "tests/test_windows_database_live.py"
+rule_id = "legacy_projection_owner"
+reason = "Verifies the persisted graph projection namespace in the installed-wheel Windows live bundle."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/design_lessons.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves a persisted public schema field."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/learning.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves persisted learning schema fields."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/models.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves persisted model schema fields."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/repository.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves persisted repository schema fields."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/resources/migrations/postgres/001_init.sql"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves an installed database schema field."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/resources/migrations/postgres/002_design_lessons.sql"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves an installed database schema field."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/resources/schemas/design-lesson-package-v1.schema.json"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves an installed JSON schema field."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/server.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves existing MCP tool schemas."
+
+[[compatibility_paths]]
+path = "src/mechanical_design_agent/service.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Preserves existing service schemas."
+
+[[compatibility_paths]]
+path = "tests/test_design_lesson_repository.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Verifies persisted repository compatibility."
+
+[[compatibility_paths]]
+path = "tests/test_design_lesson_reviews.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Verifies persisted review compatibility."
+
+[[compatibility_paths]]
+path = "tests/test_design_lessons.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Verifies persisted lesson compatibility."
+
+[[compatibility_paths]]
+path = "tests/test_service_rules.py"
+rule_id = "persisted_coding_agent_schema"
+reason = "Verifies persisted service compatibility."

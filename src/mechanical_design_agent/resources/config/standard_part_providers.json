@@ -1,0 +1,13 @@
+{
+  "schema_version": "StandardPartProviders/v1",
+  "providers": [
+    {"id": "freecad-fasteners", "name": "FreeCAD Fasteners Workbench", "priority": 10, "trust_tier": "generated_standard", "acquisition": "local_workbench", "login_required": false, "categories": ["fastener"]},
+    {"id": "freecad-gears", "name": "FreeCAD Gears Workbench", "priority": 20, "trust_tier": "generated_standard", "acquisition": "local_workbench", "login_required": false, "categories": ["gear", "worm"]},
+    {"id": "step-parts", "name": "STEP.parts", "priority": 30, "trust_tier": "catalog_distributor", "acquisition": "browser_or_direct", "login_required": false, "categories": ["all"]},
+    {"id": "verified-local", "name": "Verified local FCStd/STEP catalog", "priority": 40, "trust_tier": "locally_verified", "acquisition": "local_read_only", "login_required": false, "categories": ["all"]},
+    {"id": "manufacturer-official", "name": "Manufacturer official CAD portals", "priority": 50, "trust_tier": "manufacturer_official", "acquisition": "authenticated_browser_or_direct", "login_required": false, "categories": ["all"], "examples": ["Thomson CAD Center", "HIWIN", "THK", "PMI", "TBI", "NSK", "Bosch Rexroth"]},
+    {"id": "3dfindit-cadenas", "name": "3Dfindit / CADENAS", "priority": 60, "trust_tier": "manufacturer_distributed", "acquisition": "authenticated_browser", "login_required": true, "categories": ["all"]},
+    {"id": "misumi", "name": "MISUMI CAD Download", "priority": 70, "trust_tier": "catalog_distributor", "acquisition": "authenticated_browser", "login_required": true, "categories": ["all"]},
+    {"id": "traceparts", "name": "TraceParts", "priority": 80, "trust_tier": "manufacturer_distributed", "acquisition": "authenticated_browser", "login_required": true, "categories": ["all"]}
+  ]
+}
