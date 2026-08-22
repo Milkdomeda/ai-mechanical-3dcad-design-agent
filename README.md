@@ -1,5 +1,7 @@
 # AI Mechanical 3DCAD Design Agent
 
+![AI Mechanical 3DCAD Design Agent architecture](docs/assets/ai-mechanical-design-agent-architecture-v2.png)
+
 AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded

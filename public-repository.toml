@@ -19,6 +19,7 @@ public_docs = [
   "docs/ENGINEER_LEARNING_PLAYBOOK.md",
   "docs/FREECAD_GUI_MCP_INTEGRATION.md",
   "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
+  "docs/assets/ai-mechanical-design-agent-architecture-v2.png",
 ]
 
 source_trees = [
