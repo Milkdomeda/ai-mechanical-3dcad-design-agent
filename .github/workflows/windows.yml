@@ -49,7 +49,7 @@ jobs:
           uv venv --python 3.12 $venv
           $python = Join-Path $venv 'Scripts/python.exe'
           $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
-          uv pip install --python $python --constraint $constraints $wheel.FullName
+          uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
       - name: Run the complete non-interactive suite offline
         shell: pwsh
         run: |
@@ -66,8 +66,8 @@ jobs:
             $failed += [int]$suite.failures + [int]$suite.errors
             $skipped += [int]$suite.skipped
           }
-          # 57 prior public skips + D3 live opt-in + protected second-volume gate.
-          $expectedSkipped = 59
+          # 57 prior public skips + D3 live opt-in; the second-volume gate runs.
+          $expectedSkipped = 58
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }
