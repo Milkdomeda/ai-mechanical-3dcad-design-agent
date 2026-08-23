@@ -1,12 +1,12 @@
 # AI Mechanical 3DCAD Design Agent
 
-![AI Mechanical 3DCAD Design Agent architecture](docs/assets/ai-mechanical-design-agent-architecture-v2.png)
+![AI-generated mechanical CAD product showcase](docs/assets/ai-mechanical-design-showcase.gif)
 
 AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.1.0.
+0.2.0.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,12 +15,14 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.1.0 is a coding-agent/MCP-server release. It includes deterministic
+Version 0.2.0 is a coding-agent/MCP-server release. It includes deterministic
 workspace bootstrap, product-family configuration, model analysis, engineering
 knowledge workflows, standard-part provenance, validation resources, and
-package-owned database migrations. It does not bundle a language model, a CAD
-model library, generated output, engineering reports, database services, or a
-FreeCAD GUI MCP integration.
+package-owned database migrations. It also publishes project-owned agent
+instructions and skills for standard-part selection and FreeCAD model
+validation. It does not bundle a language model, a CAD model library, generated
+output, engineering reports, database services, or a FreeCAD GUI MCP
+integration.
 
 See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
 [Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md) for the
@@ -41,6 +43,40 @@ contain no production credentials or real project data.
 - Provider-aware standard-part lookup and provenance.
 - FreeCAD model, mechanical-interface, and `AssemblyCompleteness/v2` validation.
 - Stable CLI and MCP tool schemas for coding agents and compatible MCP clients.
+
+## Agent instructions and skills
+
+The repository root [`AGENTS.md`](AGENTS.md) defines the recommended operating
+boundary for coding agents. Two project-owned skills are included:
+
+- [`freecad-standard-parts`](.agents/skills/freecad-standard-parts/SKILL.md)
+  selects and imports reusable standard mechanical components while preserving
+  catalog provenance and BOM metadata.
+- [`freecad-model-validation`](.agents/skills/freecad-model-validation/SKILL.md)
+  validates FCStd and STEP geometry, same-revision evidence, standard-part
+  provenance, and mandatory fastener installation contracts.
+
+These skills are source-controlled project capabilities. They do not install
+themselves into a user's global agent environment.
+
+### Optional: Superpowers brainstorming
+
+The external [`superpowers:brainstorming`](https://github.com/obra/superpowers)
+skill is recommended for turning an incomplete mechanical-design request into
+reviewable requirements before modeling. It is optional and is not bundled,
+installed, or required by this project.
+
+- **Codex App:** open **Plugins**, find **Superpowers** in the Coding category,
+  and choose **Install**.
+- **Codex CLI:** run `/plugins`, search for `superpowers`, and select
+  **Install Plugin**.
+
+See [Optional agent workflows](docs/OPTIONAL_AGENT_WORKFLOWS.md) for the scope,
+installation boundary, and fallback behavior.
+
+## Architecture
+
+![AI Mechanical 3DCAD Design Agent architecture](docs/assets/ai-mechanical-design-agent-architecture-v2.png)
 
 ## FreeCAD integration boundary
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "FreeCAD Standard Parts"
+  short_description: "Insert standard fasteners and generate gears"
+  default_prompt: "Use $freecad-standard-parts to select and insert standard hardware or gears into my FreeCAD model."

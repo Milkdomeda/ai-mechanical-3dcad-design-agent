@@ -20,12 +20,12 @@ from windows_release_helpers import WINDOWS_INSTALLED_WHEEL_LIVE_BUNDLE
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_README_ASSET = Path(
-    "docs/assets/ai-mechanical-design-agent-architecture-v2.png"
-)
-PUBLIC_README_ASSET_SHA256 = (
-    "f21051fa73ab6fb8a08729966cc2f74dabe78205f43de47466222209c7146541"
-)
+PUBLIC_README_ASSETS = {
+    Path("docs/assets/ai-mechanical-design-agent-architecture-v2.png"):
+        "f21051fa73ab6fb8a08729966cc2f74dabe78205f43de47466222209c7146541",
+    Path("docs/assets/ai-mechanical-design-showcase.gif"):
+        "66c618705ba4d501894735a83ba7edbb8434f96c46b1830179dd1fd237527328",
+}
 CAD_OR_REPORT_SUFFIXES = {
     ".fcstd",
     ".step",
@@ -34,6 +34,7 @@ CAD_OR_REPORT_SUFFIXES = {
     ".png",
     ".jpg",
     ".jpeg",
+    ".gif",
     ".pdf",
 }
 PRIVATE_PATH_PARTS = {"output", "knowledge", "vendor", ".env" + ".local"}
@@ -69,12 +70,17 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "compose.yaml" in manifest.root_files
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
-    assert PUBLIC_README_ASSET.as_posix() in manifest.public_docs
+    assert all(
+        asset.as_posix() in manifest.public_docs
+        for asset in PUBLIC_README_ASSETS
+    )
     assert "tests/third_party_licensing_helpers.py" in manifest.public_tests
     assert "tests/test_third_party_licensing.py" in manifest.public_tests
     assert "tests/freecad_gui_mcp_live_helpers.py" in manifest.public_tests
     assert "tests/test_freecad_gui_mcp_integration_live.py" in manifest.public_tests
+    assert "tests/test_agent_skills.py" in manifest.public_tests
     assert manifest.source_trees == (
+        ".agents/skills",
         "examples/product_families",
         "src/mechanical_design_agent",
     )
@@ -94,24 +100,28 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     binary_assets = {
         path for path in files if path.suffix.lower() in CAD_OR_REPORT_SUFFIXES
     }
-    assert binary_assets == {PUBLIC_README_ASSET}
+    assert binary_assets == set(PUBLIC_README_ASSETS)
     assert all(not (set(path.parts) & PRIVATE_PATH_PARTS) for path in files)
     assert Path(".gitmodules") not in files
     assert not any(path.parts and path.parts[0] == "vendor" for path in files)
 
-    asset_bytes = (PROJECT_ROOT / PUBLIC_README_ASSET).read_bytes()
-    assert asset_bytes.startswith(b"\x89PNG\r\n\x1a\n")
-    assert hashlib.sha256(asset_bytes).hexdigest() == PUBLIC_README_ASSET_SHA256
-    for forbidden in (
-        b"/Users/",
-        b":\\Users\\",
-        b"PF-" + b"PILOT",
-        b"BEGIN " + b"OPENSSH PRIVATE KEY",
-        b"BEGIN " + b"RSA PRIVATE KEY",
-    ):
-        assert forbidden not in asset_bytes
+    for asset, expected_sha256 in PUBLIC_README_ASSETS.items():
+        asset_bytes = (PROJECT_ROOT / asset).read_bytes()
+        if asset.suffix == ".png":
+            assert asset_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        elif asset.suffix == ".gif":
+            assert asset_bytes.startswith((b"GIF87a", b"GIF89a"))
+        assert hashlib.sha256(asset_bytes).hexdigest() == expected_sha256
+        for forbidden in (
+            b"/Users/",
+            b":\\Users\\",
+            b"PF-" + b"PILOT",
+            b"BEGIN " + b"OPENSSH PRIVATE KEY",
+            b"BEGIN " + b"RSA PRIVATE KEY",
+        ):
+            assert forbidden not in asset_bytes
 
-    text_files = tuple(path for path in files if path != PUBLIC_README_ASSET)
+    text_files = tuple(path for path in files if path not in PUBLIC_README_ASSETS)
     texts = read_public_text_files(PROJECT_ROOT, text_files)
     for relative, text in texts.items():
         assert re.search(r"/Users/[A-Za-z0-9._-]+/[A-Za-z0-9._ -]+", text) is None, relative

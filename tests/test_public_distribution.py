@@ -167,7 +167,7 @@ def test_public_metadata_and_license_contract() -> None:
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert project["name"] == "ai-mechanical-3dcad-design-agent"
-    assert project["version"] == "0.1.0"
+    assert project["version"] == "0.2.0"
     assert project["description"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -275,7 +275,7 @@ def test_wheel_metadata_license_and_entrypoints(
         assert "third-party-components.toml" not in names
 
     assert metadata["Name"] == "ai-mechanical-3dcad-design-agent"
-    assert metadata["Version"] == "0.1.0"
+    assert metadata["Version"] == "0.2.0"
     assert metadata["Summary"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -396,7 +396,7 @@ def test_sdist_rebuilds_and_installs_without_repository_access(
     )
     assert imported.returncode == 0, imported.stderr
     version, module_path = imported.stdout.splitlines()
-    assert version == "0.1.0"
+    assert version == "0.2.0"
     assert Path(module_path).is_relative_to(venv)
 
     help_result = run([str(cli), "--help"], cwd=outside, environment=environment)

@@ -3,6 +3,8 @@ schema_version = "PublicRepositoryAllowlist/v1"
 root_files = [
   ".env.example",
   ".gitignore",
+  "AGENTS.md",
+  "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "THIRD_PARTY_NOTICES.md",
@@ -18,11 +20,14 @@ public_docs = [
   "docs/DATABASE_DEPLOYMENT.md",
   "docs/ENGINEER_LEARNING_PLAYBOOK.md",
   "docs/FREECAD_GUI_MCP_INTEGRATION.md",
+  "docs/OPTIONAL_AGENT_WORKFLOWS.md",
   "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
   "docs/assets/ai-mechanical-design-agent-architecture-v2.png",
+  "docs/assets/ai-mechanical-design-showcase.gif",
 ]
 
 source_trees = [
+  ".agents/skills",
   "examples/product_families",
   "src/mechanical_design_agent",
 ]
@@ -32,6 +37,7 @@ public_tests = [
   "tests/database_deployment_helpers.py",
   "tests/public_release_helpers.py",
   "tests/test_assembly.py",
+  "tests/test_agent_skills.py",
   "tests/test_bootstrap_diagnostics.py",
   "tests/test_bootstrap_mcp.py",
   "tests/test_boundaries.py",

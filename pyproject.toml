@@ -1,6 +1,6 @@
 [project]
 name = "ai-mechanical-3dcad-design-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic mechanical 3D CAD workflows, knowledge, validation, and MCP tools for coding agents"
 readme = "README.md"
 license = "Apache-2.0"

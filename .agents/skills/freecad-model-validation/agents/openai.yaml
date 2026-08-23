@@ -1,0 +1,4 @@
+interface:
+  display_name: "FreeCAD Model Validation"
+  short_description: "Validate FCStd and STEP models in FreeCAD"
+  default_prompt: "Use $freecad-model-validation to validate this FreeCAD or STEP model and produce strict reports."
