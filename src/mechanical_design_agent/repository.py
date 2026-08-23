@@ -3677,11 +3677,12 @@ class PostgresRepository:
             ).fetchone()
             if row is None:
                 row = connection.execute(
-                    "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s",
-                    (workspace_id, idempotency_token),
+                    "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
+                    "AND organization_id=%s AND design_group_id=%s",
+                    (workspace_id, idempotency_token, organization_id, design_group_id),
                 ).fetchone()
                 if row is None:
-                    raise RuntimeError("design job idempotency lookup failed")
+                    raise KeyError("unknown design_job_id or unauthorized")
             else:
                 self._record_design_job_event(
                     connection,
@@ -3695,6 +3696,8 @@ class PostgresRepository:
         self,
         *,
         job_id: str,
+        organization_id: str,
+        design_group_id: str,
         expected_revision: int,
         directory_name: str,
         actor_id: str,
@@ -3710,11 +3713,28 @@ class PostgresRepository:
                 "UPDATE design_jobs SET directory_name=%s,provisioning_state='ready',"
                 "revision=revision+1,updated_at=now() "
                 "WHERE id=%s AND revision=%s AND provisioning_state='provisioning' "
-                "AND directory_name IS NULL RETURNING *",
-                (directory_name.strip(), job_id, expected_revision),
+                "AND organization_id=%s AND design_group_id=%s AND directory_name IS NULL "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=design_jobs.organization_id) RETURNING *",
+                (
+                    directory_name.strip(),
+                    job_id,
+                    expected_revision,
+                    organization_id,
+                    design_group_id,
+                    actor_id,
+                ),
             ).fetchone()
             if row is None:
-                raise ValueError("stale design job revision or directory is already recorded")
+                self._raise_design_job_write_failure(
+                    connection,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor_id,
+                    expected_revision=expected_revision,
+                    operation="directory",
+                )
             self._record_design_job_event(
                 connection,
                 job=dict(row),
@@ -3727,6 +3747,8 @@ class PostgresRepository:
         self,
         *,
         job_id: str,
+        organization_id: str,
+        design_group_id: str,
         expected_revision: int,
         status: str,
         phase: str,
@@ -3753,11 +3775,30 @@ class PostgresRepository:
             row = connection.execute(
                 "UPDATE design_jobs SET status=%s,phase=%s,blocked_reason=%s::jsonb,"
                 "revision=revision+1,updated_at=now() WHERE id=%s AND revision=%s "
-                "AND provisioning_state='ready' RETURNING *",
-                (status, phase.strip(), blocked_reason, job_id, expected_revision),
+                "AND organization_id=%s AND design_group_id=%s AND provisioning_state='ready' "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=design_jobs.organization_id) RETURNING *",
+                (
+                    status,
+                    phase.strip(),
+                    blocked_reason,
+                    job_id,
+                    expected_revision,
+                    organization_id,
+                    design_group_id,
+                    actor_id,
+                ),
             ).fetchone()
             if row is None:
-                raise ValueError("stale design job revision")
+                self._raise_design_job_write_failure(
+                    connection,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor_id,
+                    expected_revision=expected_revision,
+                    operation="transition",
+                )
             self._record_design_job_event(
                 connection,
                 job=dict(row),
@@ -3767,13 +3808,20 @@ class PostgresRepository:
             )
         return dict(row)
 
-    def get_design_job(self, job_id: str) -> dict[str, Any]:
+    def get_design_job(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM design_jobs WHERE id=%s", (job_id,)
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s AND design_group_id=%s",
+                (job_id, organization_id, design_group_id),
             ).fetchone()
         if row is None:
-            raise KeyError(f"unknown design_job_id: {job_id}")
+            raise KeyError("unknown design_job_id or unauthorized")
         return dict(row)
 
     def list_design_jobs(
@@ -3804,6 +3852,77 @@ class PostgresRepository:
                 ),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def resolve_design_jobs(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        query: str,
+        job_type: str | None = None,
+        family_id: str | None = None,
+        statuses: tuple[str, ...] = ("active", "blocked"),
+    ) -> list[dict[str, Any]]:
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("design job resolve query is required")
+        if not statuses or any(
+            status not in {"active", "blocked", "completed", "cancelled", "archived"}
+            for status in statuses
+        ):
+            raise ValueError("design job resolver statuses are invalid")
+        phrase = f"%{query.strip()}%"
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_jobs WHERE organization_id=%s AND design_group_id=%s "
+                "AND status=ANY(%s::text[]) "
+                "AND (%s::text IS NULL OR job_type=%s) "
+                "AND (%s::text IS NULL OR family_id=%s) "
+                "AND (display_id ILIKE %s OR title ILIKE %s OR slug ILIKE %s) "
+                "ORDER BY updated_at DESC,id",
+                (
+                    organization_id,
+                    design_group_id,
+                    list(statuses),
+                    job_type,
+                    job_type,
+                    family_id,
+                    family_id,
+                    phrase,
+                    phrase,
+                    phrase,
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _raise_design_job_write_failure(
+        connection: Any,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+        expected_revision: int,
+        operation: str,
+    ) -> None:
+        diagnostic = connection.execute(
+            "SELECT id,revision,provisioning_state,directory_name FROM design_jobs "
+            "WHERE id=%s AND organization_id=%s AND design_group_id=%s "
+            "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+            "AND actor.organization_id=design_jobs.organization_id)",
+            (job_id, organization_id, design_group_id, actor_id),
+        ).fetchone()
+        if diagnostic is None:
+            raise KeyError("unknown design_job_id or unauthorized")
+        if int(diagnostic["revision"]) != expected_revision:
+            raise ValueError("stale design job revision")
+        if operation == "directory" and diagnostic["directory_name"] is not None:
+            raise ValueError("design job directory already recorded")
+        if diagnostic["provisioning_state"] != "ready":
+            raise ValueError("design job provisioning is incomplete")
+        if operation == "directory":
+            raise ValueError("design job directory already recorded")
+        raise RuntimeError("design job update failed without a matching diagnostic")
 
     @staticmethod
     def _record_design_job_event(

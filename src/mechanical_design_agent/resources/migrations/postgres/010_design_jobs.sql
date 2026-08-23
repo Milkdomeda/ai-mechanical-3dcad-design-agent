@@ -1,3 +1,31 @@
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'design_groups_id_organization_unique'
+    ) THEN
+        ALTER TABLE design_groups
+            ADD CONSTRAINT design_groups_id_organization_unique
+            UNIQUE(id,organization_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'actors_id_organization_unique'
+    ) THEN
+        ALTER TABLE actors
+            ADD CONSTRAINT actors_id_organization_unique
+            UNIQUE(id,organization_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'product_families_id_organization_group_unique'
+    ) THEN
+        ALTER TABLE product_families
+            ADD CONSTRAINT product_families_id_organization_group_unique
+            UNIQUE(id,organization_id,design_group_id);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS design_jobs (
     id uuid PRIMARY KEY,
     workspace_id uuid NOT NULL,
@@ -13,15 +41,15 @@ CREATE TABLE IF NOT EXISTS design_jobs (
     phase text NOT NULL,
     revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
     organization_id text NOT NULL REFERENCES organizations(id),
-    design_group_id text NOT NULL REFERENCES design_groups(id),
-    family_id text REFERENCES product_families(id),
+    design_group_id text NOT NULL,
+    family_id text,
     directory_name text,
     idempotency_token text NOT NULL CHECK (btrim(idempotency_token) <> ''),
     blocked_reason jsonb,
     provisioning_state text NOT NULL DEFAULT 'provisioning' CHECK (
         provisioning_state IN ('provisioning','ready')
     ),
-    created_by text NOT NULL REFERENCES actors(id),
+    created_by text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT design_jobs_phase_check CHECK (
@@ -41,6 +69,15 @@ CREATE TABLE IF NOT EXISTS design_jobs (
     CONSTRAINT design_jobs_directory_provisioning_check CHECK (
         directory_name IS NOT NULL OR provisioning_state = 'provisioning'
     ),
+    CONSTRAINT design_jobs_design_group_scope_fk
+        FOREIGN KEY (design_group_id,organization_id)
+        REFERENCES design_groups(id,organization_id),
+    CONSTRAINT design_jobs_family_scope_fk
+        FOREIGN KEY (family_id,organization_id,design_group_id)
+        REFERENCES product_families(id,organization_id,design_group_id),
+    CONSTRAINT design_jobs_creator_scope_fk
+        FOREIGN KEY (created_by,organization_id)
+        REFERENCES actors(id,organization_id),
     UNIQUE(workspace_id,idempotency_token),
     UNIQUE(workspace_id,display_id)
 );

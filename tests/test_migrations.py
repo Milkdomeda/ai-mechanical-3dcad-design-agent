@@ -93,11 +93,18 @@ def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
     assert "provisioning_state text NOT NULL DEFAULT 'provisioning'" in sql
     assert "provisioning_state IN ('provisioning','ready')" in sql
     assert "directory_name IS NOT NULL OR provisioning_state = 'provisioning'" in sql
+    assert "UNIQUE(id,organization_id)" in sql
+    assert "UNIQUE(id,organization_id,design_group_id)" in sql
+    assert "FOREIGN KEY (design_group_id,organization_id)" in sql
+    assert "FOREIGN KEY (family_id,organization_id,design_group_id)" in sql
+    assert "FOREIGN KEY (created_by,organization_id)" in sql
     assert "CREATE INDEX IF NOT EXISTS design_jobs_scope_idx" in sql
     assert "CREATE TABLE IF NOT EXISTS design_job_events" in sql
     assert "job_id uuid NOT NULL REFERENCES design_jobs(id)" in sql
     assert "UNIQUE(job_id,revision)" in sql
     assert "CREATE INDEX IF NOT EXISTS design_job_events_job_idx" in sql
+    assert "CREATE TRIGGER design_job_events_append_only" in sql
+    assert "BEFORE UPDATE OR DELETE ON design_job_events" in sql
 
 
 def test_database_with_round2_007_digest_skips_it_and_applies_008():
