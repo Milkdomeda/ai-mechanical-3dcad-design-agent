@@ -26,6 +26,7 @@ from .design_lessons import (
 from .extractor import FreeCADExtractor
 from .hashing import file_sha256, stable_hash
 from .learning import family_statistics, generate_question_targets, parse_assertion_proposals
+from .jobs import DesignJobManager, DesignJobManifest, JobFailure
 from .library import LibraryScanner, scan_change_dict
 from .lesson_reviews import DesignLessonReviewStore
 from .migrations import postgres_migrations_directory
@@ -33,6 +34,7 @@ from .projection import Neo4jProjection
 from .product_families import validate_product_family_config
 from .repository import PostgresRepository
 from .standard_parts import StandardPartRegistry
+from .workspace_bootstrap import read_workspace_manifest
 from .secure_fs import (
     atomic_publish_new,
     atomic_publish_owned_file,
@@ -52,6 +54,9 @@ class MechanicalDesignService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.repository = PostgresRepository(settings.database_url)
+        self.design_jobs = DesignJobManager(
+            read_workspace_manifest(settings.workspace), self.repository
+        )
         self.artifacts = ArtifactStore(settings.artifact_root)
         self.design_lesson_staging = DesignLessonStagingStore(settings.workspace)
         self.design_lesson_reviews = DesignLessonReviewStore(settings.workspace)
@@ -107,6 +112,336 @@ class MechanicalDesignService:
         if self.bootstrap_error:
             self._initialize_database()
             self.bootstrap_error = ""
+
+    def _configured_job_scope(
+        self,
+        *,
+        organization_id: str | None = None,
+        design_group_id: str | None = None,
+    ) -> tuple[str, str]:
+        """Return the only Job scope this service instance is allowed to use."""
+        configured_organization = str(self.bootstrap_config.get("organization_id", "")).strip()
+        configured_group = str(self.bootstrap_config.get("design_group_id", "")).strip()
+        if not configured_organization or not configured_group:
+            raise RuntimeError("configured Job organization and design group are required")
+        if organization_id is not None and organization_id != configured_organization:
+            raise PermissionError("organization_id does not match the configured organization")
+        if design_group_id is not None and design_group_id != configured_group:
+            raise PermissionError("design_group_id does not match the configured design group")
+        return configured_organization, configured_group
+
+    @staticmethod
+    def _job_reference(value: object) -> str:
+        """Accept only a UUID or immutable human display ID, never a path."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("job_id is required")
+        reference = value.strip()
+        if "/" in reference or "\\" in reference or reference in {".", ".."}:
+            raise ValueError("job_id must be a Job UUID or display ID, not a filesystem path")
+        try:
+            UUID(reference)
+        except ValueError:
+            if re.fullmatch(r"JOB-\d{8}-\d{3,}", reference) is None:
+                raise ValueError("job_id must be a Job UUID or display ID") from None
+        return reference
+
+    @staticmethod
+    def _expected_job_revision(value: object) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        return value
+
+    @staticmethod
+    def _required_job_reason(value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("reason is required")
+        return value.strip()
+
+    @staticmethod
+    def _require_job_confirmation(
+        confirmation: object,
+        *,
+        job_reference: str,
+        action: str,
+    ) -> str:
+        if (
+            not isinstance(confirmation, str)
+            or job_reference not in confirmation
+            or action not in confirmation
+        ):
+            raise ValueError(
+                f"confirmation must include the Job ID and {action}"
+            )
+        return confirmation
+
+    def _resolve_job_reference(
+        self,
+        job_reference: object,
+        *,
+        organization_id: str,
+        design_group_id: str,
+    ) -> str:
+        """Resolve a UUID/display identity only within the authorized scope."""
+        reference = self._job_reference(job_reference)
+        try:
+            return str(UUID(reference))
+        except ValueError:
+            candidates = self.design_jobs.resolve(
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                query=reference,
+                statuses=("active", "blocked", "completed", "cancelled", "archived"),
+            )
+        matches = [candidate for candidate in candidates if candidate.display_id == reference]
+        if len(matches) == 1:
+            return str(matches[0].job_id)
+        if len(matches) > 1:
+            raise JobFailure(
+                "JOB_AMBIGUOUS",
+                "Job identity is ambiguous; use the immutable Job UUID",
+            )
+        raise JobFailure(
+            "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+            "Job identity is unknown or outside the authorized scope",
+        )
+
+    @staticmethod
+    def _job_manifest_response(manifest: DesignJobManifest) -> dict[str, object]:
+        return manifest.as_dict()
+
+    def design_job_create(
+        self,
+        *,
+        job_type: str,
+        title: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        idempotency_token: str,
+    ) -> dict[str, object]:
+        """Create one scoped Job; product operations never create a Git worktree."""
+        self._require_database()
+        organization, group = self._configured_job_scope(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        return self._job_manifest_response(
+            self.design_jobs.create(
+                job_type=job_type,
+                title=title,
+                organization_id=organization,
+                design_group_id=group,
+                family_id=family_id,
+                idempotency_token=idempotency_token,
+                actor_id=self.settings.actor_id,
+            )
+        )
+
+    def design_job_list(
+        self,
+        *,
+        status: str | None = None,
+        job_type: str | None = None,
+        family_id: str | None = None,
+    ) -> dict[str, object]:
+        """List only Jobs in the configured authorized scope."""
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        jobs = self.design_jobs.list(
+            organization_id=organization,
+            design_group_id=group,
+            status=status,
+            job_type=job_type,
+            family_id=family_id,
+        )
+        return {
+            "schema_version": "MechanicalDesignJobList/v1",
+            "jobs": [self._job_manifest_response(job) for job in jobs],
+        }
+
+    def design_job_get(self, job_id: str) -> dict[str, object]:
+        """Read one UUID/display Job identity after scope authorization."""
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self._job_manifest_response(
+            self.design_jobs.get(
+                job_id=resolved_job_id,
+                organization_id=organization,
+                design_group_id=group,
+            )
+        )
+
+    def design_job_resolve(
+        self,
+        *,
+        query: str,
+        job_type: str | None = None,
+        family_id: str | None = None,
+        statuses: tuple[str, ...] = ("active", "blocked"),
+    ) -> dict[str, object]:
+        """Return all authorized candidates and never select a Job implicitly."""
+        self._require_database()
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query is required")
+        if not isinstance(statuses, tuple) or not all(
+            isinstance(status, str) and status.strip() for status in statuses
+        ):
+            raise ValueError("statuses must be a non-empty tuple of status strings")
+        organization, group = self._configured_job_scope()
+        candidates = self.design_jobs.resolve(
+            organization_id=organization,
+            design_group_id=group,
+            query=query.strip(),
+            job_type=job_type,
+            family_id=family_id,
+            statuses=statuses,
+        )
+        return {
+            "schema_version": "MechanicalDesignJobResolution/v1",
+            "query": query.strip(),
+            "candidates": [self._job_manifest_response(candidate) for candidate in candidates],
+        }
+
+    def design_job_close(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        status: str,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        """Close a Job only with its revision, reason, and user confirmation."""
+        self._require_database()
+        reference = self._job_reference(job_id)
+        revision = self._expected_job_revision(expected_revision)
+        transition_reason = self._required_job_reason(reason)
+        self._require_job_confirmation(
+            confirmation, job_reference=reference, action="关闭"
+        )
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            reference,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self._job_manifest_response(
+            self.design_jobs.close(
+                job_id=resolved_job_id,
+                organization_id=organization,
+                design_group_id=group,
+                expected_revision=revision,
+                status=status,
+                phase=phase,
+                actor_id=self.settings.actor_id,
+                reason=transition_reason,
+            )
+        )
+
+    def design_job_reopen(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        """Reopen a terminal Job only with its revision and user confirmation."""
+        self._require_database()
+        reference = self._job_reference(job_id)
+        revision = self._expected_job_revision(expected_revision)
+        transition_reason = self._required_job_reason(reason)
+        self._require_job_confirmation(
+            confirmation, job_reference=reference, action="重开"
+        )
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            reference,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self._job_manifest_response(
+            self.design_jobs.reopen(
+                job_id=resolved_job_id,
+                organization_id=organization,
+                design_group_id=group,
+                expected_revision=revision,
+                phase=phase,
+                actor_id=self.settings.actor_id,
+                reason=transition_reason,
+            )
+        )
+
+    def design_job_doctor(self, job_id: str) -> dict[str, object]:
+        """Inspect one authorized Job projection without changing it."""
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self.design_jobs.doctor(
+            job_id=resolved_job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+
+    def design_job_repair(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        doctor_receipt_sha256: str,
+        reason: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        """Perform only receipt-bound, identity-preserving Job repair."""
+        self._require_database()
+        reference = self._job_reference(job_id)
+        revision = self._expected_job_revision(expected_revision)
+        self._required_job_reason(reason)
+        self._require_job_confirmation(
+            confirmation, job_reference=reference, action="修复"
+        )
+        if not isinstance(doctor_receipt_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", doctor_receipt_sha256
+        ) is None:
+            raise ValueError("doctor_receipt_sha256 must be a SHA-256 digest")
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            reference,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        doctor = self.design_jobs.doctor(
+            job_id=resolved_job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        if doctor.get("authoritative_revision") != revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        if doctor.get("receipt_sha256") != doctor_receipt_sha256:
+            raise JobFailure(
+                "JOB_DOCTOR_RECEIPT_MISMATCH",
+                "doctor receipt does not match the authorized Job state",
+            )
+        return self._job_manifest_response(
+            self.design_jobs.repair(
+                job_id=resolved_job_id,
+                organization_id=organization,
+                design_group_id=group,
+                actor_id=self.settings.actor_id,
+                expected_revision=revision,
+            )
+        )
 
     def system_status(self) -> dict[str, Any]:
         try:

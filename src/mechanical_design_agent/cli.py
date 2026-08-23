@@ -11,6 +11,7 @@ from .bootstrap_runtime import BootstrapRuntime
 from .config import Settings
 from .database_bootstrap import bootstrap_databases
 from .migrations import postgres_migrations_directory
+from .jobs import JobFailure
 from .repository import PostgresRepository
 from .service import MechanicalDesignService
 from .smoke import run_test_fixture
@@ -51,6 +52,7 @@ CLI_CAPABILITIES = {
     "project": "projection",
     "rebuild-projection": "projection",
     "smoke-fixture": "model_validation",
+    "job": "design_job_workspace",
 }
 
 
@@ -81,6 +83,30 @@ def _print_result(value: dict[str, object]) -> None:
     exit_code = exit_code_for_status(_result_status(value))
     if exit_code:
         raise SystemExit(exit_code)
+
+
+def _job_binding(args: argparse.Namespace) -> str:
+    """Use only an explicit CLI binding or this process's environment binding."""
+    explicit = getattr(args, "job", "")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    process_value = os.environ.get("MECH_DESIGN_JOB_ID", "").strip()
+    if process_value:
+        return process_value
+    raise JobFailure(
+        "JOB_ID_REQUIRED",
+        "--job or process-scoped MECH_DESIGN_JOB_ID is required",
+    )
+
+
+def _job_error(error: Exception) -> dict[str, object]:
+    return {
+        "schema_version": "MechanicalDesignJobError/v1",
+        "status": "blocked",
+        "code": getattr(error, "code", "JOB_INPUT_INVALID"),
+        "message": getattr(error, "message", str(error)),
+        "candidates": [],
+    }
 
 
 def main() -> None:
@@ -157,6 +183,63 @@ def main() -> None:
     smoke = sub.add_parser("smoke-fixture")
     _add_bootstrap_args(smoke)
     smoke.add_argument("--source", required=True)
+    job = sub.add_parser("job")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+
+    job_create = job_sub.add_parser("create")
+    _add_bootstrap_args(job_create)
+    job_create.add_argument("--job-type", required=True)
+    job_create.add_argument("--title", required=True)
+    job_create.add_argument("--organization-id", required=True)
+    job_create.add_argument("--design-group-id", required=True)
+    job_create.add_argument("--family-id", default="")
+    job_create.add_argument("--idempotency-token", required=True)
+
+    job_list = job_sub.add_parser("list")
+    _add_bootstrap_args(job_list)
+    job_list.add_argument("--status", default="")
+    job_list.add_argument("--job-type", default="")
+    job_list.add_argument("--family-id", default="")
+
+    job_status = job_sub.add_parser("status")
+    _add_bootstrap_args(job_status)
+    job_status.add_argument("--job", default="")
+
+    job_resolve = job_sub.add_parser("resolve")
+    _add_bootstrap_args(job_resolve)
+    job_resolve.add_argument("--query", required=True)
+    job_resolve.add_argument("--job-type", default="")
+    job_resolve.add_argument("--family-id", default="")
+    job_resolve.add_argument("--status", dest="job_statuses", action="append", default=[])
+
+    job_close = job_sub.add_parser("close")
+    _add_bootstrap_args(job_close)
+    job_close.add_argument("--job", default="")
+    job_close.add_argument("--expected-revision", type=int, required=True)
+    job_close.add_argument("--status", required=True)
+    job_close.add_argument("--phase", required=True)
+    job_close.add_argument("--reason", required=True)
+    job_close.add_argument("--confirmation", required=True)
+
+    job_reopen = job_sub.add_parser("reopen")
+    _add_bootstrap_args(job_reopen)
+    job_reopen.add_argument("--job", default="")
+    job_reopen.add_argument("--expected-revision", type=int, required=True)
+    job_reopen.add_argument("--phase", required=True)
+    job_reopen.add_argument("--reason", required=True)
+    job_reopen.add_argument("--confirmation", required=True)
+
+    job_doctor = job_sub.add_parser("doctor")
+    _add_bootstrap_args(job_doctor)
+    job_doctor.add_argument("--job", default="")
+
+    job_repair = job_sub.add_parser("repair")
+    _add_bootstrap_args(job_repair)
+    job_repair.add_argument("--job", default="")
+    job_repair.add_argument("--expected-revision", type=int, required=True)
+    job_repair.add_argument("--doctor-receipt-sha256", required=True)
+    job_repair.add_argument("--reason", required=True)
+    job_repair.add_argument("--confirmation", required=True)
     args = parser.parse_args()
     if args.command == "smoke-fixture":
         args.source = str(_validate_smoke_source(parser, args.source))
@@ -312,6 +395,69 @@ def main() -> None:
         _print(run_test_fixture(settings, args.source))
         return
     service = MechanicalDesignService(settings)
+    if args.command == "job":
+        try:
+            if args.job_command == "create":
+                result = service.design_job_create(
+                    job_type=args.job_type,
+                    title=args.title,
+                    organization_id=args.organization_id,
+                    design_group_id=args.design_group_id,
+                    family_id=args.family_id or None,
+                    idempotency_token=args.idempotency_token,
+                )
+            elif args.job_command == "list":
+                result = service.design_job_list(
+                    status=args.status or None,
+                    job_type=args.job_type or None,
+                    family_id=args.family_id or None,
+                )
+            elif args.job_command == "resolve":
+                result = service.design_job_resolve(
+                    query=args.query,
+                    job_type=args.job_type or None,
+                    family_id=args.family_id or None,
+                    statuses=tuple(args.job_statuses or ("active", "blocked")),
+                )
+            else:
+                job_id = _job_binding(args)
+                if args.job_command == "status":
+                    result = service.design_job_get(job_id)
+                elif args.job_command == "close":
+                    result = service.design_job_close(
+                        job_id=job_id,
+                        expected_revision=args.expected_revision,
+                        status=args.status,
+                        phase=args.phase,
+                        reason=args.reason,
+                        confirmation=args.confirmation,
+                    )
+                elif args.job_command == "reopen":
+                    result = service.design_job_reopen(
+                        job_id=job_id,
+                        expected_revision=args.expected_revision,
+                        phase=args.phase,
+                        reason=args.reason,
+                        confirmation=args.confirmation,
+                    )
+                elif args.job_command == "doctor":
+                    result = service.design_job_doctor(job_id)
+                else:
+                    result = service.design_job_repair(
+                        job_id=job_id,
+                        expected_revision=args.expected_revision,
+                        doctor_receipt_sha256=args.doctor_receipt_sha256,
+                        reason=args.reason,
+                        confirmation=args.confirmation,
+                    )
+        except (JobFailure, ValueError, PermissionError) as exc:
+            _print_result(_job_error(exc))
+            return
+        if args.job_command == "doctor":
+            _print_result(result)
+        else:
+            _print(result)
+        return
     if args.command == "status":
         _print(service.system_status())
     elif args.command == "bootstrap":

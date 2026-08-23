@@ -140,6 +140,12 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "library_register": _capability("library_ingest"),
         "library_scan": _capability("library_ingest"),
         "library_ingest_changes": _capability("library_ingest"),
+        "design_job_create": _capability("design_job_workspace"),
+        "design_job_list": _capability("design_job_workspace"),
+        "design_job_get": _capability("design_job_workspace"),
+        "design_job_resolve": _capability("design_job_workspace"),
+        "design_job_close": _capability("design_job_workspace"),
+        "design_job_reopen": _capability("design_job_workspace"),
         "job_get": _capability("library_ingest"),
         "model_get_analysis": _capability("library_ingest"),
         "model_identity_confirm": _capability("library_ingest"),
@@ -575,6 +581,107 @@ def create_mcp(
                 library_id,
                 wait_for_completion,
                 reanalyze,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_create(
+        job_type: str,
+        title: str,
+        organization_id: str,
+        design_group_id: str,
+        idempotency_token: str,
+        family_id: str = "",
+    ) -> str:
+        """Create one scoped Design Job. Product operations do not create a Git worktree."""
+        return _json(
+            service.design_job_create(
+                job_type=job_type,
+                title=title,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                idempotency_token=idempotency_token,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_list(
+        status: str = "",
+        job_type: str = "",
+        family_id: str = "",
+    ) -> str:
+        """List authorized Design Jobs. Product operations do not create a Git worktree."""
+        return _json(
+            service.design_job_list(
+                status=status or None,
+                job_type=job_type or None,
+                family_id=family_id or None,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_get(job_id: str) -> str:
+        """Read one Job UUID/display ID, never a filesystem path. Product operations do not create a Git worktree."""
+        return _json(service.design_job_get(job_id))
+
+    @mcp.tool()
+    def design_job_resolve(
+        query: str,
+        job_type: str = "",
+        family_id: str = "",
+        statuses_json: str = '["active", "blocked"]',
+    ) -> str:
+        """Return all authorized Job candidates without choosing one. Product operations do not create a Git worktree."""
+        statuses = _array(statuses_json, "statuses_json")
+        if not all(isinstance(item, str) for item in statuses):
+            raise ValueError("statuses_json must contain only status strings")
+        return _json(
+            service.design_job_resolve(
+                query=query,
+                job_type=job_type or None,
+                family_id=family_id or None,
+                statuses=tuple(statuses),
+            )
+        )
+
+    @mcp.tool()
+    def design_job_close(
+        job_id: str,
+        expected_revision: int,
+        status: str,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> str:
+        """Close a Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
+        return _json(
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=expected_revision,
+                status=status,
+                phase=phase,
+                reason=reason,
+                confirmation=confirmation,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_reopen(
+        job_id: str,
+        expected_revision: int,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> str:
+        """Reopen a terminal Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
+        return _json(
+            service.design_job_reopen(
+                job_id=job_id,
+                expected_revision=expected_revision,
+                phase=phase,
+                reason=reason,
+                confirmation=confirmation,
             )
         )
 

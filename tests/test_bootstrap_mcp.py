@@ -65,6 +65,12 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "library_register": request("library_ingest"),
     "library_scan": request("library_ingest"),
     "library_ingest_changes": request("library_ingest"),
+    "design_job_create": request("design_job_workspace"),
+    "design_job_list": request("design_job_workspace"),
+    "design_job_get": request("design_job_workspace"),
+    "design_job_resolve": request("design_job_workspace"),
+    "design_job_close": request("design_job_workspace"),
+    "design_job_reopen": request("design_job_workspace"),
     "job_get": request("library_ingest"),
     "model_get_analysis": request("library_ingest"),
     "model_identity_confirm": request("library_ingest"),
@@ -407,6 +413,73 @@ def test_injected_service_bypasses_bootstrap_for_existing_boundary_tests(
         )
     )
     assert result == {"family_id": "family-001"}
+
+
+def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identity(
+    tmp_path: Path,
+) -> None:
+    class JobService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def design_job_create(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("create", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": "job-1"}
+
+        def design_job_list(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("list", kwargs))
+            return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
+
+        def design_job_get(self, job_id: str) -> dict[str, object]:
+            self.calls.append(("get", {"job_id": job_id}))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": job_id}
+
+        def design_job_resolve(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("resolve", kwargs))
+            return {"schema_version": "MechanicalDesignJobResolution/v1", "candidates": []}
+
+        def design_job_close(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("close", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"]}
+
+        def design_job_reopen(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("reopen", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"]}
+
+    service = JobService()
+    mcp = create_mcp(
+        service=service,
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    names = {
+        "design_job_create",
+        "design_job_list",
+        "design_job_get",
+        "design_job_resolve",
+        "design_job_close",
+        "design_job_reopen",
+    }
+
+    assert names <= set(mcp._tool_manager._tools)
+    assert not {"design_job_doctor", "design_job_repair"} & set(mcp._tool_manager._tools)
+    for name in names:
+        description = mcp._tool_manager._tools[name].description
+        assert "do not create a Git worktree" in description
+    created = json.loads(
+        tool(mcp, "design_job_create")(
+            "mechanical_design",
+            "Pump design",
+            "org-001",
+            "group-001",
+            "job-create-001",
+            "",
+        )
+    )
+    resolved = json.loads(tool(mcp, "design_job_resolve")("pump"))
+
+    assert created["schema_version"] == "MechanicalDesignJob/v1"
+    assert resolved["candidates"] == []
+    assert "path" not in tool(mcp, "design_job_get").__annotations__
 
 
 def test_unmapped_proxy_member_is_blocked_without_constructing_service(

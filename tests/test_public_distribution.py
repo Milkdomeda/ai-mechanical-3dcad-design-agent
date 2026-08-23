@@ -43,6 +43,12 @@ EXPECTED_MCP_TOOL_NAMES = {
     "design_context_build",
     "design_delivery_approve",
     "design_group_register",
+    "design_job_close",
+    "design_job_create",
+    "design_job_get",
+    "design_job_list",
+    "design_job_reopen",
+    "design_job_resolve",
     "design_knowledge_retrieve",
     "design_lesson_approve",
     "design_lesson_audit_get",
@@ -112,6 +118,7 @@ CLEAN_ENVIRONMENT_KEYS = {
     "MECH_DESIGN_FREECADCMD",
     "MECH_DESIGN_ARTIFACT_ROOT",
     "MECH_DESIGN_PRODUCT_FAMILY_ID",
+    "MECH_DESIGN_JOB_ID",
     "MECH_DESIGN_FAMILY_CONFIG",
 }
 

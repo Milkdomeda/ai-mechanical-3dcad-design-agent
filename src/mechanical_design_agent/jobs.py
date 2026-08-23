@@ -785,12 +785,15 @@ class DesignJobManager:
         organization_id: str,
         design_group_id: str,
         actor_id: str,
+        expected_revision: int | None = None,
     ) -> DesignJobManifest:
         self._validate_row_scope(
             row,
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
+        if expected_revision is not None and row.get("revision") != expected_revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
         provisioning_state = row.get("provisioning_state")
         if provisioning_state == "ready":
             try:
@@ -853,6 +856,13 @@ class DesignJobManager:
                     directory_name=directory_name,
                     allow_unrecorded=True,
                 )
+                if (
+                    expected_revision is not None
+                    and fresh.get("revision") != expected_revision
+                ):
+                    raise JobFailure(
+                        "JOB_STALE_REVISION", "expected Job revision is stale"
+                    )
                 if fresh.get("provisioning_state") != "provisioning":
                     raise JobFailure(
                         "JOB_PROVISIONING_CONFLICT",
@@ -888,6 +898,11 @@ class DesignJobManager:
                 directory_name=directory_name,
                 allow_unrecorded=True,
             )
+            if (
+                expected_revision is not None
+                and fresh.get("revision") != expected_revision
+            ):
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
             self._assert_provisioning_identity(
                 locked_final, row=fresh, directory_name=directory_name
             )
@@ -1178,14 +1193,21 @@ class DesignJobManager:
             job_type=job_type,
             family_id=family_id,
         )
-        return [
-            self._read_ready_manifest_under_lock(
-                row=row,
+        manifests: list[DesignJobManifest] = []
+        for row in rows:
+            self._validate_row_scope(
+                row,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
             )
-            for row in rows
-        ]
+            manifests.append(
+                self._read_ready_manifest_under_lock(
+                    row=row,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+            )
+        return manifests
 
     def resolve(
         self,
@@ -1205,14 +1227,21 @@ class DesignJobManager:
             family_id=family_id,
             statuses=statuses,
         )
-        return [
-            self._read_ready_manifest_under_lock(
-                row=row,
+        manifests: list[DesignJobManifest] = []
+        for row in rows:
+            self._validate_row_scope(
+                row,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
             )
-            for row in rows
-        ]
+            manifests.append(
+                self._read_ready_manifest_under_lock(
+                    row=row,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+            )
+        return manifests
 
     def _transition(
         self,
@@ -1498,12 +1527,21 @@ class DesignJobManager:
         organization_id: str,
         design_group_id: str,
         actor_id: str,
+        expected_revision: int | None = None,
     ) -> DesignJobManifest:
         row = self._get_authoritative_row(
             job_id=job_id,
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
+        if expected_revision is not None:
+            if type(expected_revision) is not int or expected_revision < 0:
+                raise JobFailure(
+                    "JOB_INPUT_INVALID",
+                    "expected_revision must be a non-negative integer",
+                )
+            if row.get("revision") != expected_revision:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
         if row.get("provisioning_state") == "provisioning":
             with self._locked_jobs_root() as jobs_root:
                 return self._finish_provisioning(
@@ -1512,6 +1550,7 @@ class DesignJobManager:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                     actor_id=actor_id,
+                    expected_revision=expected_revision,
                 )
         root = self._final_path(row)
         with locked_job_root(job_root=root) as locked:
@@ -1523,6 +1562,11 @@ class DesignJobManager:
                 directory_name=str(row["directory_name"]),
                 allow_unrecorded=False,
             )
+            if (
+                expected_revision is not None
+                and fresh.get("revision") != expected_revision
+            ):
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
             if self._directory_contract_issues(locked):
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",

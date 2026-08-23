@@ -60,6 +60,14 @@ EXPECTED_CAPABILITIES = {
         "actor_identity",
         "postgresql",
     ),
+    "design_job_workspace": (
+        "workspace_selection",
+        "workspace_manifest",
+        "actor_identity",
+        "postgresql",
+        "product_family",
+        "package_resources",
+    ),
     "library_ingest": (
         "workspace_selection",
         "workspace_manifest",

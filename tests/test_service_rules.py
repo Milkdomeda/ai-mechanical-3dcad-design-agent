@@ -20,6 +20,7 @@ from mechanical_design_agent.artifacts import ArtifactStore
 from mechanical_design_agent.design import DesignWorkspace
 from mechanical_design_agent.design_lessons import DesignLessonStagingStore
 from mechanical_design_agent.hashing import file_sha256
+from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.server import build_server, create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
 
@@ -1589,6 +1590,193 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
                 )
             ],
         )
+
+class _JobManifestForService:
+    def __init__(self, job_id: str = "00000000-0000-4000-8000-000000000401") -> None:
+        self.job_id = job_id
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "MechanicalDesignJob/v1",
+            "job_id": self.job_id,
+            "display_id": "JOB-20260823-401",
+            "title": "Authorized pump",
+            "revision": 4,
+        }
+
+
+class _JobManagerForService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.manifest = _JobManifestForService()
+
+    def create(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("create", kwargs))
+        return self.manifest
+
+    def get(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("get", kwargs))
+        return self.manifest
+
+    def list(self, **kwargs: object) -> list[_JobManifestForService]:
+        self.calls.append(("list", kwargs))
+        return [self.manifest]
+
+    def resolve(self, **kwargs: object) -> list[_JobManifestForService]:
+        self.calls.append(("resolve", kwargs))
+        return [self.manifest]
+
+    def close(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("close", kwargs))
+        return self.manifest
+
+    def reopen(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("reopen", kwargs))
+        return self.manifest
+
+    def doctor(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("doctor", kwargs))
+        return {
+            "schema_version": "MechanicalDesignJobDoctor/v1",
+            "job_id": self.manifest.job_id,
+            "authoritative_revision": 4,
+            "receipt_sha256": "a" * 64,
+            "status": "blocked",
+            "issues": [],
+        }
+
+    def repair(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("repair", kwargs))
+        return self.manifest
+
+
+class ServiceDesignJobFacadeTests(unittest.TestCase):
+    def _service(self, manager: _JobManagerForService | None = None) -> MechanicalDesignService:
+        service = MechanicalDesignService.__new__(MechanicalDesignService)
+        service.settings = SimpleNamespace(actor_id="configured-actor")
+        service.bootstrap_config = {
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+        }
+        service.design_jobs = manager or _JobManagerForService()
+        service._require_database = lambda: None
+        return service
+
+    def test_design_job_create_uses_only_configured_scope_and_actor(self) -> None:
+        service = self._service()
+
+        result = service.design_job_create(
+            job_type="mechanical_design",
+            title="Pump design",
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id="family-001",
+            idempotency_token="job-create-001",
+        )
+
+        self.assertEqual(result["schema_version"], "MechanicalDesignJob/v1")
+        name, call = service.design_jobs.calls[-1]
+        self.assertEqual(name, "create")
+        self.assertEqual(call["organization_id"], "org-configured")
+        self.assertEqual(call["design_group_id"], "group-configured")
+        self.assertEqual(call["actor_id"], "configured-actor")
+        with self.assertRaisesRegex(PermissionError, "configured organization"):
+            service.design_job_create(
+                job_type="mechanical_design",
+                title="Foreign",
+                organization_id="other-org",
+                design_group_id="group-configured",
+                family_id=None,
+                idempotency_token="job-create-foreign",
+            )
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["create"])
+
+    def test_design_job_get_authorizes_before_manifest_access_and_redacts_failure(self) -> None:
+        private_title = "PRIVATE foreign job title"
+
+        class UnauthorizedManager(_JobManagerForService):
+            def get(self, **kwargs: object) -> _JobManifestForService:
+                self.calls.append(("get", kwargs))
+                raise JobFailure(
+                    "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                    "Job identity is unknown or outside the authorized scope",
+                )
+
+        manager = UnauthorizedManager()
+        service = self._service(manager)
+        with self.assertRaises(JobFailure) as captured:
+            service.design_job_get("00000000-0000-4000-8000-000000000499")
+
+        self.assertNotIn(private_title, str(captured.exception))
+        self.assertEqual([name for name, _ in manager.calls], ["get"])
+        self.assertEqual(manager.calls[0][1]["organization_id"], "org-configured")
+        with self.assertRaisesRegex(ValueError, "filesystem path"):
+            service.design_job_get("../private/job.json")
+        self.assertEqual([name for name, _ in manager.calls], ["get"])
+
+    def test_design_job_resolve_returns_candidates_without_selecting_one(self) -> None:
+        service = self._service()
+
+        result = service.design_job_resolve(query="pump")
+
+        self.assertEqual(result["schema_version"], "MechanicalDesignJobResolution/v1")
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(service.design_jobs.calls[-1][0], "resolve")
+
+    def test_close_reopen_and_repair_require_revision_reason_and_user_confirmation(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        with self.assertRaisesRegex(ValueError, "reason"):
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=4,
+                status="completed",
+                phase="completed",
+                reason=" ",
+                confirmation=f"关闭 {job_id}",
+            )
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=4,
+                status="completed",
+                phase="completed",
+                reason="delivered",
+                confirmation=f"重开 {job_id}",
+            )
+        self.assertEqual(service.design_jobs.calls, [])
+
+        closed = service.design_job_close(
+            job_id=job_id,
+            expected_revision=4,
+            status="completed",
+            phase="completed",
+            reason="delivered",
+            confirmation=f"关闭 {job_id}",
+        )
+        reopened = service.design_job_reopen(
+            job_id=job_id,
+            expected_revision=4,
+            phase="requirements",
+            reason="follow-up",
+            confirmation=f"重开 {job_id}",
+        )
+        repaired = service.design_job_repair(
+            job_id=job_id,
+            expected_revision=4,
+            doctor_receipt_sha256="a" * 64,
+            reason="republish manifest",
+            confirmation=f"修复 {job_id}",
+        )
+
+        self.assertEqual(closed["schema_version"], "MechanicalDesignJob/v1")
+        self.assertEqual(reopened["schema_version"], "MechanicalDesignJob/v1")
+        self.assertEqual(repaired["schema_version"], "MechanicalDesignJob/v1")
+        repair = [item for item in service.design_jobs.calls if item[0] == "repair"]
+        self.assertEqual(repair[0][1]["expected_revision"], 4)
+        self.assertEqual([name for name, _ in service.design_jobs.calls], [
+            "close", "reopen", "doctor", "repair"
+        ])
 
 
 if __name__ == "__main__":
