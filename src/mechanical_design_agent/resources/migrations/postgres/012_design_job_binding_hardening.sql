@@ -7,6 +7,92 @@ ALTER TABLE design_working_copies
 DO $$
 BEGIN
     IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_jobs_id_scope_unique_v2'
+          AND conrelid = 'public.design_jobs'::regclass
+    ) THEN
+        ALTER TABLE public.design_jobs
+            ADD CONSTRAINT design_jobs_id_scope_unique_v2
+            UNIQUE(id,organization_id,design_group_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'model_revisions_id_scope_unique_v2'
+          AND conrelid = 'public.model_revisions'::regclass
+    ) THEN
+        ALTER TABLE public.model_revisions
+            ADD CONSTRAINT model_revisions_id_scope_unique_v2
+            UNIQUE(id,organization_id,design_group_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_working_copies_id_job_scope_unique_v2'
+          AND conrelid = 'public.design_working_copies'::regclass
+    ) THEN
+        ALTER TABLE public.design_working_copies
+            ADD CONSTRAINT design_working_copies_id_job_scope_unique_v2
+            UNIQUE(id,job_id,organization_id,design_group_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_working_copies_job_scope_fk_v2'
+          AND conrelid = 'public.design_working_copies'::regclass
+    ) THEN
+        ALTER TABLE public.design_working_copies
+            ADD CONSTRAINT design_working_copies_job_scope_fk_v2
+            FOREIGN KEY (job_id,organization_id,design_group_id)
+            REFERENCES public.design_jobs(id,organization_id,design_group_id)
+            NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_working_copies_model_scope_fk_v2'
+          AND conrelid = 'public.design_working_copies'::regclass
+    ) THEN
+        ALTER TABLE public.design_working_copies
+            ADD CONSTRAINT design_working_copies_model_scope_fk_v2
+            FOREIGN KEY (source_model_revision_id,organization_id,design_group_id)
+            REFERENCES public.model_revisions(id,organization_id,design_group_id)
+            NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_working_copies_family_scope_fk_v2'
+          AND conrelid = 'public.design_working_copies'::regclass
+    ) THEN
+        ALTER TABLE public.design_working_copies
+            ADD CONSTRAINT design_working_copies_family_scope_fk_v2
+            FOREIGN KEY (family_id,organization_id,design_group_id)
+            REFERENCES public.product_families(id,organization_id,design_group_id)
+            NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_working_copies_creator_scope_fk_v2'
+          AND conrelid = 'public.design_working_copies'::regclass
+    ) THEN
+        ALTER TABLE public.design_working_copies
+            ADD CONSTRAINT design_working_copies_creator_scope_fk_v2
+            FOREIGN KEY (created_by,organization_id)
+            REFERENCES public.actors(id,organization_id)
+            NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conname = 'design_jobs_active_working_copy_scope_fk_v2'
+          AND conrelid = 'public.design_jobs'::regclass
+    ) THEN
+        ALTER TABLE public.design_jobs
+            ADD CONSTRAINT design_jobs_active_working_copy_scope_fk_v2
+            FOREIGN KEY (active_working_copy_id,id,organization_id,design_group_id)
+            REFERENCES public.design_working_copies(id,job_id,organization_id,design_group_id)
+            NOT VALID;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_constraint
         WHERE conname = 'design_job_source_snapshots_binding_scope_unique'
@@ -104,7 +190,16 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF OLD.job_id IS NOT NULL THEN
+    IF OLD.job_id IS NULL THEN
+        IF OLD.job_id IS DISTINCT FROM NEW.job_id
+           OR OLD.source_snapshot_id IS DISTINCT FROM NEW.source_snapshot_id
+           OR OLD.bound_job_revision IS DISTINCT FROM NEW.bound_job_revision
+           OR OLD.source_model_revision_id IS DISTINCT FROM NEW.source_model_revision_id
+           OR OLD.source_sha256 IS DISTINCT FROM NEW.source_sha256
+           OR OLD.design_origin IS DISTINCT FROM NEW.design_origin THEN
+            RAISE EXCEPTION 'legacy working-copy Job binding is immutable';
+        END IF;
+    ELSE
         IF OLD.job_id IS DISTINCT FROM NEW.job_id
            OR OLD.source_snapshot_id IS DISTINCT FROM NEW.source_snapshot_id
            OR OLD.bound_job_revision IS DISTINCT FROM NEW.bound_job_revision
@@ -113,14 +208,6 @@ BEGIN
            OR OLD.design_origin IS DISTINCT FROM NEW.design_origin THEN
             RAISE EXCEPTION 'governed working-copy Job and source binding are immutable';
         END IF;
-    ELSIF NEW.job_id IS NOT NULL AND coalesce(
-        current_setting(
-            'mechanical_design.allow_legacy_working_copy_binding',
-            true
-        ),
-        'off'
-    ) <> 'on' THEN
-        RAISE EXCEPTION 'legacy working-copy Job binding requires the dedicated migration path';
     END IF;
     RETURN NEW;
 END;

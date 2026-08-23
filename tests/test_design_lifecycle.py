@@ -616,6 +616,23 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 reason="create a later immutable working revision",
             )
             self.assertIsNone(reopened["active_working_copy_id"])
+            proven_absent_id = str(uuid.uuid4())
+            proven_absent = repository.reconcile_job_working_copy_publication(
+                job_id=job_id,
+                expected_job_revision=int(reopened["revision"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=None,
+                working_copy_id=proven_absent_id,
+                model_revision_id=None,
+                source_sha256=None,
+                source_kind="new_design_seed",
+                design_origin="new_design",
+                working_path=f"models/working/{proven_absent_id}/working.FCStd",
+                actor_id=actor_id,
+                source_snapshot=None,
+            )
+            self.assertEqual(proven_absent, {"status": "not_committed"})
             later = repository.create_job_working_copy(
                 job_id=job_id,
                 expected_job_revision=int(reopened["revision"]),
@@ -647,14 +664,14 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 design_origin="new_design",
                 working_path=f"models/working/{working_ids[2]}/working.FCStd",
                 actor_id=actor_id,
-                source_snapshot_id=None,
+                source_snapshot=None,
             )
             self.assertEqual(reconciled["status"], "committed")
             self.assertEqual(
                 str(reconciled["publication"]["working_copy"]["id"]),
                 working_ids[2],
             )
-            absent = repository.reconcile_job_working_copy_publication(
+            mismatched = repository.reconcile_job_working_copy_publication(
                 job_id=job_id,
                 expected_job_revision=int(reopened["revision"]),
                 organization_id=organization_id,
@@ -667,9 +684,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 design_origin="new_design",
                 working_path="models/working/absent/working.FCStd",
                 actor_id=actor_id,
-                source_snapshot_id=None,
+                source_snapshot=None,
             )
-            self.assertEqual(absent, {"status": "not_committed"})
+            self.assertEqual(mismatched, {"status": "unknown"})
             with self.assertRaisesRegex(ValueError, "already has an active"):
                 repository.create_job_working_copy(
                     job_id=job_id,

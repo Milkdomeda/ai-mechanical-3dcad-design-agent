@@ -1,28 +1,26 @@
-"""Reopen, recompute, and validate one controlled FCStd working copy."""
+"""Reopen and validate a host-inspected FCStd through nonce-bound stdout."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
 
-def validate(input_path, receipt_path):
+_PREFIX = "MECHANICAL_DESIGN_FCSTD_VALIDATION_V1 "
+
+
+def validate(input_path, nonce):
     import FreeCAD as App
 
     source = Path(input_path).expanduser().resolve(strict=True)
-    receipt = Path(os.path.abspath(Path(receipt_path).expanduser()))
-    if source.suffix.casefold() != ".fcstd":
-        raise ValueError("working-copy input must be FCStd")
-    if source.stat().st_size <= 0:
-        raise ValueError("working-copy FCStd must not be empty")
-    if receipt.exists():
-        raise FileExistsError(receipt)
-    if receipt.parent != source.parent:
-        raise ValueError("validation receipt must share the controlled working directory")
+    if source.suffix.casefold() != ".fcstd" or source.stat().st_size <= 0:
+        raise ValueError("working-copy input must be a nonempty FCStd")
+    if not isinstance(nonce, str) or len(nonce) < 32:
+        raise ValueError("Agent validation nonce is invalid")
     before = hashlib.sha256(source.read_bytes()).hexdigest()
+    before_size = source.stat().st_size
     document = App.openDocument(str(source), hidden=True)
     try:
         recompute_result = document.recompute()
@@ -37,23 +35,27 @@ def validate(input_path, receipt_path):
         if invalid_objects:
             raise ValueError("working-copy document contains invalid objects")
         after = hashlib.sha256(source.read_bytes()).hexdigest()
-        if after != before:
+        if after != before or source.stat().st_size != before_size:
             raise RuntimeError("working-copy FCStd changed during validation")
         payload = {
-            "schema_version": "MechanicalDesignWorkingCopyValidation/v1",
+            "schema_version": "MechanicalDesignWorkingCopyValidation/v2",
             "status": "valid",
+            "nonce": nonce,
             "sha256": before,
-            "size_bytes": source.stat().st_size,
+            "size_bytes": before_size,
             "document_name": str(document.Name),
             "object_count": len(document.Objects),
             "recomputed": recompute_result is not False,
         }
-        temporary = receipt.with_name(f".{receipt.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
-            encoding="utf-8",
+        print(
+            _PREFIX
+            + json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         )
-        os.replace(temporary, receipt)
         return payload
     finally:
         App.closeDocument(document.Name)
@@ -61,5 +63,5 @@ def validate(input_path, receipt_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        raise SystemExit("usage: validate_working_copy.py INPUT RECEIPT")
+        raise SystemExit("usage: validate_working_copy.py INPUT AGENT_NONCE")
     validate(sys.argv[-2], sys.argv[-1])

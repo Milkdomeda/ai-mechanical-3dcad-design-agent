@@ -2890,12 +2890,12 @@ class PostgresRepository:
         family_id: str | None,
         working_copy_id: str,
         model_revision_id: str | None,
-        source_sha256: str,
+        source_sha256: str | None,
         source_kind: str,
         design_origin: str,
         working_path: str,
         actor_id: str,
-        source_snapshot_id: str | None,
+        source_snapshot: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Reconcile a commit-ambiguous Job binding on a fresh scoped connection."""
         with self.connection() as connection:
@@ -2913,6 +2913,11 @@ class PostgresRepository:
                 "AND organization_id=%s AND design_group_id=%s",
                 (working_copy_id, job_id, organization_id, design_group_id),
             ).fetchone()
+            source_snapshot_id = (
+                str(source_snapshot["id"])
+                if isinstance(source_snapshot, dict) and source_snapshot.get("id")
+                else None
+            )
             snapshot = None
             if source_snapshot_id is not None:
                 snapshot = connection.execute(
@@ -2925,10 +2930,14 @@ class PostgresRepository:
                         design_group_id,
                     ),
                 ).fetchone()
+            event = connection.execute(
+                "SELECT * FROM design_job_events WHERE job_id=%s AND revision=%s",
+                (job_id, expected_job_revision + 1),
+            ).fetchone()
 
-            if working is None and snapshot is None:
+            if working is None and snapshot is None and event is None:
                 return {"status": "not_committed"}
-            if working is None or (
+            if working is None or event is None or (
                 source_snapshot_id is not None and snapshot is None
             ):
                 return {"status": "unknown"}
@@ -2952,7 +2961,13 @@ class PostgresRepository:
                 == source_snapshot_id
                 and int(working.get("bound_job_revision"))
                 == expected_job_revision
-                and working.get("source_sha256") == source_sha256
+                and (
+                    working.get("source_sha256") == source_sha256
+                    if source_sha256 is not None
+                    else isinstance(working.get("source_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", working["source_sha256"])
+                    is not None
+                )
                 and working.get("source_kind") == source_kind
                 and working.get("design_origin") == design_origin
                 and working.get("working_path") == working_path
@@ -2961,8 +2976,12 @@ class PostgresRepository:
             exact_job = (
                 str(job.get("active_working_copy_id")) == working_copy_id
                 and int(job.get("revision")) == expected_job_revision + 1
+                and job.get("job_type") == "mechanical_design"
+                and job.get("status") == "active"
+                and job.get("provisioning_state") == "ready"
+                and job.get("family_id") == family_id
             )
-            exact_snapshot = source_snapshot_id is None or (
+            exact_snapshot = source_snapshot is None or (
                 snapshot is not None
                 and str(snapshot.get("id")) == source_snapshot_id
                 and str(snapshot.get("job_id")) == job_id
@@ -2974,10 +2993,28 @@ class PostgresRepository:
                     else None
                 )
                 == model_revision_id
-                and snapshot.get("sha256") == source_sha256
+                and snapshot.get("source_filename")
+                == source_snapshot.get("source_filename")
+                and snapshot.get("stored_path") == source_snapshot.get("stored_path")
+                and int(snapshot.get("size_bytes"))
+                == int(source_snapshot.get("size_bytes"))
+                and snapshot.get("source_kind") == source_snapshot.get("source_kind")
+                and snapshot.get("sha256") == source_snapshot.get("sha256")
                 and snapshot.get("created_by") == actor_id
             )
-            if not (exact_working and exact_job and exact_snapshot):
+            exact_event = (
+                str(event.get("job_id")) == job_id
+                and int(event.get("revision")) == expected_job_revision + 1
+                and event.get("event_type") == "working_copy_bound"
+                and event.get("actor_id") == actor_id
+                and event.get("reason") == f"bound working copy {working_copy_id}"
+                and event.get("status") == job.get("status")
+                and event.get("phase") == job.get("phase")
+                and event.get("provisioning_state") == job.get("provisioning_state")
+                and event.get("directory_name") == job.get("directory_name")
+                and event.get("blocked_reason") == job.get("blocked_reason")
+            )
+            if not (exact_working and exact_job and exact_snapshot and exact_event):
                 return {"status": "unknown"}
             return {
                 "status": "committed",

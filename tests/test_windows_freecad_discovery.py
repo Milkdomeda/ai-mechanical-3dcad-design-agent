@@ -32,7 +32,7 @@ def candidate(
     *,
     volume: int,
     index: int,
-    version: str = "1.1.1",
+    version: str = "1.1.3",
 ) -> FreeCADCandidate:
     return FreeCADCandidate(
         path=path,
@@ -62,9 +62,9 @@ def test_registry_discovery_is_limited_to_the_three_approved_uninstall_roots() -
     )
 
 
-def test_certified_versions_are_an_explicit_two_version_allowlist() -> None:
-    assert CERTIFIED_FREECADCMD_VERSIONS == frozenset({"1.1.1", "1.1.3"})
-    assert "1.1.2" not in CERTIFIED_FREECADCMD_VERSIONS
+def test_certified_versions_require_exactly_the_release_approved_version() -> None:
+    assert CERTIFIED_FREECADCMD_VERSIONS == frozenset({"1.1.3"})
+    assert {"1.1.1", "1.1.2"}.isdisjoint(CERTIFIED_FREECADCMD_VERSIONS)
 
 
 def test_discovery_is_bounded_and_registry_names_are_filtered() -> None:
@@ -96,11 +96,6 @@ def test_discovery_is_bounded_and_registry_names_are_filtered() -> None:
 
     assert inspected == [
         (path_executable, "path"),
-        (program_files / "FreeCAD 1.1/bin/FreeCADCmd.exe", "program_files:FreeCAD 1.1"),
-        (
-            program_files / "FreeCAD 1.1.1/bin/FreeCADCmd.exe",
-            "program_files:FreeCAD 1.1.1",
-        ),
         (
             program_files / "FreeCAD 1.1.3/bin/FreeCADCmd.exe",
             "program_files:FreeCAD 1.1.3",
@@ -110,21 +105,21 @@ def test_discovery_is_bounded_and_registry_names_are_filtered() -> None:
     ]
     assert result.conflict is True
     assert result.selected is None
-    assert len(result.candidates) == 6
+    assert len(result.candidates) == 4
 
 
 def test_discovery_deduplicates_aliases_by_file_identity_before_conflict() -> None:
     identity = FileIdentity(volume=7, file_index=99)
 
     def inspect(path: Path, source: str, _run_version) -> FreeCADCandidate:
-        return FreeCADCandidate(path, source, identity, "1.1.1")
+        return FreeCADCandidate(path, source, identity, "1.1.3")
 
     result = discover_freecadcmd(
         environ={"PATH": "one", "ProgramFiles": "C:/Program Files"},
         registry=FakeRegistry(
-            (RegistryEntry("FreeCAD 1.1.1", Path("D:/FreeCAD"), "HKCU"),)
+            (RegistryEntry("FreeCAD 1.1.3", Path("D:/FreeCAD"), "HKCU"),)
         ),
-        run_version=lambda _path: subprocess.CompletedProcess([], 0, "FreeCAD 1.1.1", ""),
+        run_version=lambda _path: subprocess.CompletedProcess([], 0, "FreeCAD 1.1.3", ""),
         find_on_path=lambda _name, _path: "C:/Alias/FreeCADCmd.exe",
         inspect_candidate=inspect,
     )
@@ -137,15 +132,15 @@ def test_discovery_deduplicates_aliases_by_file_identity_before_conflict() -> No
 
 def test_discovery_rejects_invalid_candidates_and_never_selects_by_sort_order() -> None:
     accepted = {
-        Path("C:/Program Files/FreeCAD 1.1/bin/FreeCADCmd.exe"): candidate(
-            Path("C:/Program Files/FreeCAD 1.1/bin/FreeCADCmd.exe"),
-            "program_files:FreeCAD 1.1",
+        Path("C:/Rejected/FreeCADCmd.exe"): candidate(
+            Path("C:/Rejected/FreeCADCmd.exe"),
+            "path",
             volume=1,
             index=1,
         ),
-        Path("C:/Program Files/FreeCAD 1.1.1/bin/FreeCADCmd.exe"): candidate(
-            Path("C:/Program Files/FreeCAD 1.1.1/bin/FreeCADCmd.exe"),
-            "program_files:FreeCAD 1.1.1",
+        Path("C:/Program Files/FreeCAD 1.1.3/bin/FreeCADCmd.exe"): candidate(
+            Path("C:/Program Files/FreeCAD 1.1.3/bin/FreeCADCmd.exe"),
+            "program_files:FreeCAD 1.1.3",
             volume=1,
             index=2,
         ),
@@ -194,11 +189,11 @@ def test_explicit_candidate_requires_absolute_x64_pe_and_parses_version(
         executable,
         source="runtime",
         run_version=lambda path: subprocess.CompletedProcess(
-            [str(path), "--version"], 0, "FreeCAD 1.1.1\n", ""
+            [str(path), "--version"], 0, "FreeCAD 1.1.3\n", ""
         ),
     )
 
-    assert inspected == FreeCADCandidate(executable, "runtime", identity, "1.1.1")
+    assert inspected == FreeCADCandidate(executable, "runtime", identity, "1.1.3")
 
     relative = Path("FreeCADCmd.exe")
     with pytest.raises(FreeCADDiscoveryError, match="absolute"):

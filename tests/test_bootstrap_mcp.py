@@ -8,7 +8,7 @@ import pytest
 
 from mechanical_design_agent import server
 from mechanical_design_agent import service as service_module
-from mechanical_design_agent.bootstrap_diagnostics import CapabilityRequest
+from mechanical_design_agent.bootstrap_diagnostics import CapabilityRequest, DiagnosticGateError
 from mechanical_design_agent.bootstrap_runtime import (
     BootstrapRuntime,
     DoctorProbes,
@@ -19,7 +19,7 @@ from mechanical_design_agent.server import (
     _LazyServiceProxy,
     create_mcp,
 )
-from mechanical_design_agent.config import JobSettings
+from mechanical_design_agent.config import JobCadSettings, JobSettings
 from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
@@ -104,10 +104,10 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_working_copy_create": request("cad_working_copy", "product_family"),
     "design_new_working_copy_create": request("cad_working_copy", "product_family"),
     "design_job_working_copy_create": request(
-        "design_job_workspace", "cad_working_copy"
+        "design_job_workspace", "freecadcmd"
     ),
     "design_job_new_working_copy_create": request(
-        "design_job_workspace", "cad_working_copy"
+        "design_job_workspace", "freecadcmd"
     ),
     "design_change_record": request("cad_working_copy", "product_family"),
     "design_change_review": request("cad_working_copy", "product_family"),
@@ -242,7 +242,10 @@ def test_selected_family_mcp_constructs_normal_service_once(
     calls: list[object] = []
     runtime = BootstrapRuntime.from_process(
         cwd=workspace,
-        environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+        environ={
+            "MECH_DESIGN_DATABASE_URL":
+            "postgresql://user:super-secret@127.0.0.1/configured"
+        },
         probes=DoctorProbes(
             postgresql=lambda value: ProbeResult(available=True),
             neo4j=lambda uri, user, password: ProbeResult(available=True),
@@ -533,6 +536,7 @@ def test_design_job_mcp_uses_the_shared_redacted_error_contract(tmp_path: Path) 
         ("JOB_FCSTD_INVALID", "new"),
         ("JOB_NORMALIZATION_FAILED", "existing"),
         ("JOB_DATABASE_COMMIT_UNKNOWN", "new"),
+        ("JOB_ATTEMPT_RECOVERY_REQUIRED", "new"),
     ),
 )
 def test_job_cad_mcp_exposes_code_specific_redacted_recovery(
@@ -567,6 +571,46 @@ def test_job_cad_mcp_exposes_code_specific_redacted_recovery(
     assert response["next_action"]
     assert response["next_action"] != "Verify the Job reference and authorized scope, then retry."
     assert "customer" not in json.dumps(response)
+
+
+@pytest.mark.parametrize(
+    "tool_name,args",
+    (
+        (
+            "design_working_copy_create",
+            ("private.FCStd", "org-001", "group-001", "", "", "request-001"),
+        ),
+        (
+            "design_new_working_copy_create",
+            ("org-001", "group-001", "", False, "request-001"),
+        ),
+    ),
+)
+def test_deprecated_working_copy_wrappers_use_redacted_typed_job_errors(
+    tmp_path: Path,
+    tool_name: str,
+    args: tuple[object, ...],
+) -> None:
+    class FailingCompatibilityService:
+        def design_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure("JOB_DATABASE_COMMIT_UNKNOWN", "/private/customer model")
+
+        def design_new_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure("JOB_DATABASE_COMMIT_UNKNOWN", "/private/customer model")
+
+    mcp = create_mcp(
+        service=FailingCompatibilityService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+
+    with pytest.raises(ToolError) as captured:
+        tool(mcp, tool_name)(*args)
+
+    response = json.loads(str(captured.value))
+    assert response["schema_version"] == "MechanicalDesignJobError/v1"
+    assert response["code"] == "JOB_DATABASE_COMMIT_UNKNOWN"
+    assert response["next_action"]
+    assert "private" not in json.dumps(response)
 
 
 def test_unmapped_proxy_member_is_blocked_without_constructing_service(
@@ -631,7 +675,7 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
     initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
     freecadcmd = tmp_path / "FreeCAD Cmd"
     freecadcmd.write_bytes(b"test executable boundary")
-    settings = JobSettings(
+    settings = JobCadSettings(
         workspace=workspace,
         package_root=workspace,
         database_url="postgresql://unused",
@@ -650,8 +694,11 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
             capability_calls.append(request)
             assert probe is True
 
-        def job_operational_settings(self) -> JobSettings:
+        def job_cad_operational_settings(self) -> JobCadSettings:
             return settings
+
+        def job_operational_settings(self) -> object:
+            pytest.fail("Job CAD must use its FreeCAD-bearing settings path")
 
         def operational_settings(self) -> object:
             pytest.fail("Job CAD must not select a Product Family configuration")
@@ -714,6 +761,63 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
     assert [call[0] for call in workspace_calls] == ["existing", "new"]
     assert {call[2] for call in workspace_calls} == {freecadcmd}
     assert capability_calls == [
-        request("design_job_workspace", "cad_working_copy"),
-        request("design_job_workspace", "cad_working_copy"),
+        request("design_job_workspace", "freecadcmd"),
+        request("design_job_workspace", "freecadcmd"),
     ]
+
+
+def test_job_only_service_has_no_freecad_workspace_dependency(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    settings = JobSettings(
+        workspace=workspace,
+        package_root=workspace,
+        database_url="postgresql://secret@127.0.0.1/unused",
+        actor_id="actor-001",
+        organization_id="org-001",
+        design_group_id="group-001",
+    )
+
+    service = service_module.MechanicalDesignService(settings)
+
+    assert not hasattr(service, "design_workspace")
+    assert "secret" not in repr(service.bootstrap_config)
+
+
+def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    freecadcmd = tmp_path / "FreeCADCmd 1.1.1"
+    freecadcmd.write_bytes(b"local executable probe boundary")
+    monkeypatch.setattr(
+        "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
+        lambda path: __import__("subprocess").CompletedProcess(
+            [str(path), "--version"], 0, "FreeCAD 1.1.1\n", ""
+        ),
+    )
+    runtime = BootstrapRuntime.from_process(
+        cwd=workspace,
+        environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+        freecad_command=freecadcmd,
+        probes=DoctorProbes(
+            postgresql=lambda value: ProbeResult(available=True),
+            neo4j=lambda uri, user, password: ProbeResult(available=True),
+            freecadcmd=lambda path: ProbeResult(available=True),
+            artifact_root=lambda path: ProbeResult(available=True),
+        ),
+    )
+
+    runtime.require_capability(CapabilityRequest("design_job_workspace"), probe=True)
+    with pytest.raises(DiagnosticGateError) as captured:
+        runtime.require_capability(
+            request("design_job_workspace", "freecadcmd"),
+            probe=True,
+        )
+
+    assert captured.value.response["code"] == "FREECADCMD_VERSION_UNVALIDATED"
+    assert "super-secret" not in json.dumps(captured.value.response)

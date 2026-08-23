@@ -5,6 +5,8 @@ import unittest
 import os
 import json
 import uuid
+from io import BytesIO
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +95,7 @@ class FakeJobBindingRepository(FakeRepository):
         self.reconciliation_error: Exception | None = None
         self.committed_publication: dict | None = None
         self.reconciliations: list[dict] = []
+        self.reconciliation_responses: list[object] = []
 
     def create_job_working_copy(self, **kwargs):
         self.created = kwargs
@@ -119,6 +122,11 @@ class FakeJobBindingRepository(FakeRepository):
 
     def reconcile_job_working_copy_publication(self, **kwargs):
         self.reconciliations.append(kwargs)
+        if self.reconciliation_responses:
+            response = self.reconciliation_responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
         if self.reconciliation_error is not None:
             raise self.reconciliation_error
         if self.committed_publication is None:
@@ -186,32 +194,44 @@ def _job_binding_workspace(root: Path) -> tuple[Settings, FakeJobBindingReposito
     return settings, repository, manager
 
 
+def _safe_fcstd_bytes(marker: str = "safe") -> bytes:
+    output = BytesIO()
+    document = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Document SchemaVersion="4" ProgramVersion="1.1.3">'
+        f'<ObjectData><Object type="Part::Feature" name="{marker}"/></ObjectData>'
+        "</Document>"
+    ).encode("utf-8")
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("Document.xml", document)
+    return output.getvalue()
+
+
 def _valid_job_freecad_run(_freecadcmd, script, arguments, timeout_seconds):
     del timeout_seconds
     script_name = Path(script).name
     if script_name == "create_empty_working_copy.py":
-        Path(arguments[0]).write_bytes(b"valid-new-job-fcstd")
+        Path(arguments[0]).write_bytes(_safe_fcstd_bytes("new"))
     elif script_name == "normalize_working_copy.py":
-        Path(arguments[1]).write_bytes(b"valid-normalized-job-fcstd")
+        Path(arguments[1]).write_bytes(_safe_fcstd_bytes("normalized"))
     elif script_name == "validate_working_copy.py":
         working = Path(arguments[0])
-        receipt = Path(arguments[1])
-        receipt.write_text(
-            json.dumps(
-                {
-                    "schema_version": "MechanicalDesignWorkingCopyValidation/v1",
-                    "status": "valid",
-                    "sha256": file_sha256(working),
-                    "size_bytes": working.stat().st_size,
-                    "document_name": "MechanicalDesignWorkingCopy",
-                    "object_count": 1,
-                    "recomputed": True,
-                },
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        nonce = str(arguments[1])
+        stdout = "MECHANICAL_DESIGN_FCSTD_VALIDATION_V1 " + json.dumps(
+            {
+                "schema_version": "MechanicalDesignWorkingCopyValidation/v2",
+                "status": "valid",
+                "nonce": nonce,
+                "sha256": file_sha256(working),
+                "size_bytes": working.stat().st_size,
+                "document_name": "MechanicalDesignWorkingCopy",
+                "object_count": 1,
+                "recomputed": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
     else:
         raise AssertionError(f"unexpected FreeCAD script: {script_name}")
     return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -223,7 +243,8 @@ class DesignWorkspaceTests(unittest.TestCase):
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             source = root / "原始 model.FCStd"
-            source.write_bytes(b"immutable-source-bytes")
+            source_bytes = _safe_fcstd_bytes("immutable-source")
+            source.write_bytes(source_bytes)
 
             with patch(
                 "mechanical_design_agent.design.run_freecad_script",
@@ -242,12 +263,29 @@ class DesignWorkspaceTests(unittest.TestCase):
 
             snapshot = manager.root / result["source_snapshot"]["stored_path"]
             working = Path(result["working_path"])
-            self.assertEqual(snapshot.read_bytes(), b"immutable-source-bytes")
-            self.assertEqual(working.read_bytes(), b"immutable-source-bytes")
+            self.assertEqual(snapshot.read_bytes(), source_bytes)
+            self.assertEqual(working.read_bytes(), source_bytes)
             self.assertEqual(result["source_sha256"], file_sha256(source))
             self.assertNotIn("source_path", result)
             self.assertNotIn(str(source), str(result))
             self.assertEqual(repository.created["model_revision_id"], "model-revision-1")
+            snapshot_receipt = json.loads(
+                (snapshot.parent / ".binding-attempt.json").read_text(encoding="utf-8")
+            )
+            working_receipt = json.loads(
+                (working.parent / ".binding-attempt.json").read_text(encoding="utf-8")
+            )
+            for receipt, expected_name, expected_file in (
+                (snapshot_receipt, "source.FCStd", snapshot),
+                (working_receipt, "working.FCStd", working),
+            ):
+                self.assertEqual(receipt["schema_version"], "MechanicalDesignJobBindingAttempt/v2")
+                self.assertEqual(len(receipt["artifacts"]), 1)
+                evidence = receipt["artifacts"][0]
+                self.assertEqual(evidence["filename"], expected_name)
+                self.assertEqual(evidence["sha256"], file_sha256(expected_file))
+                self.assertEqual(evidence["size_bytes"], expected_file.stat().st_size)
+                self.assertEqual(set(evidence["identity"]), {"volume", "file_index"})
             self.assertTrue(result["source_snapshot"]["stored_path"].startswith("inputs/source/"))
             self.assertTrue(
                 Path(result["working_path"]).is_relative_to(
@@ -256,12 +294,12 @@ class DesignWorkspaceTests(unittest.TestCase):
             )
             self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
 
-    def test_job_existing_model_rejects_a_source_race_and_cleans_owned_attempts(self) -> None:
+    def test_job_existing_model_rejects_a_source_race_and_preserves_owned_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             source = root / "source.FCStd"
-            source.write_bytes(b"before")
+            source.write_bytes(_safe_fcstd_bytes("before"))
             from mechanical_design_agent import design as design_module
 
             original_read = design_module.read_managed_file
@@ -296,8 +334,8 @@ class DesignWorkspaceTests(unittest.TestCase):
 
             self.assertEqual(captured.exception.code, "JOB_SOURCE_CHANGED")
 
-            self.assertEqual(list((manager.root / "inputs" / "source").iterdir()), [])
-            self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
+            self.assertEqual(len(list((manager.root / "inputs" / "source").iterdir())), 1)
+            self.assertEqual(len(list((manager.root / "models" / "working").iterdir())), 1)
             self.assertIsNone(repository.created)
 
     @unittest.skipIf(os.name == "nt", "Windows symlink creation requires elevated test privileges")
@@ -306,7 +344,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             real_source = root / "real.FCStd"
-            real_source.write_bytes(b"external source")
+            real_source.write_bytes(_safe_fcstd_bytes("external-source"))
             source = root / "linked.FCStd"
             source.symlink_to(real_source)
 
@@ -327,12 +365,45 @@ class DesignWorkspaceTests(unittest.TestCase):
             self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
             self.assertIsNone(repository.created)
 
+    def test_job_existing_model_never_opens_a_scripted_fcstd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "scripted.FCStd"
+            output = BytesIO()
+            with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "Document.xml",
+                    b'<Document SchemaVersion="4"><ObjectData>'
+                    b'<Object type="App::FeaturePython" name="Unsafe"/>'
+                    b"</ObjectData></Document>",
+                )
+            source.write_bytes(output.getvalue())
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=AssertionError("scripted FCStd must never reach FreeCAD"),
+            ), self.assertRaises(JobFailure) as captured:
+                DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(captured.exception.code, "JOB_FCSTD_INVALID")
+            self.assertIsNone(repository.created)
+
     def test_job_existing_model_retry_preserves_an_attempt_with_unknown_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             source = root / "source.FCStd"
-            source.write_bytes(b"retry-source")
+            source.write_bytes(_safe_fcstd_bytes("retry-source"))
             job_id = "10000000-0000-4000-8000-000000000001"
             namespace = uuid.UUID(job_id)
             digest = file_sha256(source)
@@ -382,12 +453,158 @@ class DesignWorkspaceTests(unittest.TestCase):
                     actor_id="owner",
                 )
 
-            self.assertEqual(captured.exception.code, "JOB_ATTEMPT_INVENTORY_UNSAFE")
+            self.assertEqual(captured.exception.code, "JOB_ATTEMPT_RECOVERY_REQUIRED")
             for attempt, _kind, _artifact_id in attempts:
                 self.assertEqual(
                     (attempt / "orphaned-crash-bytes.bin").read_bytes(),
                     b"owned incomplete",
                 )
+
+    def test_job_retry_reconciles_before_touching_partial_mismatch_or_unavailable_attempts(self) -> None:
+        for authority in (
+            {"status": "unknown", "reason": "partial"},
+            {"status": "unknown", "reason": "mismatch"},
+            ConnectionError("authority unavailable"),
+        ):
+            with self.subTest(authority=authority), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                settings, repository, manager = _job_binding_workspace(root)
+                repository.reconciliation_responses = [authority]
+                source = root / "source.FCStd"
+                source.write_bytes(_safe_fcstd_bytes("retry-unknown"))
+                job_id = "10000000-0000-4000-8000-000000000001"
+                digest = file_sha256(source)
+                working_id = str(
+                    uuid.uuid5(
+                        uuid.UUID(job_id),
+                        f"working-copy:4:existing_model:{digest}",
+                    )
+                )
+                attempt = manager.root / "models" / "working" / working_id
+                attempt.mkdir()
+                preserved = attempt / "preserved.bin"
+                preserved.write_bytes(b"never delete commit-unknown bytes")
+
+                with patch(
+                    "mechanical_design_agent.design.run_freecad_script",
+                    side_effect=AssertionError("FreeCAD must not run before reconciliation"),
+                ), self.assertRaises(JobFailure) as captured:
+                    DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                        job_id=job_id,
+                        expected_job_revision=4,
+                        source_path=str(source),
+                        organization_id="org",
+                        design_group_id="group",
+                        family_id=None,
+                        model_revision_id=None,
+                        actor_id="owner",
+                    )
+
+                self.assertEqual(captured.exception.code, "JOB_DATABASE_COMMIT_UNKNOWN")
+                self.assertEqual(preserved.read_bytes(), b"never delete commit-unknown bytes")
+                self.assertIsNone(repository.created)
+                self.assertEqual(len(repository.reconciliations), 1)
+
+    def test_job_retry_recovers_exact_committed_binding_without_running_freecad(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "source.FCStd"
+            source_bytes = _safe_fcstd_bytes("committed-retry")
+            source.write_bytes(source_bytes)
+            job_id = "10000000-0000-4000-8000-000000000001"
+            revision = 4
+            digest = file_sha256(source)
+            namespace = uuid.UUID(job_id)
+            snapshot_id = str(uuid.uuid5(namespace, f"source-snapshot:{revision}:{digest}"))
+            working_id = str(
+                uuid.uuid5(namespace, f"working-copy:{revision}:existing_model:{digest}")
+            )
+            snapshot_attempt = manager.root / "inputs" / "source" / snapshot_id
+            working_attempt = manager.root / "models" / "working" / working_id
+            snapshot_attempt.mkdir()
+            working_attempt.mkdir()
+            snapshot_path = snapshot_attempt / "source.FCStd"
+            working_path = working_attempt / "working.FCStd"
+            snapshot_path.write_bytes(source_bytes)
+            working_path.write_bytes(source_bytes)
+            publication = {
+                "working_copy": {
+                    "id": working_id,
+                    "job_id": job_id,
+                    "working_path": str(working_path),
+                    "source_model_revision_id": "model-revision-1",
+                },
+                "source_snapshot": {
+                    "id": snapshot_id,
+                    "job_id": job_id,
+                    "stored_path": f"inputs/source/{snapshot_id}/source.FCStd",
+                    "sha256": digest,
+                    "source_model_revision_id": "model-revision-1",
+                },
+                "job": {"id": job_id, "revision": revision + 1},
+            }
+            repository.reconciliation_responses = [
+                {"status": "committed", "publication": publication}
+            ]
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=AssertionError("committed retry must not rerun FreeCAD"),
+            ):
+                result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=revision,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(result["id"], working_id)
+            self.assertEqual(snapshot_path.read_bytes(), source_bytes)
+            self.assertEqual(working_path.read_bytes(), source_bytes)
+            self.assertIsNone(repository.created)
+            self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_job_retry_proven_absent_preserves_a_prior_attempt_for_explicit_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            repository.reconciliation_responses = [{"status": "not_committed"}]
+            job_id = "10000000-0000-4000-8000-000000000001"
+            revision = 4
+            source = root / "source.FCStd"
+            source.write_bytes(_safe_fcstd_bytes("absent-retry"))
+            digest = file_sha256(source)
+            working_id = str(
+                uuid.uuid5(
+                    uuid.UUID(job_id),
+                    f"working-copy:{revision}:existing_model:{digest}",
+                )
+            )
+            attempt = manager.root / "models" / "working" / working_id
+            attempt.mkdir()
+            marker = attempt / "working.FCStd"
+            marker.write_bytes(_safe_fcstd_bytes("preserved-attempt"))
+
+            with self.assertRaises(JobFailure) as captured:
+                DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=revision,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(captured.exception.code, "JOB_ATTEMPT_RECOVERY_REQUIRED")
+            self.assertEqual(marker.read_bytes(), _safe_fcstd_bytes("preserved-attempt"))
+            self.assertIsNone(repository.created)
 
     def test_job_new_design_is_created_directly_under_models_working(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -408,7 +625,7 @@ class DesignWorkspaceTests(unittest.TestCase):
                 )
 
             self.assertEqual(
-                Path(result["working_path"]).read_bytes(), b"valid-new-job-fcstd"
+                Path(result["working_path"]).read_bytes(), _safe_fcstd_bytes("new")
             )
             self.assertTrue(
                 Path(result["working_path"]).is_relative_to(
@@ -425,7 +642,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             settings, repository, manager = _job_binding_workspace(root)
             repository.publication_error = LostCommitAcknowledgement("lost COMMIT ack")
             source = root / "source.FCStd"
-            source.write_bytes(b"committed-existing-fcstd")
+            source.write_bytes(_safe_fcstd_bytes("committed-existing"))
 
             with patch(
                 "mechanical_design_agent.design.run_freecad_script",
@@ -442,7 +659,7 @@ class DesignWorkspaceTests(unittest.TestCase):
                     actor_id="owner",
                 )
 
-            self.assertEqual(len(repository.reconciliations), 1)
+            self.assertEqual(len(repository.reconciliations), 2)
             self.assertEqual(Path(result["working_path"]).read_bytes(), source.read_bytes())
             snapshot = manager.root / result["source_snapshot"]["stored_path"]
             self.assertEqual(snapshot.read_bytes(), source.read_bytes())
@@ -467,18 +684,73 @@ class DesignWorkspaceTests(unittest.TestCase):
                     actor_id="owner",
                 )
 
-            self.assertEqual(len(repository.reconciliations), 1)
+            self.assertEqual(len(repository.reconciliations), 2)
             self.assertEqual(
-                Path(result["working_path"]).read_bytes(), b"valid-new-job-fcstd"
+                Path(result["working_path"]).read_bytes(), _safe_fcstd_bytes("new")
             )
             self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_job_new_design_retry_recovers_committed_binding_before_attempt_handling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            job_id = "10000000-0000-4000-8000-000000000001"
+            revision = 4
+            working_id = str(
+                uuid.uuid5(
+                    uuid.UUID(job_id),
+                    f"working-copy:{revision}:new_design",
+                )
+            )
+            working_attempt = manager.root / "models" / "working" / working_id
+            working_attempt.mkdir()
+            working_path = working_attempt / "working.FCStd"
+            working_path.write_bytes(_safe_fcstd_bytes("committed-new-retry"))
+            digest = file_sha256(working_path)
+            repository.reconciliation_responses = [
+                {
+                    "status": "committed",
+                    "publication": {
+                        "working_copy": {
+                            "id": working_id,
+                            "job_id": job_id,
+                            "working_path": str(working_path),
+                            "source_model_revision_id": None,
+                            "source_sha256": digest,
+                        },
+                        "source_snapshot": None,
+                        "job": {"id": job_id, "revision": revision + 1},
+                    },
+                }
+            ]
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=AssertionError("committed retry must not run FreeCAD"),
+            ):
+                result = DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=revision,
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(result["id"], working_id)
+            self.assertEqual(result["source_sha256"], digest)
+            self.assertEqual(working_path.read_bytes(), _safe_fcstd_bytes("committed-new-retry"))
+            self.assertIsNone(repository.created)
 
     def test_job_publication_unknown_preserves_owned_bytes_for_repair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             repository.publication_error = ConnectionError("publication failed")
-            repository.reconciliation_error = ConnectionError("authority unavailable")
+            repository.reconciliation_responses = [
+                {"status": "not_committed"},
+                ConnectionError("authority unavailable"),
+            ]
 
             with patch(
                 "mechanical_design_agent.design.run_freecad_script",
@@ -497,7 +769,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             attempts = list((manager.root / "models" / "working").iterdir())
             self.assertEqual(len(attempts), 1)
             self.assertEqual(
-                (attempts[0] / "working.FCStd").read_bytes(), b"valid-new-job-fcstd"
+                (attempts[0] / "working.FCStd").read_bytes(), _safe_fcstd_bytes("new")
             )
 
     def test_job_new_design_rejects_corrupt_zero_hardlinked_and_unexpected_output(self) -> None:
@@ -566,6 +838,63 @@ class DesignWorkspaceTests(unittest.TestCase):
                         (manager.root / "models/working/unexpected-sibling.bin").read_bytes(),
                         b"must be preserved",
                     )
+
+    def test_job_fcstd_validation_rejects_forged_stdout_replacement_and_files(self) -> None:
+        for case in ("extra_stdout", "wrong_nonce", "replacement", "forged_file"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                settings, repository, manager = _job_binding_workspace(root)
+
+                def hostile_run(_freecadcmd, script, arguments, timeout_seconds):
+                    del timeout_seconds
+                    if Path(script).name == "create_empty_working_copy.py":
+                        Path(arguments[0]).write_bytes(_safe_fcstd_bytes("before"))
+                        return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    working = Path(arguments[0])
+                    nonce = str(arguments[1])
+                    before_sha = file_sha256(working)
+                    before_size = working.stat().st_size
+                    payload = {
+                        "schema_version": "MechanicalDesignWorkingCopyValidation/v2",
+                        "status": "valid",
+                        "nonce": "attacker" if case == "wrong_nonce" else nonce,
+                        "sha256": before_sha,
+                        "size_bytes": before_size,
+                        "document_name": "MechanicalDesignWorkingCopy",
+                        "object_count": 0,
+                        "recomputed": True,
+                    }
+                    if case == "replacement":
+                        working.write_bytes(_safe_fcstd_bytes("replacement"))
+                    if case == "forged_file":
+                        (working.parent / ".fcstd-validation.json").write_text(
+                            json.dumps(payload), encoding="utf-8"
+                        )
+                    stdout = "MECHANICAL_DESIGN_FCSTD_VALIDATION_V1 " + json.dumps(
+                        payload, sort_keys=True, separators=(",", ":")
+                    ) + "\n"
+                    if case == "extra_stdout":
+                        stdout = "attacker chatter\n" + stdout
+                    return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+                with patch(
+                    "mechanical_design_agent.design.run_freecad_script",
+                    side_effect=hostile_run,
+                ), self.assertRaises(JobFailure) as captured:
+                    DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                        job_id="10000000-0000-4000-8000-000000000001",
+                        expected_job_revision=4,
+                        organization_id="org",
+                        design_group_id="group",
+                        family_id=None,
+                        actor_id="owner",
+                    )
+
+                self.assertIn(
+                    captured.exception.code,
+                    {"JOB_FCSTD_INVALID", "JOB_OUTPUT_UNEXPECTED"},
+                )
+                self.assertIsNone(repository.created)
     def test_artifact_store_reports_reparse_target_as_an_invalid_stable_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)

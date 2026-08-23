@@ -86,7 +86,11 @@ An existing STEP/FCStd model must resolve one unique
 `source_model_revision_id` before a working copy is created. New designs may
 start from a neutral source-less FCStd seed. Working-copy mutations are
 serialized by a workspace-owned lock, and important records bind the current
-FCStd SHA-256.
+FCStd SHA-256. Before FreeCAD opens a governed FCStd, the Agent inspects its
+ZIP/XML structure without executing document objects and rejects encrypted,
+ambiguous, oversized, or path-unsafe archives. Scripted FreeCAD documents,
+including `App::FeaturePython`, Python proxies, and Python-object properties,
+are intentionally unsupported by the governed working-copy boundary.
 
 ## Design-context gate
 

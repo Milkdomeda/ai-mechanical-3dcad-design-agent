@@ -166,16 +166,25 @@ def test_design_job_binding_hardening_migration_binds_exact_snapshot_and_revisio
     assert "design_origin = 'existing_model' AND source_snapshot_id IS NOT NULL" in normalized
     assert "design_origin = 'new_design' AND source_snapshot_id IS NULL" in normalized
     assert "reject_governed_working_copy_job_rebinding" in sql
-    assert "mechanical_design.allow_legacy_working_copy_binding" in sql
+    assert "mechanical_design.allow_legacy_working_copy_binding" not in sql
+    assert "legacy working-copy Job binding is immutable" in sql
     assert "OLD.job_id IS DISTINCT FROM NEW.job_id" in normalized
     assert "conrelid = 'public.design_working_copies'::regclass" in normalized
+    for constraint in (
+        "design_working_copies_job_scope_fk_v2",
+        "design_working_copies_model_scope_fk_v2",
+        "design_working_copies_family_scope_fk_v2",
+        "design_working_copies_creator_scope_fk_v2",
+        "design_jobs_active_working_copy_scope_fk_v2",
+    ):
+        assert constraint in sql
 
 
 def test_design_job_binding_hardening_migration_has_the_task6_fix_digest():
     migration = _migration_bytes("012_design_job_binding_hardening.sql")
 
     assert hashlib.sha256(migration).hexdigest() == (
-        "be0c9bf1f13568c9f30ae1ef49d7813e59660e4189c736a98aa83581a0d02bb0"
+        "9ad7a78e538a651240d84dbc018fc02c00cadecb04e63b829522a6b668407c2d"
     )
 
 
@@ -702,6 +711,19 @@ class LiveMigrationConcurrencyTests(unittest.TestCase):
                         directory_name=f"{created['display_id']}-{created['slug']}",
                         actor_id="upgrade-owner",
                     ))
+                with self.assertRaises(Exception) as bypassed_legacy_binding:
+                    with repository.connection() as connection, connection.transaction():
+                        connection.execute(
+                            "SET LOCAL mechanical_design.allow_legacy_working_copy_binding = 'on'"
+                        )
+                        connection.execute(
+                            "UPDATE design_working_copies SET job_id=%s WHERE id=%s",
+                            (job_ids[0], legacy_id),
+                        )
+                self.assertIn(
+                    "legacy working-copy Job binding is immutable",
+                    str(bypassed_legacy_binding.exception),
+                )
                 working_id = str(uuid.uuid4())
                 published = repository.create_job_working_copy(
                     job_id=job_ids[0],

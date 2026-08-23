@@ -227,10 +227,10 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
             "cad_working_copy", "product_family"
         ),
         "design_job_working_copy_create": _capability(
-            "design_job_workspace", "cad_working_copy"
+            "design_job_workspace", "freecadcmd"
         ),
         "design_job_new_working_copy_create": _capability(
-            "design_job_workspace", "cad_working_copy"
+            "design_job_workspace", "freecadcmd"
         ),
         "design_change_record": _capability(
             "cad_working_copy", "product_family"
@@ -298,18 +298,26 @@ class _LazyServiceProxy:
             self.runtime.require_capability(request, probe=True)
         except DiagnosticGateError as exc:
             raise ToolError(_json(exc.response)) from None
-        key = "job" if request.capability == "design_job_workspace" else "operational"
+        if request.capability == "design_job_workspace":
+            key = (
+                "job_cad"
+                if "freecadcmd" in request.additional_components
+                else "job"
+            )
+        else:
+            key = "operational"
         if key in self._services:
             return self._services[key]
         with self._lock:
             if key in self._services:
                 return self._services[key]
             try:
-                settings = (
-                    self.runtime.job_operational_settings()
-                    if key == "job"
-                    else self.runtime.operational_settings()
-                )
+                if key == "job":
+                    settings = self.runtime.job_operational_settings()
+                elif key == "job_cad":
+                    settings = self.runtime.job_cad_operational_settings()
+                else:
+                    settings = self.runtime.operational_settings()
                 self._services[key] = self.service_factory(settings)
             except DiagnosticGateError as exc:
                 raise ToolError(_json(exc.response)) from None
@@ -1117,7 +1125,7 @@ def create_mcp(
         compatibility_request_id: str = "",
     ) -> str:
         """Create a new FCStd working copy without modifying the STEP/FCStd source."""
-        return _json(
+        return _job_json(lambda:
             service.design_working_copy_create(
                 source_path=source_path,
                 organization_id=organization_id,
@@ -1160,7 +1168,7 @@ def create_mcp(
         compatibility_request_id: str = "",
     ) -> str:
         """Create a neutral empty FCStd working copy; specialized knowledge is not applied without family authorization."""
-        return _json(
+        return _job_json(lambda:
             service.design_new_working_copy_create(
                 organization_id=organization_id,
                 design_group_id=design_group_id,

@@ -5,12 +5,14 @@ import os
 import shutil
 import uuid
 import json
+import secrets
 from pathlib import Path
 from typing import Any, Iterator
 
 from .config import Settings
 from .hashing import file_sha256
 from .freecad_runner import run_freecad_script
+from .fcstd_security import FcstdSecurityError, inspect_fcstd_bytes
 from .package_resources import freecad_scripts_directory
 from .assembly import validate_assembly_completeness
 from .artifacts import ArtifactStore
@@ -22,7 +24,6 @@ from .secure_fs import (
     exclusive_file_lock,
     list_managed_directory,
     read_managed_file,
-    remove_owned_directory_exact,
     remove_owned_tree,
     set_managed_file_readonly,
     validate_managed_path,
@@ -119,13 +120,7 @@ class DesignWorkspace:
                 {".binding-attempt.json", "source.FCStd", "source.step"}
             )
         if kind == "working_copy":
-            return frozenset(
-                {
-                    ".binding-attempt.json",
-                    ".fcstd-validation.json",
-                    "working.FCStd",
-                }
-            )
+            return frozenset({".binding-attempt.json", "working.FCStd"})
         raise JobFailure(
             "JOB_ATTEMPT_INVENTORY_UNSAFE",
             "Job binding attempt kind is not recognized",
@@ -140,37 +135,10 @@ class DesignWorkspace:
             json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n"
         ).encode("utf-8")
         if attempt.exists() or attempt.is_symlink():
-            try:
-                managed_attempt = validate_managed_path(
-                    attempt, allow_missing_leaf=False
-                ).path
-                existing = read_managed_file(
-                    managed_attempt / ".binding-attempt.json"
-                )
-            except Exception as exc:
-                raise JobFailure(
-                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
-                    "An incomplete Job binding attempt cannot prove Agent ownership",
-                ) from exc
-            if existing.content != receipt_bytes:
-                raise JobFailure(
-                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
-                    "An incomplete Job binding attempt belongs to a different request",
-                )
-            try:
-                remove_owned_directory_exact(
-                    managed_attempt,
-                    expected_parent=parent,
-                    allowed_files=DesignWorkspace._job_attempt_allowed_files(
-                        receipt
-                    ),
-                    label="recoverable Job binding attempt",
-                )
-            except Exception as exc:
-                raise JobFailure(
-                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
-                    "Job binding attempt contains unrecognized or unowned bytes",
-                ) from exc
+            raise JobFailure(
+                "JOB_ATTEMPT_RECOVERY_REQUIRED",
+                "A preserved Job binding attempt requires explicit doctor/repair recovery",
+            )
         created = ensure_managed_directory(
             attempt,
             parents=False,
@@ -178,29 +146,43 @@ class DesignWorkspace:
         ).path
         try:
             atomic_publish_new(created / ".binding-attempt.json", receipt_bytes)
-        except Exception:
-            remove_owned_directory_exact(
-                created,
-                expected_parent=parent,
-                allowed_files=DesignWorkspace._job_attempt_allowed_files(receipt),
-                label="Job binding receipt attempt",
-            )
-            raise
+        except Exception as exc:
+            raise JobFailure(
+                "JOB_ATTEMPT_RECOVERY_REQUIRED",
+                "A Job binding receipt could not be published; the attempt was preserved",
+            ) from exc
         return created
 
     @staticmethod
-    def _cleanup_job_attempt(
-        parent: Path,
+    def _record_job_attempt_inventory(
         attempt: Path,
-        label: str,
         *,
         receipt: dict[str, object],
+        artifact_names: tuple[str, ...],
     ) -> None:
-        remove_owned_directory_exact(
-            attempt,
-            expected_parent=parent,
-            allowed_files=DesignWorkspace._job_attempt_allowed_files(receipt),
-            label=label,
+        artifacts: list[dict[str, object]] = []
+        for name in artifact_names:
+            if name not in DesignWorkspace._job_attempt_allowed_files(receipt):
+                raise JobFailure(
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "Job attempt receipt cannot claim an unexpected artifact",
+                )
+            read = read_managed_file(attempt / name)
+            artifacts.append(
+                {
+                    "filename": name,
+                    "sha256": read.sha256,
+                    "size_bytes": read.size_bytes,
+                    "identity": {
+                        "volume": read.identity.volume,
+                        "file_index": read.identity.file_index,
+                    },
+                }
+            )
+        final_receipt = {**receipt, "artifacts": artifacts}
+        atomic_replace(
+            attempt / ".binding-attempt.json",
+            (json.dumps(final_receipt, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
         )
 
     @staticmethod
@@ -250,59 +232,72 @@ class DesignWorkspace:
                 code,
                 "FreeCAD working-copy output is not an exclusively owned nonempty FCStd",
             )
+        try:
+            inspect_fcstd_bytes(before.content)
+        except FcstdSecurityError as exc:
+            raise JobFailure(
+                "JOB_FCSTD_INVALID",
+                "FCStd static inspection rejected an unsafe or unsupported document",
+            ) from exc
         self._assert_job_attempt_inventory(
             working_attempt,
             required_files=frozenset({".binding-attempt.json", "working.FCStd"}),
         )
-        validation_path = working_attempt / ".fcstd-validation.json"
+        nonce = secrets.token_urlsafe(32)
         with freecad_scripts_directory() as scripts:
-            self._run_controlled_job_freecad(
+            completed = self._run_controlled_job_freecad(
                 script=scripts / "validate_working_copy.py",
-                arguments=[working_path, validation_path],
+                arguments=[working_path, nonce],
                 controlled_parent=working_attempt.parent,
                 timeout_seconds=900,
                 failure_code="JOB_FCSTD_INVALID",
                 failure_message="FreeCAD could not reopen, recompute, and validate the FCStd output",
+                allow_stdout=True,
             )
         self._assert_job_attempt_inventory(
             working_attempt,
-            required_files=frozenset(
-                {
-                    ".binding-attempt.json",
-                    ".fcstd-validation.json",
-                    "working.FCStd",
-                }
-            ),
+            required_files=frozenset({".binding-attempt.json", "working.FCStd"}),
         )
         try:
-            validation_read = read_managed_file(validation_path)
-            payload = json.loads(validation_read.content.decode("utf-8"))
+            prefix = "MECHANICAL_DESIGN_FCSTD_VALIDATION_V1 "
+            if (
+                not isinstance(completed.stdout, str)
+                or not completed.stdout.startswith(prefix)
+                or completed.stdout.count("\n") != 1
+                or not completed.stdout.endswith("\n")
+            ):
+                raise ValueError("validation stdout is not exactly one evidence record")
+            payload = json.loads(completed.stdout[len(prefix) : -1])
             after = read_managed_file(working_path)
-        except (SecureFilesystemError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            inspect_fcstd_bytes(after.content)
+        except (
+            SecureFilesystemError,
+            FcstdSecurityError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
             raise JobFailure(
                 "JOB_FCSTD_INVALID",
-                "FreeCAD validation receipt is missing or invalid",
+                "FreeCAD validation process evidence is missing or invalid",
             ) from exc
         expected_fields = {
             "schema_version",
             "status",
+            "nonce",
             "sha256",
             "size_bytes",
             "document_name",
             "object_count",
             "recomputed",
         }
-        if validation_read.link_count != 1:
-            raise JobFailure(
-                "JOB_OUTPUT_UNEXPECTED",
-                "FreeCAD validation evidence is not exclusively owned",
-            )
         if (
             not isinstance(payload, dict)
             or set(payload) != expected_fields
             or payload.get("schema_version")
-            != "MechanicalDesignWorkingCopyValidation/v1"
+            != "MechanicalDesignWorkingCopyValidation/v2"
             or payload.get("status") != "valid"
+            or payload.get("nonce") != nonce
             or payload.get("sha256") != before.sha256
             or payload.get("size_bytes") != before.size_bytes
             or not isinstance(payload.get("document_name"), str)
@@ -326,12 +321,13 @@ class DesignWorkspace:
         self,
         *,
         script: Path,
-        arguments: list[Path],
+        arguments: list[str | Path],
         controlled_parent: Path,
         timeout_seconds: int,
         failure_code: str,
         failure_message: str,
-    ) -> None:
+        allow_stdout: bool = False,
+    ) -> Any:
         try:
             parent_before = tuple(list_managed_directory(controlled_parent))
         except SecureFilesystemError as exc:
@@ -364,6 +360,19 @@ class DesignWorkspace:
             ) from run_error
         if run_error is not None or completed is None or completed.returncode != 0:
             raise JobFailure(failure_code, failure_message) from run_error
+        if not isinstance(completed.stderr, str) or completed.stderr:
+            raise JobFailure(
+                failure_code,
+                "FreeCAD produced an unexpected diagnostic process channel",
+            )
+        if not allow_stdout and (
+            not isinstance(completed.stdout, str) or completed.stdout
+        ):
+            raise JobFailure(
+                failure_code,
+                "FreeCAD produced unexpected stdout outside the evidence contract",
+            )
+        return completed
 
     @staticmethod
     def _translate_job_publication_error(error: Exception) -> JobFailure:
@@ -407,7 +416,6 @@ class DesignWorkspace:
         try:
             return self.repository.create_job_working_copy(**publication)
         except Exception as publication_error:
-            source_snapshot = publication.get("source_snapshot")
             try:
                 reconciliation = (
                     self.repository.reconcile_job_working_copy_publication(
@@ -423,11 +431,7 @@ class DesignWorkspace:
                         design_origin=publication["design_origin"],
                         working_path=publication["working_path"],
                         actor_id=publication["actor_id"],
-                        source_snapshot_id=(
-                            source_snapshot["id"]
-                            if isinstance(source_snapshot, dict)
-                            else None
-                        ),
+                        source_snapshot=publication.get("source_snapshot"),
                     )
                 )
             except Exception as reconciliation_error:
@@ -456,6 +460,44 @@ class DesignWorkspace:
                 "Database publication state is inconsistent; owned CAD bytes were preserved",
             ) from publication_error
 
+    def _reconcile_before_job_attempt(self, **publication: Any) -> dict[str, Any] | None:
+        """Resolve deterministic binding IDs before inspecting or creating attempts."""
+        try:
+            reconciliation = self.repository.reconcile_job_working_copy_publication(
+                job_id=publication["job_id"],
+                expected_job_revision=publication["expected_job_revision"],
+                organization_id=publication["organization_id"],
+                design_group_id=publication["design_group_id"],
+                family_id=publication["family_id"],
+                working_copy_id=publication["working_copy_id"],
+                model_revision_id=publication["model_revision_id"],
+                source_sha256=publication.get("source_sha256"),
+                source_kind=publication["source_kind"],
+                design_origin=publication["design_origin"],
+                working_path=publication["working_path"],
+                actor_id=publication["actor_id"],
+                source_snapshot=publication.get("source_snapshot"),
+            )
+        except Exception as exc:
+            raise JobFailure(
+                "JOB_DATABASE_COMMIT_UNKNOWN",
+                "Database authority was unavailable before retry; existing attempt bytes were preserved",
+            ) from exc
+        if not isinstance(reconciliation, dict):
+            raise JobFailure(
+                "JOB_DATABASE_COMMIT_UNKNOWN",
+                "Database authority returned no retry reconciliation",
+            )
+        status = reconciliation.get("status")
+        if status == "not_committed":
+            return None
+        if status == "committed" and isinstance(reconciliation.get("publication"), dict):
+            return dict(reconciliation["publication"])
+        raise JobFailure(
+            "JOB_DATABASE_COMMIT_UNKNOWN",
+            "Database binding state was partial or mismatched; attempt bytes were preserved",
+        )
+
     def create_job_working_copy(
         self,
         *,
@@ -477,7 +519,6 @@ class DesignWorkspace:
                 "Working-copy source must be one FCStd or STEP file",
             )
         manager = self._require_job_manager()
-        database_published = False
         snapshot_attempt: Path | None = None
         working_attempt: Path | None = None
 
@@ -533,21 +574,97 @@ class DesignWorkspace:
             working_parent = validate_managed_path(
                 job_root / "models" / "working", allow_missing_leaf=False
             ).path
+            snapshot_name = "source.FCStd" if source_suffix == ".fcstd" else "source.step"
+            snapshot_path = source_parent / snapshot_id / snapshot_name
+            working_path = working_parent / working_copy_id / "working.FCStd"
+            stored_path = snapshot_path.relative_to(job_root).as_posix()
+            source_snapshot = {
+                "id": snapshot_id,
+                "source_filename": source.name,
+                "stored_path": stored_path,
+                "sha256": source_read.sha256,
+                "size_bytes": source_read.size_bytes,
+                "source_kind": "existing_model",
+                "source_model_revision_id": resolved_model_revision_id,
+            }
+            publication_request = {
+                "job_id": job_id,
+                "expected_job_revision": expected_job_revision,
+                "organization_id": organization_id,
+                "design_group_id": design_group_id,
+                "family_id": resolved_family_id,
+                "working_copy_id": working_copy_id,
+                "model_revision_id": resolved_model_revision_id,
+                "source_sha256": source_read.sha256,
+                "source_kind": "existing_model",
+                "design_origin": "existing_model",
+                "working_path": str(working_path),
+                "actor_id": actor_id,
+                "source_snapshot": source_snapshot,
+            }
+            reconciled = self._reconcile_before_job_attempt(**publication_request)
+            if reconciled is not None:
+                try:
+                    snapshot_read = read_managed_file(snapshot_path)
+                    working_read = read_managed_file(working_path)
+                    inspect_fcstd_bytes(working_read.content)
+                except (SecureFilesystemError, FcstdSecurityError) as exc:
+                    raise JobFailure(
+                        "JOB_DATABASE_COMMIT_UNKNOWN",
+                        "Committed binding bytes are missing or unsafe and require doctor/repair",
+                    ) from exc
+                if (
+                    snapshot_read.sha256 != source_read.sha256
+                    or snapshot_read.size_bytes != source_read.size_bytes
+                    or snapshot_read.content != source_read.content
+                    or working_read.sha256 != source_read.sha256
+                    or working_read.size_bytes != source_read.size_bytes
+                    or working_read.content != source_read.content
+                    or snapshot_read.link_count != 1
+                    or working_read.link_count != 1
+                ):
+                    raise JobFailure(
+                        "JOB_DATABASE_COMMIT_UNKNOWN",
+                        "Committed binding bytes do not match authoritative evidence",
+                    )
+                manifest = manager.publish_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    working_copy_id=working_copy_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+                return {
+                    **dict(reconciled["working_copy"]),
+                    "source_sha256": source_read.sha256,
+                    "source_snapshot": {
+                        "snapshot_id": snapshot_id,
+                        "stored_path": stored_path,
+                        "sha256": source_read.sha256,
+                        "source_kind": "existing_model",
+                        "source_model_revision_id": resolved_model_revision_id,
+                    },
+                    "working_path": str(working_path),
+                    "job": manifest.as_dict(),
+                }
             snapshot_receipt = {
-                "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                "schema_version": "MechanicalDesignJobBindingAttempt/v2",
                 "job_id": job_id,
                 "expected_job_revision": expected_job_revision,
                 "artifact_kind": "source_snapshot",
                 "artifact_id": snapshot_id,
                 "source_sha256": source_read.sha256,
+                "artifacts": [],
             }
             working_receipt = {
-                "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                "schema_version": "MechanicalDesignJobBindingAttempt/v2",
                 "job_id": job_id,
                 "expected_job_revision": expected_job_revision,
                 "artifact_kind": "working_copy",
                 "artifact_id": working_copy_id,
                 "source_sha256": source_read.sha256,
+                "artifacts": [],
             }
             try:
                 snapshot_attempt = self._job_attempt_directory(
@@ -555,7 +672,6 @@ class DesignWorkspace:
                     snapshot_id,
                     snapshot_receipt,
                 )
-                snapshot_name = "source.FCStd" if source_suffix == ".fcstd" else "source.step"
                 snapshot_path = snapshot_attempt / snapshot_name
                 atomic_publish_new(snapshot_path, source_read.content)
                 set_managed_file_readonly(snapshot_path)
@@ -565,6 +681,11 @@ class DesignWorkspace:
                     or snapshot_read.content != source_read.content
                 ):
                     raise RuntimeError("source snapshot verification failed")
+                self._record_job_attempt_inventory(
+                    snapshot_attempt,
+                    receipt=snapshot_receipt,
+                    artifact_names=(snapshot_name,),
+                )
 
                 working_attempt = self._job_attempt_directory(
                     working_parent,
@@ -587,6 +708,11 @@ class DesignWorkspace:
                 working_read = self._validate_job_fcstd(
                     working_attempt=working_attempt,
                     working_path=working_path,
+                )
+                self._record_job_attempt_inventory(
+                    working_attempt,
+                    receipt=working_receipt,
+                    artifact_names=("working.FCStd",),
                 )
                 if source_suffix == ".fcstd" and (
                     working_read.sha256 != source_read.sha256
@@ -614,32 +740,7 @@ class DesignWorkspace:
                         "source CAD changed while creating the governed working copy",
                     )
 
-                stored_path = snapshot_path.relative_to(job_root).as_posix()
-                source_snapshot = {
-                    "id": snapshot_id,
-                    "source_filename": source.name,
-                    "stored_path": stored_path,
-                    "sha256": source_read.sha256,
-                    "size_bytes": source_read.size_bytes,
-                    "source_kind": "existing_model",
-                    "source_model_revision_id": resolved_model_revision_id,
-                }
-                published = self._publish_job_working_copy(
-                    job_id=job_id,
-                    expected_job_revision=expected_job_revision,
-                    organization_id=organization_id,
-                    design_group_id=design_group_id,
-                    family_id=resolved_family_id,
-                    working_copy_id=working_copy_id,
-                    model_revision_id=resolved_model_revision_id,
-                    source_sha256=source_read.sha256,
-                    source_kind="existing_model",
-                    design_origin="existing_model",
-                    working_path=str(working_path),
-                    actor_id=actor_id,
-                    source_snapshot=source_snapshot,
-                )
-                database_published = True
+                published = self._publish_job_working_copy(**publication_request)
                 manifest = manager.publish_authoritative_manifest_locked(
                     locked_root=job_root,
                     job_id=job_id,
@@ -648,27 +749,9 @@ class DesignWorkspace:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                 )
-            except Exception as exc:
-                preserve = isinstance(exc, JobFailure) and exc.code in {
-                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
-                    "JOB_OUTPUT_UNEXPECTED",
-                    "JOB_DATABASE_COMMIT_UNKNOWN",
-                }
-                if not database_published and not preserve:
-                    if working_attempt is not None:
-                        self._cleanup_job_attempt(
-                            working_parent,
-                            working_attempt,
-                            "Job working-copy attempt",
-                            receipt=working_receipt,
-                        )
-                    if snapshot_attempt is not None:
-                        self._cleanup_job_attempt(
-                            source_parent,
-                            snapshot_attempt,
-                            "Job source-snapshot attempt",
-                            receipt=snapshot_receipt,
-                        )
+            except Exception:
+                # Cross-platform path-based deletion cannot continuously pin every
+                # descendant. Preserve failed attempts for doctor/repair instead.
                 raise
 
         public_snapshot = {
@@ -708,15 +791,15 @@ class DesignWorkspace:
                 f"working-copy:{expected_job_revision}:new_design",
             )
         )
-        database_published = False
         working_attempt: Path | None = None
         working_receipt = {
-            "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+            "schema_version": "MechanicalDesignJobBindingAttempt/v2",
             "job_id": job_id,
             "expected_job_revision": expected_job_revision,
             "artifact_kind": "working_copy",
             "artifact_id": working_copy_id,
             "source_sha256": None,
+            "artifacts": [],
         }
         with manager.locked_active_mechanical_design_job(
             job_id=job_id,
@@ -731,6 +814,56 @@ class DesignWorkspace:
             working_parent = validate_managed_path(
                 job_root / "models" / "working", allow_missing_leaf=False
             ).path
+            working_path = working_parent / working_copy_id / "working.FCStd"
+            publication_request = {
+                "job_id": job_id,
+                "expected_job_revision": expected_job_revision,
+                "organization_id": organization_id,
+                "design_group_id": design_group_id,
+                "family_id": family_id,
+                "working_copy_id": working_copy_id,
+                "model_revision_id": None,
+                "source_sha256": None,
+                "source_kind": "new_design_seed",
+                "design_origin": "new_design",
+                "working_path": str(working_path),
+                "actor_id": actor_id,
+                "source_snapshot": None,
+            }
+            reconciled = self._reconcile_before_job_attempt(**publication_request)
+            if reconciled is not None:
+                try:
+                    working_read = read_managed_file(working_path)
+                    inspect_fcstd_bytes(working_read.content)
+                except (SecureFilesystemError, FcstdSecurityError) as exc:
+                    raise JobFailure(
+                        "JOB_DATABASE_COMMIT_UNKNOWN",
+                        "Committed working-copy bytes are missing or unsafe and require doctor/repair",
+                    ) from exc
+                authoritative_sha = reconciled["working_copy"].get("source_sha256")
+                if (
+                    working_read.sha256 != authoritative_sha
+                    or working_read.link_count != 1
+                ):
+                    raise JobFailure(
+                        "JOB_DATABASE_COMMIT_UNKNOWN",
+                        "Committed working-copy bytes do not match authoritative evidence",
+                    )
+                manifest = manager.publish_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    working_copy_id=working_copy_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+                return {
+                    **dict(reconciled["working_copy"]),
+                    "source_sha256": working_read.sha256,
+                    "source_snapshot": None,
+                    "working_path": str(working_path),
+                    "job": manifest.as_dict(),
+                }
             try:
                 working_attempt = self._job_attempt_directory(
                     working_parent,
@@ -751,22 +884,13 @@ class DesignWorkspace:
                     working_attempt=working_attempt,
                     working_path=working_path,
                 )
-                published = self._publish_job_working_copy(
-                    job_id=job_id,
-                    expected_job_revision=expected_job_revision,
-                    organization_id=organization_id,
-                    design_group_id=design_group_id,
-                    family_id=family_id,
-                    working_copy_id=working_copy_id,
-                    model_revision_id=None,
-                    source_sha256=working_read.sha256,
-                    source_kind="new_design_seed",
-                    design_origin="new_design",
-                    working_path=str(working_path),
-                    actor_id=actor_id,
-                    source_snapshot=None,
+                self._record_job_attempt_inventory(
+                    working_attempt,
+                    receipt=working_receipt,
+                    artifact_names=("working.FCStd",),
                 )
-                database_published = True
+                publication_request["source_sha256"] = working_read.sha256
+                published = self._publish_job_working_copy(**publication_request)
                 manifest = manager.publish_authoritative_manifest_locked(
                     locked_root=job_root,
                     job_id=job_id,
@@ -775,23 +899,9 @@ class DesignWorkspace:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                 )
-            except Exception as exc:
-                preserve = isinstance(exc, JobFailure) and exc.code in {
-                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
-                    "JOB_OUTPUT_UNEXPECTED",
-                    "JOB_DATABASE_COMMIT_UNKNOWN",
-                }
-                if (
-                    not database_published
-                    and not preserve
-                    and working_attempt is not None
-                ):
-                    self._cleanup_job_attempt(
-                        working_parent,
-                        working_attempt,
-                        "Job new-design working-copy attempt",
-                        receipt=working_receipt,
-                    )
+            except Exception:
+                # Failed bytes remain isolated under their deterministic attempt
+                # for explicit doctor/repair; no path-based recursive deletion.
                 raise
         return {
             **dict(published["working_copy"]),

@@ -17,7 +17,7 @@ from .secure_fs import (
 
 _FREECAD_VERSION = re.compile(r"\bFreeCAD(?:Cmd)?\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b", re.IGNORECASE)
 _AMD64_MACHINE = 0x8664
-CERTIFIED_FREECADCMD_VERSIONS = frozenset({"1.1.1", "1.1.3"})
+CERTIFIED_FREECADCMD_VERSIONS = frozenset({"1.1.3"})
 
 
 class FreeCADDiscoveryError(ValueError):
@@ -139,7 +139,7 @@ def _candidate_paths(
     if program_files_value:
         program_files = Path(program_files_value)
         if _windows_absolute(program_files):
-            for directory in ("FreeCAD 1.1", "FreeCAD 1.1.1", "FreeCAD 1.1.3"):
+            for directory in ("FreeCAD 1.1.3",):
                 result.append(
                     (
                         program_files / directory / "bin" / "FreeCADCmd.exe",
@@ -196,11 +196,12 @@ def run_freecad_version(path: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def validate_freecadcmd(
+def _validate_freecadcmd_candidate(
     path: Path,
     *,
     source: str,
     run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+    require_x64_pe: bool,
 ) -> FreeCADCandidate:
     requested = Path(path).expanduser()
     if not requested.is_absolute():
@@ -213,14 +214,15 @@ def validate_freecadcmd(
     except (OSError, SecureFilesystemError) as exc:
         raise FreeCADDiscoveryError(
             getattr(exc, "code", "FREECADCMD_PATH_INVALID"),
-            "FreeCADCmd path is not a safe local fixed NTFS executable",
+            "FreeCADCmd path is not a safe local fixed executable",
         ) from exc
     if managed.identity is None or not managed.path.is_file():
         raise FreeCADDiscoveryError(
             "FREECADCMD_EXECUTABLE_INVALID",
-            "FreeCADCmd must be a regular 64-bit Windows PE executable",
+            "FreeCADCmd must be a regular local executable",
         )
-    _require_x64_pe(managed.path)
+    if require_x64_pe:
+        _require_x64_pe(managed.path)
     try:
         result = run_version(managed.path)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -245,6 +247,36 @@ def validate_freecadcmd(
         source=source,
         identity=managed.identity,
         version=match.group(1),
+    )
+
+
+def validate_freecadcmd(
+    path: Path,
+    *,
+    source: str,
+    run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+) -> FreeCADCandidate:
+    """Validate the Windows FreeCADCmd executable and capture its exact version."""
+    return _validate_freecadcmd_candidate(
+        path,
+        source=source,
+        run_version=run_version,
+        require_x64_pe=True,
+    )
+
+
+def validate_local_freecadcmd(
+    path: Path,
+    *,
+    source: str,
+    run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+) -> FreeCADCandidate:
+    """Validate a non-Windows local FreeCADCmd and capture its exact version."""
+    return _validate_freecadcmd_candidate(
+        path,
+        source=source,
+        run_version=run_version,
+        require_x64_pe=False,
     )
 
 

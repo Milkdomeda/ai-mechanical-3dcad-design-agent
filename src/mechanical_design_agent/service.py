@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from .artifacts import ArtifactChecksumMismatchError, ArtifactStore
-from .config import JobSettings, Settings
+from .config import JobCadSettings, JobSettings, Settings
 from .context import DesignContextBuilder
 from .design import DesignWorkspace, derive_iteration_candidates
 from .design_lessons import (
@@ -51,7 +51,7 @@ class ImmutableReviewBindingDriftError(ValueError):
 
 
 class MechanicalDesignService:
-    def __init__(self, settings: Settings | JobSettings):
+    def __init__(self, settings: Settings | JobSettings | JobCadSettings):
         self.settings = settings
         self.repository = PostgresRepository(settings.database_url)
         self.design_jobs = DesignJobManager(
@@ -62,9 +62,10 @@ class MechanicalDesignService:
                 "organization_id": settings.organization_id,
                 "design_group_id": settings.design_group_id,
             }
-            self.design_workspace = DesignWorkspace(
-                settings, self.repository, self.design_jobs
-            )
+            if isinstance(settings, JobCadSettings):
+                self.design_workspace = DesignWorkspace(
+                    settings, self.repository, self.design_jobs
+                )
             self.bootstrap_error = ""
             return
         self.artifacts = ArtifactStore(settings.artifact_root)

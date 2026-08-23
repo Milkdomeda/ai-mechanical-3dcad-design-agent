@@ -37,6 +37,7 @@ from .freecad_discovery import (
     default_windows_discovery,
     run_freecad_version,
     validate_freecadcmd,
+    validate_local_freecadcmd,
 )
 from .standard_part_configuration import (
     StandardPartSources,
@@ -71,7 +72,7 @@ from .secure_fs import (
 )
 
 if TYPE_CHECKING:
-    from .config import JobSettings, Settings
+    from .config import JobCadSettings, JobSettings, Settings
 
 
 _INIT_NEXT_STEP = "mechanical-design init --workspace <path>"
@@ -835,7 +836,7 @@ class BootstrapRuntime:
                 certified = selected.version in CERTIFIED_FREECADCMD_VERSIONS
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
-                    "ok" if certified else "warning",
+                    "ok" if certified else "blocked",
                     (
                         "FREECADCMD_DISCOVERED"
                         if certified
@@ -856,75 +857,56 @@ class BootstrapRuntime:
                 )
         else:
             requested = Path(freecad_setting.value).expanduser()
-            if self.freecad_validator is not None or os.name == "nt":
-                try:
-                    selected = (
-                        self.freecad_validator(
-                            requested,
-                            freecad_setting.source.kind,
-                        )
-                        if self.freecad_validator is not None
-                        else validate_freecadcmd(
-                            requested,
-                            source=freecad_setting.source.kind,
-                            run_version=run_freecad_version,
-                        )
+            if os.name != "nt" and not requested.is_absolute():
+                requested = manifest.workspace / requested
+            try:
+                selected = (
+                    self.freecad_validator(
+                        requested,
+                        freecad_setting.source.kind,
                     )
-                except FreeCADDiscoveryError as exc:
-                    components["freecadcmd"] = _diagnostic(
-                        "freecadcmd",
-                        "blocked",
-                        exc.code,
-                        exc.message,
-                        {"source": _source_dict(freecad_setting.source)},
+                    if self.freecad_validator is not None
+                    else (
+                        validate_freecadcmd
+                        if os.name == "nt"
+                        else validate_local_freecadcmd
+                    )(
+                        requested,
+                        source=freecad_setting.source.kind,
+                        run_version=run_freecad_version,
                     )
-                else:
-                    freecad_command = selected.path
-                    certified = selected.version in CERTIFIED_FREECADCMD_VERSIONS
-                    components["freecadcmd"] = _diagnostic(
-                        "freecadcmd",
-                        "ok" if certified else "warning",
-                        (
-                            "FREECADCMD_CONFIGURED"
-                            if certified
-                            else "FREECADCMD_VERSION_UNVALIDATED"
-                        ),
-                        (
-                            f"FreeCADCmd {selected.version} path is configured"
-                            if certified
-                            else (
-                                f"FreeCADCmd {selected.version} is not "
-                                "release-validated"
-                            )
-                        ),
-                        {
-                            "source": _source_dict(freecad_setting.source),
-                            "version": selected.version,
-                        },
-                    )
-            else:
-                if not requested.is_absolute():
-                    requested = manifest.workspace / requested
-                freecad_command = requested.resolve()
-            if (
-                self.freecad_validator is None
-                and os.name != "nt"
-                and not freecad_command.is_file()
-            ):
+                )
+            except FreeCADDiscoveryError as exc:
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
                     "blocked",
-                    "FREECADCMD_INVALID",
-                    "configured FreeCADCmd is not a regular file",
+                    exc.code,
+                    exc.message,
                     {"source": _source_dict(freecad_setting.source)},
                 )
-            elif self.freecad_validator is None and os.name != "nt":
+            else:
+                freecad_command = selected.path
+                certified = selected.version in CERTIFIED_FREECADCMD_VERSIONS
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
-                    "ok",
-                    "FREECADCMD_CONFIGURED",
-                    "FreeCADCmd path is configured",
-                    {"source": _source_dict(freecad_setting.source)},
+                    "ok" if certified else "blocked",
+                    (
+                        "FREECADCMD_CONFIGURED"
+                        if certified
+                        else "FREECADCMD_VERSION_UNVALIDATED"
+                    ),
+                    (
+                        f"FreeCADCmd {selected.version} path is configured"
+                        if certified
+                        else (
+                            f"FreeCADCmd {selected.version} is not "
+                            "release-validated"
+                        )
+                    ),
+                    {
+                        "source": _source_dict(freecad_source),
+                        "version": selected.version,
+                    },
                 )
 
         return _Inspection(
@@ -1517,20 +1499,12 @@ class BootstrapRuntime:
         """Resolve the Job authority without selecting a product family."""
         from .config import JobSettings
 
-        self.require_capability(
-            CapabilityRequest(
-                "design_job_workspace",
-                additional_components=("cad_working_copy",),
-            ),
-            probe=False,
-        )
+        self.require_capability(CapabilityRequest("design_job_workspace"), probe=False)
         inspection = self._inspect()
         assert inspection.manifest is not None
         assert inspection.actor is not None
         database_url = inspection.secrets["postgresql"].value
         assert database_url is not None
-        if inspection.freecad_command is None:
-            raise RuntimeError("configured FreeCADCmd is required for Job CAD")
         identity = inspection.manifest.raw.get("identity")
         if not isinstance(identity, Mapping):
             raise RuntimeError("configured Job scope is unavailable")
@@ -1545,6 +1519,30 @@ class BootstrapRuntime:
             actor_id=inspection.actor.value,
             organization_id=organization_id.strip(),
             design_group_id=design_group_id.strip(),
+        )
+
+    def job_cad_operational_settings(self) -> JobCadSettings:
+        """Resolve scoped Job authority with the certified FreeCAD boundary."""
+        from .config import JobCadSettings
+
+        self.require_capability(
+            CapabilityRequest(
+                "design_job_workspace",
+                additional_components=("freecadcmd",),
+            ),
+            probe=False,
+        )
+        job = self.job_operational_settings()
+        inspection = self._inspect()
+        if inspection.freecad_command is None:
+            raise RuntimeError("configured FreeCADCmd is required for Job CAD")
+        return JobCadSettings(
+            workspace=job.workspace,
+            package_root=job.package_root,
+            database_url=job.database_url,
+            actor_id=job.actor_id,
+            organization_id=job.organization_id,
+            design_group_id=job.design_group_id,
             freecadcmd=inspection.freecad_command,
         )
 

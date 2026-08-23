@@ -264,6 +264,12 @@ class JobSettings:
     actor_id: str
     organization_id: str
     design_group_id: str
+
+
+@dataclass(frozen=True)
+class JobCadSettings(JobSettings):
+    """Family-independent Job authority plus the certified FreeCAD boundary."""
+
     freecadcmd: Path
 
 
