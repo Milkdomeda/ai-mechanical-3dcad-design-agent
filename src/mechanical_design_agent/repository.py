@@ -5,6 +5,7 @@ import binascii
 import json
 import hashlib
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Iterator
 import uuid
@@ -3624,7 +3625,7 @@ class PostgresRepository:
         *,
         job_id: str,
         workspace_id: str,
-        display_id: str,
+        display_date: str,
         job_type: str,
         title: str,
         slug: str,
@@ -3640,10 +3641,15 @@ class PostgresRepository:
         }
         if job_type not in initial_phases:
             raise ValueError("invalid design job type")
+        try:
+            parsed_display_date = date.fromisoformat(display_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("display_date must use YYYY-MM-DD") from exc
+        if parsed_display_date.isoformat() != display_date:
+            raise ValueError("display_date must use YYYY-MM-DD")
         for field, value in (
             ("job_id", job_id),
             ("workspace_id", workspace_id),
-            ("display_id", display_id),
             ("title", title),
             ("slug", slug),
             ("organization_id", organization_id),
@@ -3654,42 +3660,84 @@ class PostgresRepository:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field} is required")
         with self.connection() as connection, connection.transaction():
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                (f"design-job-token:{workspace_id}:{idempotency_token}",),
+            )
             row = connection.execute(
-                "INSERT INTO design_jobs(id,workspace_id,display_id,job_type,title,slug,status,phase,"
-                "organization_id,design_group_id,family_id,idempotency_token,created_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT(workspace_id,idempotency_token) DO NOTHING RETURNING *",
+                "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
+                "AND organization_id=%s AND design_group_id=%s",
                 (
-                    job_id,
                     workspace_id,
-                    display_id,
-                    job_type,
-                    title.strip(),
-                    slug.strip(),
-                    "active",
-                    initial_phases[job_type],
+                    idempotency_token,
                     organization_id,
                     design_group_id,
-                    family_id,
-                    idempotency_token,
-                    actor_id,
                 ),
             ).fetchone()
             if row is None:
-                row = connection.execute(
-                    "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
-                    "AND organization_id=%s AND design_group_id=%s",
-                    (workspace_id, idempotency_token, organization_id, design_group_id),
-                ).fetchone()
+                date_token = parsed_display_date.strftime("%Y%m%d")
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    (f"design-job-display:{workspace_id}:{date_token}",),
+                )
+                created = False
+                for _ in range(4):
+                    sequence_row = connection.execute(
+                        "SELECT COALESCE(MAX(CAST(substring(display_id FROM 14) AS integer)),0)+1 "
+                        "AS next_sequence FROM design_jobs WHERE workspace_id=%s "
+                        "AND display_id LIKE %s",
+                        (workspace_id, f"JOB-{date_token}-%"),
+                    ).fetchone()
+                    if sequence_row is None:
+                        raise RuntimeError("design Job display sequence allocation failed")
+                    display_id = (
+                        f"JOB-{date_token}-{int(sequence_row['next_sequence']):03d}"
+                    )
+                    row = connection.execute(
+                        "INSERT INTO design_jobs(id,workspace_id,display_id,job_type,title,slug,status,phase,"
+                        "organization_id,design_group_id,family_id,idempotency_token,created_by) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT DO NOTHING RETURNING *",
+                        (
+                            job_id,
+                            workspace_id,
+                            display_id,
+                            job_type,
+                            title.strip(),
+                            slug.strip(),
+                            "active",
+                            initial_phases[job_type],
+                            organization_id,
+                            design_group_id,
+                            family_id,
+                            idempotency_token,
+                            actor_id,
+                        ),
+                    ).fetchone()
+                    if row is not None:
+                        created = True
+                        break
+                    row = connection.execute(
+                        "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
+                        "AND organization_id=%s AND design_group_id=%s",
+                        (
+                            workspace_id,
+                            idempotency_token,
+                            organization_id,
+                            design_group_id,
+                        ),
+                    ).fetchone()
+                    if row is not None:
+                        break
                 if row is None:
                     raise KeyError("unknown design_job_id or unauthorized")
-            else:
-                self._record_design_job_event(
-                    connection,
-                    job=dict(row),
-                    event_type="created",
-                    actor_id=actor_id,
-                )
+                if created:
+                    self._record_design_job_event(
+                        connection,
+                        job=dict(row),
+                        event_type="created",
+                        actor_id=actor_id,
+                    )
         return dict(row)
 
     def record_design_job_directory(

@@ -9,7 +9,13 @@ from pathlib import Path
 import tempfile
 from typing import Any, Iterator
 
-from .secure_fs import FileIdentity, ManagedPath, SecureFilesystemError
+from .secure_fs import (
+    FileIdentity,
+    ManagedDirectoryEntry,
+    ManagedFileRead,
+    ManagedPath,
+    SecureFilesystemError,
+)
 
 
 @dataclass(frozen=True)
@@ -774,6 +780,112 @@ def _open_regular_handle(path: Path, api: Win32Api) -> tuple[Any, FileIdentity, 
     except Exception:
         _close_handle(handle)
         raise
+
+
+def read_managed_file(path: Path) -> ManagedFileRead:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
+        target = parent.path / lexical.name
+        handle, identity, _ = _open_regular_handle(target, api)
+        try:
+            chunks: list[bytes] = []
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                try:
+                    _, chunk = api.win32file.ReadFile(handle, 1024 * 1024)
+                except Exception as exc:
+                    raise SecureFilesystemError(
+                        "WINDOWS_PATH_IDENTITY_CHANGED",
+                        "managed file could not be read through its pinned handle",
+                    ) from exc
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            if _require_regular(target, api) != identity:
+                raise SecureFilesystemError(
+                    "WINDOWS_PATH_IDENTITY_CHANGED",
+                    "managed file changed during pinned read",
+                )
+            return ManagedFileRead(
+                content=b"".join(chunks),
+                sha256=digest.hexdigest(),
+                size_bytes=size,
+                identity=identity,
+            )
+        finally:
+            _close_handle(handle)
+
+
+def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical, allow_missing_leaf=False) as pinned:
+        if pinned.identity is None:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "managed directory is missing during enumeration",
+            )
+        held: list[tuple[str, bool, Any, FileIdentity]] = []
+        reparse_flag = getattr(api.win32con, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        directory_flag = getattr(api.win32con, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+        try:
+            with os.scandir(pinned.path) as discovered:
+                for entry in sorted(discovered, key=lambda item: item.name):
+                    metadata = entry.stat(follow_symlinks=False)
+                    attributes = int(getattr(metadata, "st_file_attributes", 0))
+                    if attributes & reparse_flag:
+                        raise SecureFilesystemError(
+                            "WINDOWS_REPARSE_POINT_BLOCKED",
+                            "managed paths must not contain a reparse point",
+                        )
+                    is_directory = bool(attributes & directory_flag)
+                    child = pinned.path / entry.name
+                    handle = _open_handle(child, api, directory=is_directory)
+                    identity, opened_attributes = _handle_facts(handle, api)
+                    try:
+                        _assert_not_reparse(opened_attributes, api)
+                        if bool(opened_attributes & directory_flag) != is_directory:
+                            raise SecureFilesystemError(
+                                "WINDOWS_PATH_IDENTITY_CHANGED",
+                                "managed directory entry type changed during enumeration",
+                            )
+                        held.append((entry.name, is_directory, handle, identity))
+                    except Exception:
+                        _close_handle(handle)
+                        raise
+            result: list[ManagedDirectoryEntry] = []
+            for name, is_directory, _, identity in held:
+                current, attributes = _entry_facts(
+                    pinned.path / name,
+                    api,
+                    directory=is_directory,
+                )
+                _assert_not_reparse(attributes, api)
+                if current != identity:
+                    raise SecureFilesystemError(
+                        "WINDOWS_PATH_IDENTITY_CHANGED",
+                        "managed directory entry changed during enumeration",
+                    )
+                result.append(
+                    ManagedDirectoryEntry(
+                        name=name,
+                        is_directory=is_directory,
+                        identity=identity,
+                    )
+                )
+            if _identity(pinned.path, api, directory=True) != pinned.identity:
+                raise SecureFilesystemError(
+                    "WINDOWS_PATH_IDENTITY_CHANGED",
+                    "managed directory changed during enumeration",
+                )
+            return tuple(result)
+        finally:
+            for _, _, handle, _ in reversed(held):
+                _close_handle(handle)
 
 
 def verify_cas_file(path: Path, expected_sha256: str) -> tuple[str, int]:

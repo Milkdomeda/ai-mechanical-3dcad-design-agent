@@ -456,3 +456,38 @@ def test_native_windows_job_containment_rejects_junctions(
             assert captured.value.code == "JOB_PATH_UNSAFE"
         finally:
             junction.rmdir()
+
+
+def test_native_windows_pinned_managed_reads_and_enumeration_reject_reparse_points(
+    native_ntfs_roots: tuple[Path, Path],
+) -> None:
+    secure_fs = importlib.import_module("mechanical_design_agent.secure_fs")
+    for root in native_ntfs_roots:
+        managed = root / "pinned"
+        managed.mkdir()
+        payload = managed / "manifest.json"
+        payload.write_bytes(b'{"schema_version":"test"}\n')
+        read = secure_fs.read_managed_file(payload)
+        assert read.content == b'{"schema_version":"test"}\n'
+        assert read.sha256 == hashlib.sha256(read.content).hexdigest()
+        assert read.identity is not None
+        assert [entry.name for entry in secure_fs.list_managed_directory(managed)] == [
+            "manifest.json"
+        ]
+
+        external = root / "pinned-external"
+        external.mkdir()
+        junction = managed / "junction"
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(external)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        try:
+            with pytest.raises(Exception) as captured:
+                secure_fs.list_managed_directory(managed)
+            assert captured.value.code == "WINDOWS_REPARSE_POINT_BLOCKED"
+        finally:
+            junction.rmdir()

@@ -2,20 +2,28 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
+import threading
 from typing import Callable
-from uuid import UUID
+import unittest
+from uuid import UUID, uuid4
 
 import pytest
 
+from mechanical_design_agent import jobs as jobs_module
 from mechanical_design_agent.jobs import (
     DesignJobManager,
     DesignJobManifest,
     JobFailure,
+    locked_job_root,
     managed_job_path,
 )
+from mechanical_design_agent.migrations import postgres_migrations_directory
 from mechanical_design_agent.repository import PostgresRepository
 from mechanical_design_agent.workspace_bootstrap import WorkspaceManifest
 
@@ -74,8 +82,10 @@ class _JobConnection:
             "actor-other": "organization-other",
         }
         self.queries: list[str] = []
+        self.query_calls: list[tuple[str, tuple[object, ...]]] = []
         self.transaction_events: list[str] = []
         self.fail_event_insert = False
+        self.inject_display_conflict = False
 
     def transaction(self) -> _Transaction:
         return _Transaction(self)
@@ -98,6 +108,21 @@ class _JobConnection:
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> _Rows:
         normalized = " ".join(query.split())
         self.queries.append(normalized)
+        self.query_calls.append((normalized, parameters))
+
+        if normalized.startswith("SELECT pg_advisory_xact_lock"):
+            return _Rows([{}])
+
+        if normalized.startswith("SELECT COALESCE(MAX(CAST(substring(display_id FROM 14)"):
+            workspace_id, pattern = parameters
+            prefix = str(pattern).removesuffix("%")
+            sequences = [
+                int(str(row["display_id"])[13:])
+                for row in self.jobs_by_id.values()
+                if row["workspace_id"] == str(workspace_id)
+                and str(row["display_id"]).startswith(prefix)
+            ]
+            return _Rows([{"next_sequence": max(sequences, default=0) + 1}])
 
         if normalized.startswith("INSERT INTO design_jobs"):
             (
@@ -116,6 +141,32 @@ class _JobConnection:
                 actor_id,
             ) = parameters
             token_key = (str(workspace_id), str(idempotency_token))
+            if self.inject_display_conflict:
+                self.inject_display_conflict = False
+                conflicting_id = "job-concurrent-display-allocation"
+                self.jobs_by_id[conflicting_id] = {
+                    "id": conflicting_id,
+                    "workspace_id": str(workspace_id),
+                    "display_id": display_id,
+                    "job_type": job_type,
+                    "title": "Concurrent Job",
+                    "slug": "concurrent-job",
+                    "status": "active",
+                    "phase": phase,
+                    "revision": 0,
+                    "organization_id": "organization-other",
+                    "design_group_id": "design-group-other",
+                    "family_id": None,
+                    "directory_name": None,
+                    "idempotency_token": "concurrent-token",
+                    "blocked_reason": None,
+                    "provisioning_state": "provisioning",
+                    "created_by": "actor-other",
+                }
+                self.job_ids_by_token[(str(workspace_id), "concurrent-token")] = (
+                    conflicting_id
+                )
+                return _Rows()
             if token_key in self.job_ids_by_token:
                 return _Rows()
             row: dict[str, object] = {
@@ -312,21 +363,23 @@ def _create(
     repository: PostgresRepository,
     *,
     job_id: str = "job-001",
-    display_id: str = "JOB-20260823-001",
     idempotency_token: str = "request-001",
+    organization_id: str = ORGANIZATION_ID,
+    design_group_id: str = DESIGN_GROUP_ID,
+    actor_id: str = ACTOR_ID,
 ) -> dict[str, object]:
     return repository.create_design_job(
         job_id=job_id,
         workspace_id="workspace-001",
-        display_id=display_id,
+        display_date="2026-08-23",
         job_type="mechanical_design",
         title="Pump housing redesign",
         slug="pump-housing-redesign",
-        organization_id=ORGANIZATION_ID,
-        design_group_id=DESIGN_GROUP_ID,
-        family_id="family-001",
+        organization_id=organization_id,
+        design_group_id=design_group_id,
+        family_id="family-001" if organization_id == ORGANIZATION_ID else None,
         idempotency_token=idempotency_token,
-        actor_id=ACTOR_ID,
+        actor_id=actor_id,
     )
 
 
@@ -417,7 +470,6 @@ def test_resolver_returns_candidates_without_silently_selecting_one() -> None:
     second = _create(
         repository,
         job_id="job-002",
-        display_id="JOB-20260823-002",
         idempotency_token="request-002",
     )
     archived = copy.deepcopy(first)
@@ -536,6 +588,149 @@ def test_job_list_reads_return_complete_rows_and_remain_scoped() -> None:
     ) == []
 
 
+def test_repository_allocates_display_ids_globally_under_transactional_locks() -> None:
+    connection = _JobConnection()
+    repository = _repository(connection)
+
+    first = _create(repository)
+    replayed = _create(repository, job_id="job-replay")
+    foreign_scope = _create(
+        repository,
+        job_id="job-foreign",
+        idempotency_token="request-foreign",
+        organization_id="organization-other",
+        design_group_id="design-group-other",
+        actor_id="actor-other",
+    )
+
+    assert first["display_id"] == replayed["display_id"] == "JOB-20260823-001"
+    assert foreign_scope["display_id"] == "JOB-20260823-002"
+    advisory = [
+        (query, parameters)
+        for query, parameters in connection.query_calls
+        if query.startswith("SELECT pg_advisory_xact_lock")
+    ]
+    assert any("design-job-token:" in str(parameters[0]) for _, parameters in advisory)
+    assert any("design-job-display:" in str(parameters[0]) for _, parameters in advisory)
+    allocation_query = next(
+        query
+        for query in connection.queries
+        if "MAX" in query and "display_id" in query and "workspace_id=%s" in query
+    )
+    assert "organization_id" not in allocation_query
+
+
+def test_repository_retries_a_display_id_conflict_without_exposing_foreign_scope() -> None:
+    connection = _JobConnection()
+    connection.inject_display_conflict = True
+    repository = _repository(connection)
+
+    created = _create(repository)
+
+    assert created["display_id"] == "JOB-20260823-002"
+    assert created["organization_id"] == ORGANIZATION_ID
+    assert len(
+        [query for query in connection.queries if query.startswith("INSERT INTO design_jobs")]
+    ) == 2
+
+
+LIVE_DATABASE_URL = os.environ.get("MECH_DESIGN_DATABASE_URL", "").strip()
+
+
+@unittest.skipUnless(
+    LIVE_DATABASE_URL,
+    "MECH_DESIGN_DATABASE_URL is not configured; live Job allocation race skipped",
+)
+class LiveDesignJobAllocationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repositories = [
+            PostgresRepository(LIVE_DATABASE_URL),
+            PostgresRepository(LIVE_DATABASE_URL),
+        ]
+        with postgres_migrations_directory() as migrations:
+            cls.repositories[0].apply_migrations(migrations)
+
+    def setUp(self) -> None:
+        suffix = uuid4().hex
+        self.workspace_id = str(uuid4())
+        self.organization_ids = [f"job-race-org-a-{suffix}", f"job-race-org-b-{suffix}"]
+        self.design_group_ids = [
+            f"job-race-group-a-{suffix}",
+            f"job-race-group-b-{suffix}",
+        ]
+        self.actor_ids = [f"job-race-actor-a-{suffix}", f"job-race-actor-b-{suffix}"]
+        with self.repositories[0].connection() as connection, connection.transaction():
+            for organization_id, design_group_id, actor_id in zip(
+                self.organization_ids,
+                self.design_group_ids,
+                self.actor_ids,
+                strict=True,
+            ):
+                connection.execute(
+                    "INSERT INTO organizations(id,name) VALUES (%s,%s)",
+                    (organization_id, organization_id),
+                )
+                connection.execute(
+                    "INSERT INTO design_groups(id,organization_id,name) VALUES (%s,%s,%s)",
+                    (design_group_id, organization_id, design_group_id),
+                )
+                connection.execute(
+                    "INSERT INTO actors(id,organization_id,display_name,role) VALUES (%s,%s,%s,%s)",
+                    (actor_id, organization_id, actor_id, "family_owner"),
+                )
+
+    def tearDown(self) -> None:
+        with self.repositories[0].connection() as connection, connection.transaction():
+            connection.execute(
+                "DELETE FROM design_job_events WHERE job_id IN "
+                "(SELECT id FROM design_jobs WHERE workspace_id=%s)",
+                (self.workspace_id,),
+            )
+            connection.execute(
+                "DELETE FROM design_jobs WHERE workspace_id=%s", (self.workspace_id,)
+            )
+            connection.execute("DELETE FROM actors WHERE id=ANY(%s)", (self.actor_ids,))
+            connection.execute(
+                "DELETE FROM design_groups WHERE id=ANY(%s)",
+                (self.design_group_ids,),
+            )
+            connection.execute(
+                "DELETE FROM organizations WHERE id=ANY(%s)",
+                (self.organization_ids,),
+            )
+
+    def test_concurrent_scopes_receive_distinct_workspace_global_display_ids(self) -> None:
+        barrier = threading.Barrier(2)
+
+        def create(index: int) -> dict[str, object]:
+            barrier.wait(timeout=5)
+            return self.repositories[index].create_design_job(
+                job_id=str(uuid4()),
+                workspace_id=self.workspace_id,
+                display_date="2026-08-23",
+                job_type="mechanical_design",
+                title=f"Race Job {index}",
+                slug=f"race-job-{index}",
+                organization_id=self.organization_ids[index],
+                design_group_id=self.design_group_ids[index],
+                family_id=None,
+                idempotency_token=f"race-token-{index}",
+                actor_id=self.actor_ids[index],
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            rows = list(executor.map(create, (0, 1)))
+
+        self.assertEqual(
+            {str(row["display_id"]) for row in rows},
+            {"JOB-20260823-001", "JOB-20260823-002"},
+        )
+        for index, row in enumerate(rows):
+            self.assertEqual(row["organization_id"], self.organization_ids[index])
+            self.assertEqual(row["design_group_id"], self.design_group_ids[index])
+
+
 WORKSPACE_ID = UUID("20000000-0000-4000-8000-000000000001")
 JOB_ID = UUID("10000000-0000-4000-8000-000000000001")
 NOW = datetime(2026, 8, 23, 8, 15, 30, tzinfo=timezone.utc)
@@ -572,7 +767,7 @@ class _ManagerRepository:
         row: dict[str, object] = {
             "id": str(kwargs["job_id"]),
             "workspace_id": str(kwargs["workspace_id"]),
-            "display_id": kwargs["display_id"],
+            "display_id": f"JOB-{str(kwargs['display_date']).replace('-', '')}-{len(self.jobs) + 1:03d}",
             "job_type": kwargs["job_type"],
             "title": kwargs["title"],
             "slug": kwargs["slug"],
@@ -780,8 +975,8 @@ def test_manager_provisions_exact_portable_layout_and_manifest(tmp_path: Path) -
     }
     payload = json.loads((root / "job.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == "MechanicalDesignJob/v1"
-    assert payload["created_at"] == "2026-08-23T08:15:30Z"
-    assert payload["updated_at"] == "2026-08-23T08:15:30Z"
+    assert payload["created_at"] == "2026-08-23T08:15:30.000000Z"
+    assert payload["updated_at"] == "2026-08-23T08:15:30.000000Z"
     assert payload["source_snapshots"] == []
     assert payload["active_working_copy_id"] is None
     assert not any(str(manager.workspace.workspace) in str(value) for value in payload.values())
@@ -933,9 +1128,9 @@ def test_manifest_validation_rejects_invalid_uuid_hash_timestamp_phase_and_path(
                 "source_model_revision_id": "40000000-0000-4000-8000-000000000001",
             }
         ],
-        "created_at": "2026-08-23T08:15:30Z",
+        "created_at": "2026-08-23T08:15:30.000000Z",
         "created_by": ACTOR_ID,
-        "updated_at": "2026-08-23T08:15:30+00:00",
+        "updated_at": "2026-08-23T08:15:30.000000Z",
     }
     assert DesignJobManifest.from_dict(valid).source_snapshots[0]["sha256"] == "a" * 64
 
@@ -968,6 +1163,147 @@ def test_manifest_validation_rejects_invalid_uuid_hash_timestamp_phase_and_path(
     unexpected_path["original_source_path"] = "/Users/private/source.FCStd"
     with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
         DesignJobManifest.from_dict(unexpected_path)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "analysis/bad<name>.json",
+        "analysis/bad>name.json",
+        'analysis/bad"name.json',
+        "analysis/bad|name.json",
+        "analysis/bad?name.json",
+        "analysis/bad*name.json",
+        "analysis/control\x01name.json",
+        "analysis/control\x7fname.json",
+        "analysis/" + "a" * 256,
+        "analysis/COM¹.txt",
+    ),
+)
+def test_portable_paths_reject_windows_invalid_characters_and_lengths(
+    tmp_path: Path, relative_path: str
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+
+    with pytest.raises(JobFailure) as captured:
+        managed_job_path(
+            job_root=root,
+            relative_path=relative_path,
+            allow_missing_leaf=True,
+        )
+
+    assert captured.value.code == "JOB_PATH_OUTSIDE"
+
+
+def test_manifest_rejects_casefolded_snapshot_path_collisions() -> None:
+    payload: dict[str, object] = {
+        "schema_version": "MechanicalDesignJob/v1",
+        "job_id": str(JOB_ID),
+        "display_id": "JOB-20260823-001",
+        "job_type": "mechanical_design",
+        "workspace_id": str(WORKSPACE_ID),
+        "title": "Pump",
+        "slug": "pump",
+        "status": "active",
+        "phase": "requirements",
+        "revision": 1,
+        "organization_id": ORGANIZATION_ID,
+        "design_group_id": DESIGN_GROUP_ID,
+        "family_id": None,
+        "directory_name": "JOB-20260823-001-pump",
+        "active_working_copy_id": None,
+        "source_snapshots": [
+            {
+                "snapshot_id": "30000000-0000-4000-8000-000000000001",
+                "stored_path": "inputs/source/É.FCStd",
+                "sha256": "a" * 64,
+                "source_kind": "existing_model",
+                "source_model_revision_id": None,
+            },
+            {
+                "snapshot_id": "30000000-0000-4000-8000-000000000002",
+                "stored_path": "inputs/source/é.fcstd",
+                "sha256": "b" * 64,
+                "source_kind": "existing_model",
+                "source_model_revision_id": None,
+            },
+        ],
+        "created_at": "2026-08-23T08:15:30.000000Z",
+        "created_by": ACTOR_ID,
+        "updated_at": "2026-08-23T08:15:30.000000Z",
+    }
+
+    with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
+        DesignJobManifest.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    (
+        "2026-08-23T08:15:30Z",
+        "2026-08-23T08:15:30.000Z",
+        "2026-08-23T08:15:30.000000+00:00",
+        "2026-08-23T16:15:30.000000+08:00",
+        "2026-08-23t08:15:30.000000z",
+    ),
+)
+def test_manifest_rejects_noncanonical_rfc3339_timestamp_spellings(
+    timestamp: str,
+) -> None:
+    payload = DesignJobManifest(
+        job_id=JOB_ID,
+        display_id="JOB-20260823-001",
+        job_type="mechanical_design",
+        workspace_id=WORKSPACE_ID,
+        title="Pump",
+        slug="pump",
+        status="active",
+        phase="requirements",
+        revision=1,
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        family_id=None,
+        directory_name="JOB-20260823-001-pump",
+        active_working_copy_id=None,
+        source_snapshots=(),
+        created_at="2026-08-23T08:15:30.000000Z",
+        created_by=ACTOR_ID,
+        updated_at="2026-08-23T08:15:30.000000Z",
+    ).as_dict()
+    payload["updated_at"] = timestamp
+
+    with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
+        DesignJobManifest.from_dict(payload)
+
+
+def test_manifest_preserves_canonical_rfc3339_microsecond_precision() -> None:
+    payload = DesignJobManifest(
+        job_id=JOB_ID,
+        display_id="JOB-20260823-001",
+        job_type="mechanical_design",
+        workspace_id=WORKSPACE_ID,
+        title="Pump",
+        slug="pump",
+        status="active",
+        phase="requirements",
+        revision=1,
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        family_id=None,
+        directory_name="JOB-20260823-001-pump",
+        active_working_copy_id=None,
+        source_snapshots=(),
+        created_at="2026-08-23T08:15:30.123456Z",
+        created_by=ACTOR_ID,
+        updated_at="2026-08-23T08:15:31.654321Z",
+    ).as_dict()
+
+    parsed = DesignJobManifest.from_dict(payload)
+
+    assert parsed.created_at == "2026-08-23T08:15:30.123456Z"
+    assert parsed.updated_at == "2026-08-23T08:15:31.654321Z"
 
 
 def test_doctor_reports_hand_edit_and_revision_mismatch_then_repair_republishes(
@@ -1028,6 +1364,227 @@ def test_repair_refuses_manifest_identity_change(tmp_path: Path) -> None:
         )
 
     assert captured.value.code == "JOB_REPAIR_UNSAFE"
+
+
+def test_get_doctor_and_repair_reject_forged_operational_bindings(
+    tmp_path: Path,
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    manifest_path = manager.workspace.jobs_root / manifest.directory_name / "job.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["active_working_copy_id"] = "50000000-0000-4000-8000-000000000001"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobFailure) as get_failure:
+        manager.get(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+        )
+    report = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    with pytest.raises(JobFailure) as repair_failure:
+        manager.repair(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+
+    assert get_failure.value.code == "JOB_OPERATIONAL_BINDING_FORGED"
+    assert {issue["code"] for issue in report["issues"]} >= {
+        "JOB_OPERATIONAL_BINDING_FORGED"
+    }
+    assert repair_failure.value.code == "JOB_REPAIR_UNSAFE"
+
+
+def test_missing_manifest_repair_validates_the_full_directory_contract(
+    tmp_path: Path,
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    (root / "job.json").unlink()
+    (root / "validation/images").rmdir()
+
+    with pytest.raises(JobFailure) as captured:
+        manager.repair(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+
+    assert captured.value.code == "JOB_REPAIR_UNSAFE"
+
+
+def test_doctor_and_missing_manifest_repair_use_only_pinned_read_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    assert manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )["status"] == "ok"
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            Path,
+            "read_text",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("detached read_text is forbidden")
+            ),
+        )
+        assert manager.doctor(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+        )["status"] == "ok"
+
+    (root / "job.json").unlink()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            Path,
+            "iterdir",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("detached iterdir is forbidden")
+            ),
+        )
+        repaired = manager.repair(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+    assert repaired.revision == manifest.revision
+
+
+def test_repair_freshens_authority_after_lock_when_transition_commits_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    original_lock = jobs_module.locked_job_root
+    injected = False
+
+    @contextmanager
+    def transition_while_waiting(*, job_root: Path):
+        nonlocal injected
+        with original_lock(job_root=job_root) as locked:
+            if not injected:
+                injected = True
+                repository.transition_design_job(
+                    job_id=str(JOB_ID),
+                    organization_id=ORGANIZATION_ID,
+                    design_group_id=DESIGN_GROUP_ID,
+                    expected_revision=manifest.revision,
+                    status="completed",
+                    phase="completed",
+                    actor_id=ACTOR_ID,
+                    reason="concurrent authoritative transition",
+                )
+            yield locked
+
+    monkeypatch.setattr(jobs_module, "locked_job_root", transition_while_waiting)
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+    )
+
+    assert repaired.revision == 2
+    assert repaired.status == "completed"
+    on_disk = json.loads((root / "job.json").read_text(encoding="utf-8"))
+    assert on_disk["revision"] == 2
+    assert on_disk["status"] == "completed"
+
+
+def test_doctor_receipt_is_bound_to_workspace_revision_manifest_and_timestamp(
+    tmp_path: Path,
+) -> None:
+    manager, _ = _manager(tmp_path)
+    created = _create_managed_job(manager)
+    manifest_path = manager.workspace.jobs_root / created.directory_name / "job.json"
+
+    first = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    assert first["workspace_id"] == str(WORKSPACE_ID)
+    assert first["authoritative_revision"] == created.revision
+    assert first["authoritative_updated_at"] == "2026-08-23T08:15:30.000000Z"
+    assert first["manifest_sha256"] == hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    assert first["verified_snapshots"] == []
+
+    closed = manager.close(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=created.revision,
+        status="cancelled",
+        phase="requirements",
+        actor_id=ACTOR_ID,
+        reason="receipt revision regression",
+    )
+    second = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+
+    assert second["authoritative_revision"] == closed.revision
+    assert second["receipt_sha256"] != first["receipt_sha256"]
+
+
+def test_lifecycle_projection_failure_is_typed_and_repairable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, repository = _manager(tmp_path)
+    created = _create_managed_job(manager)
+    original_replace = jobs_module.atomic_replace
+    failed = False
+
+    def fail_final_projection(path: Path, content: bytes) -> None:
+        nonlocal failed
+        if path.name == "job.json" and not failed:
+            failed = True
+            raise OSError("injected final projection failure")
+        original_replace(path, content)
+
+    monkeypatch.setattr(jobs_module, "atomic_replace", fail_final_projection)
+    with pytest.raises(JobFailure) as captured:
+        manager.close(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            expected_revision=created.revision,
+            status="cancelled",
+            phase="requirements",
+            actor_id=ACTOR_ID,
+            reason="projection failure regression",
+        )
+
+    assert captured.value.code == "JOB_PROJECTION_INCOMPLETE"
+    assert repository.jobs[str(JOB_ID)]["revision"] == created.revision + 1
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert repaired.revision == created.revision + 1
 
 
 def test_lifecycle_and_candidate_methods_republish_and_keep_scope(tmp_path: Path) -> None:

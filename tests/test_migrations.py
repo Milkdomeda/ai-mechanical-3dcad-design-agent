@@ -85,6 +85,8 @@ def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
     assert "id uuid PRIMARY KEY" in sql
     assert "workspace_id uuid NOT NULL" in sql
     assert "UNIQUE(workspace_id,idempotency_token)" in sql
+    assert "UNIQUE(workspace_id,display_id)" in sql
+    assert "display_id ~ '^JOB-[0-9]{8}-[0-9]{3,}$'" in sql
     assert "revision integer NOT NULL DEFAULT 0" in sql
     assert "job_type IN ('mechanical_design','product_family_onboarding')" in sql
     assert "status IN ('active','blocked','completed','cancelled','archived')" in sql

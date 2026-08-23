@@ -5,6 +5,7 @@ import importlib
 import os
 from pathlib import Path
 from types import ModuleType
+from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,21 @@ class ManagedPath:
     path: Path
     identity: FileIdentity | None
     volume_root: Path
+
+
+@dataclass(frozen=True)
+class ManagedFileRead:
+    content: bytes
+    sha256: str
+    size_bytes: int
+    identity: FileIdentity
+
+
+@dataclass(frozen=True)
+class ManagedDirectoryEntry:
+    name: str
+    is_directory: bool
+    identity: FileIdentity
 
 
 class SecureFilesystemError(ValueError, RuntimeError):
@@ -80,6 +96,16 @@ def same_managed_path(left: Path, right: Path) -> bool:
     if managed_left.identity is not None and managed_right.identity is not None:
         return managed_left.identity == managed_right.identity
     return managed_left.path == managed_right.path
+
+
+def read_managed_file(path: Path) -> ManagedFileRead:
+    """Read a regular managed file while its ancestors and leaf stay pinned."""
+    return _get_backend().read_managed_file(path)
+
+
+def list_managed_directory(path: Path) -> Sequence[ManagedDirectoryEntry]:
+    """Enumerate one managed directory with stable ancestor and child identities."""
+    return _get_backend().list_managed_directory(path)
 
 
 def ensure_managed_directory(

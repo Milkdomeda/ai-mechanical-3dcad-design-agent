@@ -12,7 +12,13 @@ import stat
 import tempfile
 from typing import Iterator
 
-from .secure_fs import FileIdentity, ManagedPath, SecureFilesystemError
+from .secure_fs import (
+    FileIdentity,
+    ManagedDirectoryEntry,
+    ManagedFileRead,
+    ManagedPath,
+    SecureFilesystemError,
+)
 
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
@@ -68,6 +74,55 @@ def directory_entry_matches_fd(
         return (pinned.st_dev, pinned.st_ino) == (current.st_dev, current.st_ino)
     finally:
         os.close(current_descriptor)
+
+
+def _entry_matches_fd(
+    parent_fd: int,
+    name: str,
+    expected_descriptor: int,
+    *,
+    directory: bool,
+) -> bool:
+    flags = _DIRECTORY_FLAGS if directory else os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        current_descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError:
+        return False
+    try:
+        pinned = os.fstat(expected_descriptor)
+        current = os.fstat(current_descriptor)
+        return (pinned.st_dev, pinned.st_ino) == (current.st_dev, current.st_ino)
+    finally:
+        os.close(current_descriptor)
+
+
+def _open_pinned_directory_chain(path: Path) -> tuple[Path, list[int]]:
+    canonical = _normalize_top_level_alias(_absolute(path))
+    descriptors = [os.open(os.sep, _DIRECTORY_FLAGS)]
+    try:
+        for component in canonical.parts[1:]:
+            descriptors.append(
+                os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+            )
+        return canonical, descriptors
+    except Exception:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
+def _verify_pinned_directory_chain(canonical: Path, descriptors: list[int]) -> None:
+    for index, component in enumerate(canonical.parts[1:]):
+        if not _entry_matches_fd(
+            descriptors[index],
+            component,
+            descriptors[index + 1],
+            directory=True,
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed directory ancestor changed during pinned operation",
+            )
 
 
 def remove_tree_at(parent_fd: int, child_name: str, *, label: str) -> None:
@@ -185,6 +240,134 @@ def validate_external_read_path(path: Path) -> Path:
         raise SecureFilesystemError(
             "EXTERNAL_PATH_INVALID", "external path cannot be resolved"
         ) from exc
+
+
+def read_managed_file(path: Path) -> ManagedFileRead:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(target.parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed file ancestors cannot be pinned",
+        ) from exc
+    leaf_fd: int | None = None
+    try:
+        leaf_fd = os.open(
+            target.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=descriptors[-1],
+        )
+        metadata = os.fstat(leaf_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT", "managed read target must be a regular file"
+            )
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(leaf_fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, leaf_fd, directory=False
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed file changed during pinned read",
+            )
+        _verify_pinned_directory_chain(parent, descriptors)
+        return ManagedFileRead(
+            content=b"".join(chunks),
+            sha256=digest.hexdigest(),
+            size_bytes=size,
+            identity=FileIdentity(metadata.st_dev, metadata.st_ino),
+        )
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed file cannot be read safely",
+        ) from exc
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
+    try:
+        canonical, descriptors = _open_pinned_directory_chain(path)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed directory cannot be pinned for enumeration",
+        ) from exc
+    children: list[tuple[str, bool, int, os.stat_result]] = []
+    try:
+        for name in sorted(os.listdir(descriptors[-1])):
+            metadata = os.stat(
+                name, dir_fd=descriptors[-1], follow_symlinks=False
+            )
+            if stat.S_ISLNK(metadata.st_mode):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_SYMLINK",
+                    "managed directory entry must not be a symlink",
+                )
+            is_directory = stat.S_ISDIR(metadata.st_mode)
+            if not is_directory and not stat.S_ISREG(metadata.st_mode):
+                raise SecureFilesystemError(
+                    "MANAGED_FILE_CONFLICT",
+                    "managed directory contains an unsupported file type",
+                )
+            flags = (
+                _DIRECTORY_FLAGS
+                if is_directory
+                else os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            child_fd = os.open(name, flags, dir_fd=descriptors[-1])
+            opened_metadata = os.fstat(child_fd)
+            if is_directory != stat.S_ISDIR(opened_metadata.st_mode) or (
+                not is_directory and not stat.S_ISREG(opened_metadata.st_mode)
+            ):
+                os.close(child_fd)
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    "managed directory entry type changed during enumeration",
+                )
+            children.append((name, is_directory, child_fd, opened_metadata))
+        result: list[ManagedDirectoryEntry] = []
+        for name, is_directory, child_fd, metadata in children:
+            if not _entry_matches_fd(
+                descriptors[-1], name, child_fd, directory=is_directory
+            ):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    "managed directory entry changed during enumeration",
+                )
+            result.append(
+                ManagedDirectoryEntry(
+                    name=name,
+                    is_directory=is_directory,
+                    identity=FileIdentity(metadata.st_dev, metadata.st_ino),
+                )
+            )
+        _verify_pinned_directory_chain(canonical, descriptors)
+        return tuple(result)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed directory cannot be enumerated safely",
+        ) from exc
+    finally:
+        for _, _, child_fd, _ in reversed(children):
+            os.close(child_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def ensure_managed_directory(

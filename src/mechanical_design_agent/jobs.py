@@ -15,12 +15,15 @@ import unicodedata
 from uuid import UUID, uuid4
 
 from .secure_fs import (
+    ManagedFileRead,
     SecureFilesystemError,
     atomic_publish_directory,
     atomic_publish_new,
     atomic_replace,
     ensure_managed_directory,
     exclusive_file_lock,
+    list_managed_directory,
+    read_managed_file,
     remove_owned_tree,
     validate_managed_path,
 )
@@ -33,6 +36,10 @@ PROVISIONING_IDENTITY_SCHEMA = "MechanicalDesignJobProvisioning/v1"
 
 _DISPLAY_ID = re.compile(r"JOB-(\d{8})-(\d{3,})\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_CANONICAL_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z"
+)
+_WINDOWS_INVALID_CHARACTERS = frozenset('<>:"/\\|?*')
 _JOB_TYPES = {
     "mechanical_design": (
         "requirements",
@@ -160,11 +167,13 @@ def _parse_timestamp(value: object, label: str) -> str:
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
-        spelling = value.strip()
-        if not spelling:
+        spelling = value
+        if _CANONICAL_TIMESTAMP.fullmatch(spelling) is None:
             raise _invalid_manifest(f"{label} must be an RFC-3339 timestamp")
         try:
-            parsed = datetime.fromisoformat(spelling.replace("Z", "+00:00"))
+            parsed = datetime.strptime(spelling, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError as exc:
             raise _invalid_manifest(f"{label} must be an RFC-3339 timestamp") from exc
     else:
@@ -172,7 +181,17 @@ def _parse_timestamp(value: object, label: str) -> str:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise _invalid_manifest(f"{label} must include a UTC offset")
     utc = parsed.astimezone(timezone.utc)
-    return utc.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _portable_collision_key(parts: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        unicodedata.normalize("NFKC", part).casefold() for part in parts
+    )
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
 
 
 def _portable_parts(value: str | os.PathLike[str], label: str) -> tuple[str, ...]:
@@ -181,6 +200,10 @@ def _portable_parts(value: str | os.PathLike[str], label: str) -> tuple[str, ...
         raise JobFailure("JOB_PATH_OUTSIDE", f"{label} must be a relative path")
     windows = PureWindowsPath(spelling)
     posix = PurePosixPath(spelling)
+    if spelling != unicodedata.normalize("NFC", spelling):
+        raise JobFailure(
+            "JOB_PATH_OUTSIDE", f"{label} must use canonical Unicode NFC"
+        )
     if (
         "\\" in spelling
         or posix.is_absolute()
@@ -198,10 +221,13 @@ def _portable_parts(value: str | os.PathLike[str], label: str) -> tuple[str, ...
             f"{label} contains path traversal",
         )
     for part in parts:
+        normalized_stem = unicodedata.normalize("NFKC", part).casefold().split(".", 1)[0]
         if (
-            ":" in part
+            any(character in _WINDOWS_INVALID_CHARACTERS for character in part)
+            or any(unicodedata.category(character) == "Cc" for character in part)
             or part.endswith((" ", "."))
-            or part.casefold().split(".", 1)[0] in _WINDOWS_RESERVED_NAMES
+            or normalized_stem in _WINDOWS_RESERVED_NAMES
+            or _utf16_length(part) > 255
         ):
             raise JobFailure(
                 "JOB_PATH_OUTSIDE",
@@ -234,7 +260,13 @@ def sanitize_job_slug(title: str) -> str:
         elif not previous_separator and pieces:
             pieces.append("-")
             previous_separator = True
-    slug = "".join(pieces).strip("-")[:72].rstrip("- .")
+    raw_slug = "".join(pieces).strip("-")
+    selected: list[str] = []
+    for character in raw_slug:
+        if _utf16_length("".join(selected) + character) > 72:
+            break
+        selected.append(character)
+    slug = unicodedata.normalize("NFC", "".join(selected)).rstrip("- .")
     if not slug or slug.casefold().split(".", 1)[0] in _WINDOWS_RESERVED_NAMES:
         slug = "design-job"
     return slug
@@ -379,6 +411,14 @@ class DesignJobManifest:
         stored_paths = [snapshot["stored_path"] for snapshot in snapshots]
         if len(stored_paths) != len(set(stored_paths)):
             raise _invalid_manifest("source_snapshots must contain unique stored_path values")
+        collision_keys = [
+            _portable_collision_key(PurePosixPath(str(path)).parts)
+            for path in stored_paths
+        ]
+        if len(collision_keys) != len(set(collision_keys)):
+            raise _invalid_manifest(
+                "source_snapshots contain casefolded or Unicode-normalized path collisions"
+            )
         created_at = _parse_timestamp(raw.get("created_at"), "created_at")
         updated_at = _parse_timestamp(raw.get("updated_at"), "updated_at")
         if datetime.fromisoformat(updated_at.replace("Z", "+00:00")) < datetime.fromisoformat(
@@ -491,22 +531,29 @@ def _json_bytes(payload: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def _read_json(path: Path) -> Mapping[str, object]:
+def _decode_json(read: ManagedFileRead) -> Mapping[str, object]:
     try:
-        managed = validate_managed_path(path, allow_missing_leaf=False).path
-        if not managed.is_file() or managed.is_symlink():
-            raise OSError("managed JSON path is not a regular file")
-        raw = json.loads(managed.read_text(encoding="utf-8"))
+        raw = json.loads(read.content.decode("utf-8"))
     except (
-        OSError,
         UnicodeDecodeError,
         json.JSONDecodeError,
-        SecureFilesystemError,
     ) as exc:
         raise _invalid_manifest("job.json is not valid UTF-8 JSON") from exc
     if not isinstance(raw, Mapping):
         raise _invalid_manifest("job.json must contain an object")
     return raw
+
+
+def _read_json_with_evidence(path: Path) -> tuple[Mapping[str, object], ManagedFileRead]:
+    try:
+        read = read_managed_file(path)
+    except SecureFilesystemError as exc:
+        raise _invalid_manifest("job.json is missing or not a stable managed file") from exc
+    return _decode_json(read), read
+
+
+def _read_json(path: Path) -> Mapping[str, object]:
+    return _read_json_with_evidence(path)[0]
 
 
 def _manifest_bytes(manifest: DesignJobManifest) -> bytes:
@@ -562,36 +609,6 @@ class DesignJobManager:
                 "JOB_ROOT_INVALID", "Workspace jobs_root cannot be locked safely"
             ) from exc
 
-    def _allocate_display_id(
-        self,
-        *,
-        jobs_root: Path,
-        organization_id: str,
-        design_group_id: str,
-        instant: datetime,
-    ) -> str:
-        if instant.tzinfo is None or instant.utcoffset() is None:
-            instant = instant.replace(tzinfo=timezone.utc)
-        date = instant.astimezone(timezone.utc).strftime("%Y%m%d")
-        numbers: set[int] = set()
-        for path in jobs_root.iterdir():
-            match = re.match(r"JOB-(\d{8})-(\d+)(?:-|\Z)", path.name)
-            if match is not None and match.group(1) == date:
-                numbers.add(int(match.group(2)))
-        rows = self.repository.list_design_jobs(
-            organization_id=organization_id,
-            design_group_id=design_group_id,
-            status=None,
-            job_type=None,
-            family_id=None,
-        )
-        for row in rows:
-            match = _DISPLAY_ID.fullmatch(str(row.get("display_id", "")))
-            if match is not None and match.group(1) == date:
-                numbers.add(int(match.group(2)))
-        sequence = max(numbers, default=0) + 1
-        return f"JOB-{date}-{sequence:03d}"
-
     def create(
         self,
         *,
@@ -615,20 +632,18 @@ class DesignJobManager:
         family = family_id.strip() if isinstance(family_id, str) and family_id.strip() else None
         with self._locked_jobs_root() as jobs_root:
             instant = self._now_factory()
+            if not isinstance(instant, datetime):
+                raise JobFailure("JOB_INPUT_INVALID", "now_factory must return datetime")
+            if instant.tzinfo is None or instant.utcoffset() is None:
+                instant = instant.replace(tzinfo=timezone.utc)
             job_id = self._uuid_factory()
             if not isinstance(job_id, UUID) or job_id.version is None:
                 raise JobFailure("JOB_INPUT_INVALID", "generated job_id is not an RFC-4122 UUID")
-            display_id = self._allocate_display_id(
-                jobs_root=jobs_root,
-                organization_id=organization,
-                design_group_id=design_group,
-                instant=instant,
-            )
             try:
                 row = self.repository.create_design_job(
                     job_id=str(job_id),
                     workspace_id=str(self.workspace.workspace_id),
-                    display_id=display_id,
+                    display_date=instant.astimezone(timezone.utc).strftime("%Y-%m-%d"),
                     job_type=job_type,
                     title=title_value,
                     slug=sanitize_job_slug(title_value),
@@ -678,9 +693,6 @@ class DesignJobManager:
     def _manifest_from_row(
         self,
         row: Mapping[str, object],
-        *,
-        active_working_copy_id: str | None = None,
-        source_snapshots: Sequence[Mapping[str, object]] = (),
     ) -> DesignJobManifest:
         slug = str(row.get("slug", ""))
         display_id = str(row.get("display_id", ""))
@@ -700,8 +712,8 @@ class DesignJobManager:
             "design_group_id": row.get("design_group_id"),
             "family_id": row.get("family_id"),
             "directory_name": directory,
-            "active_working_copy_id": active_working_copy_id,
-            "source_snapshots": [dict(snapshot) for snapshot in source_snapshots],
+            "active_working_copy_id": None,
+            "source_snapshots": [],
             "created_at": row.get("created_at"),
             "created_by": row.get("created_by"),
             "updated_at": row.get("updated_at"),
@@ -782,19 +794,26 @@ class DesignJobManager:
         provisioning_state = row.get("provisioning_state")
         if provisioning_state == "ready":
             try:
-                return self._read_ready_manifest(row)
+                return self._read_ready_manifest_under_lock(
+                    row=row,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
             except JobFailure as exc:
                 if exc.code != "JOB_MANIFEST_MISMATCH":
                     raise
-                return self._finish_ready_projection(row)
+                return self._finish_ready_projection(
+                    row=row,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
         if provisioning_state != "provisioning" or row.get("directory_name") is not None:
             raise JobFailure(
                 "JOB_PROVISIONING_INCOMPLETE",
                 "authoritative Job provisioning state is inconsistent",
             )
         job_id = str(_parse_uuid(row.get("id"), "job_id"))
-        preliminary = self._manifest_from_row(row)
-        directory_name = preliminary.directory_name
+        directory_name = self._manifest_from_row(row).directory_name
         provisioning_root = ensure_managed_directory(
             jobs_root / ".provisioning", parents=False, exist_ok=True
         ).path
@@ -812,9 +831,6 @@ class DesignJobManager:
                 raise JobFailure(
                     "JOB_PATH_UNSAFE", "final Job directory is unsafe"
                 ) from exc
-            self._assert_provisioning_identity(
-                final, row=row, directory_name=directory_name
-            )
         else:
             if stage.exists() or stage.is_symlink():
                 try:
@@ -823,30 +839,38 @@ class DesignJobManager:
                     raise JobFailure(
                         "JOB_PATH_UNSAFE", "staged Job directory is unsafe"
                     ) from exc
-                self._assert_provisioning_identity(
-                    stage, row=row, directory_name=directory_name
-                )
             else:
                 self._create_staging_tree(
                     stage, row=row, directory_name=directory_name
                 )
             self._checkpoint("after_temporary_directory")
-            self._create_layout(stage)
-            manifest_path = stage / "job.json"
-            if manifest_path.exists() or manifest_path.is_symlink():
-                existing = DesignJobManifest.from_dict(_read_json(manifest_path))
-                self._assert_manifest_matches(existing, preliminary)
-                if (
-                    existing.active_working_copy_id is not None
-                    or existing.source_snapshots
-                ):
+            with locked_job_root(job_root=stage) as locked_stage:
+                fresh = self._fresh_locked_row(
+                    original=row,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    directory_name=directory_name,
+                    allow_unrecorded=True,
+                )
+                if fresh.get("provisioning_state") != "provisioning":
                     raise JobFailure(
                         "JOB_PROVISIONING_CONFLICT",
-                        "core provisioning manifest contains premature CAD bindings",
+                        "staged Job no longer has provisioning authority",
                     )
-            else:
-                atomic_publish_new(manifest_path, _manifest_bytes(preliminary))
-            self._checkpoint("after_manifest_write")
+                self._assert_provisioning_identity(
+                    locked_stage, row=fresh, directory_name=directory_name
+                )
+                self._create_layout(locked_stage)
+                preliminary = self._manifest_from_row(fresh)
+                manifest_path = locked_stage / "job.json"
+                entries = {entry.name for entry in list_managed_directory(locked_stage)}
+                if "job.json" in entries:
+                    existing = DesignJobManifest.from_dict(_read_json(manifest_path))
+                    self._assert_manifest_matches(existing, preliminary)
+                else:
+                    atomic_publish_new(manifest_path, _manifest_bytes(preliminary))
+                self._checkpoint("after_manifest_write")
             try:
                 atomic_publish_directory(stage, final)
             except FileExistsError as exc:
@@ -855,84 +879,163 @@ class DesignJobManager:
                     "final Job directory already exists",
                 ) from exc
             self._checkpoint("after_atomic_rename")
-        try:
-            recorded = self.repository.record_design_job_directory(
+        with locked_job_root(job_root=final) as locked_final:
+            fresh = self._fresh_locked_row(
+                original=row,
                 job_id=job_id,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
-                expected_revision=int(row["revision"]),
                 directory_name=directory_name,
-                actor_id=actor_id,
+                allow_unrecorded=True,
             )
-        except KeyError as exc:
-            raise JobFailure(
-                "JOB_NOT_FOUND_OR_UNAUTHORIZED",
-                "Job identity is unknown or outside the authorized scope",
-            ) from exc
-        except ValueError as exc:
-            if "stale" in str(exc):
-                current = self._get_authoritative_row(
-                    job_id=job_id,
-                    organization_id=organization_id,
-                    design_group_id=design_group_id,
-                )
-                if (
-                    current.get("provisioning_state") == "ready"
-                    and current.get("directory_name") == directory_name
-                ):
-                    recorded = current
-                else:
+            self._assert_provisioning_identity(
+                locked_final, row=fresh, directory_name=directory_name
+            )
+            if fresh.get("provisioning_state") == "provisioning":
+                try:
+                    self.repository.record_design_job_directory(
+                        job_id=job_id,
+                        organization_id=organization_id,
+                        design_group_id=design_group_id,
+                        expected_revision=int(fresh["revision"]),
+                        directory_name=directory_name,
+                        actor_id=actor_id,
+                    )
+                except KeyError as exc:
                     raise JobFailure(
-                        "JOB_STALE_REVISION", "Job provisioning revision is stale"
+                        "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                        "Job identity is unknown or outside the authorized scope",
                     ) from exc
-            elif "already recorded" in str(exc):
-                recorded = self._get_authoritative_row(
-                    job_id=job_id,
-                    organization_id=organization_id,
-                    design_group_id=design_group_id,
+                except ValueError as exc:
+                    if "stale" not in str(exc) and "already recorded" not in str(exc):
+                        raise
+            self._checkpoint("after_directory_record")
+            authoritative = self._fresh_locked_row(
+                original=fresh,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=directory_name,
+                allow_unrecorded=False,
+            )
+            if authoritative.get("provisioning_state") != "ready":
+                raise JobFailure(
+                    "JOB_PROVISIONING_INCOMPLETE",
+                    "Job directory publication did not reach authoritative ready state",
                 )
-            else:
-                raise
-        self._checkpoint("after_directory_record")
-        current_manifest = DesignJobManifest.from_dict(_read_json(final / "job.json"))
-        completed = self._manifest_from_row(
-            recorded,
-            active_working_copy_id=current_manifest.active_working_copy_id,
-            source_snapshots=current_manifest.source_snapshots,
-        )
-        atomic_replace(final / "job.json", _manifest_bytes(completed))
-        return completed
+            current = DesignJobManifest.from_dict(
+                _read_json(locked_final / "job.json")
+            )
+            expected = self._manifest_from_row(authoritative)
+            self._assert_recoverable_projection(
+                current,
+                expected,
+                allowed_mismatches={"revision", "updated_at"},
+            )
+            self._replace_projection(locked_final / "job.json", expected)
+            return expected
 
     def _finish_ready_projection(
-        self, row: Mapping[str, object]
+        self,
+        *,
+        row: Mapping[str, object],
+        organization_id: str,
+        design_group_id: str,
     ) -> DesignJobManifest:
         """Finish only the known directory-record publication boundary."""
         root = self._final_path(row)
-        with locked_job_root(job_root=root):
-            actual = DesignJobManifest.from_dict(_read_json(root / "job.json"))
-            expected = self._manifest_from_row(
-                row,
-                active_working_copy_id=actual.active_working_copy_id,
-                source_snapshots=actual.source_snapshots,
+        with locked_job_root(job_root=root) as locked:
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=str(row["id"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
             )
-            actual_payload = actual.as_dict()
-            expected_payload = expected.as_dict()
-            mismatches = {
-                field
-                for field in _AUTHORITATIVE_MANIFEST_FIELDS
-                if actual_payload[field] != expected_payload[field]
-            }
-            if (
-                not mismatches
-                or mismatches <= {"revision", "updated_at"}
-                and actual.revision + 1 == expected.revision
-            ):
-                atomic_replace(root / "job.json", _manifest_bytes(expected))
-                return expected
-        raise JobFailure(
-            "JOB_MANIFEST_MISMATCH",
-            "job.json differs beyond the recoverable directory-record boundary",
+            actual = DesignJobManifest.from_dict(_read_json(locked / "job.json"))
+            expected = self._manifest_from_row(fresh)
+            self._assert_recoverable_projection(
+                actual,
+                expected,
+                allowed_mismatches={"revision", "updated_at"},
+            )
+            if actual.revision + 1 != expected.revision:
+                raise JobFailure(
+                    "JOB_MANIFEST_MISMATCH",
+                    "job.json is not at the recoverable directory-record revision",
+                )
+            self._replace_projection(locked / "job.json", expected)
+            return expected
+
+    def _fresh_locked_row(
+        self,
+        *,
+        original: Mapping[str, object],
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        directory_name: str,
+        allow_unrecorded: bool,
+    ) -> dict[str, Any]:
+        fresh = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
         )
+        if str(fresh.get("id")) != str(original.get("id")):
+            raise JobFailure("JOB_DIRECTORY_MISMATCH", "Job identity changed while locked")
+        if (
+            fresh.get("display_id") != original.get("display_id")
+            or fresh.get("slug") != original.get("slug")
+        ):
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "immutable Job directory components changed while locked",
+            )
+        recorded = fresh.get("directory_name")
+        if recorded != directory_name and not (allow_unrecorded and recorded is None):
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "authoritative Job directory changed while locked",
+            )
+        if directory_name != f"{fresh.get('display_id')}-{fresh.get('slug')}":
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "Job directory no longer matches immutable identity",
+            )
+        return fresh
+
+    @staticmethod
+    def _assert_recoverable_projection(
+        actual: DesignJobManifest,
+        expected: DesignJobManifest,
+        *,
+        allowed_mismatches: set[str],
+    ) -> None:
+        DesignJobManager._assert_manifest_matches_bindings(actual)
+        actual_payload = actual.as_dict()
+        expected_payload = expected.as_dict()
+        mismatches = {
+            field
+            for field in _AUTHORITATIVE_MANIFEST_FIELDS
+            if actual_payload[field] != expected_payload[field]
+        }
+        if not mismatches <= allowed_mismatches:
+            raise JobFailure(
+                "JOB_MANIFEST_MISMATCH",
+                "job.json differs beyond the recoverable projection boundary",
+            )
+
+    @staticmethod
+    def _replace_projection(path: Path, manifest: DesignJobManifest) -> None:
+        try:
+            atomic_replace(path, _manifest_bytes(manifest))
+        except (OSError, SecureFilesystemError) as exc:
+            raise JobFailure(
+                "JOB_PROJECTION_INCOMPLETE",
+                "PostgreSQL is authoritative but job.json publication is incomplete",
+            ) from exc
 
     def _get_authoritative_row(
         self,
@@ -992,18 +1095,42 @@ class DesignJobManager:
             )
         root = self._final_path(row)
         manifest = DesignJobManifest.from_dict(_read_json(root / "job.json"))
-        expected = self._manifest_from_row(
-            row,
-            active_working_copy_id=manifest.active_working_copy_id,
-            source_snapshots=manifest.source_snapshots,
-        )
+        expected = self._manifest_from_row(row)
         self._assert_manifest_matches(manifest, expected)
         return manifest
+
+    def _read_ready_manifest_under_lock(
+        self,
+        *,
+        row: Mapping[str, object],
+        organization_id: str,
+        design_group_id: str,
+    ) -> DesignJobManifest:
+        root = self._final_path(row)
+        with locked_job_root(job_root=root):
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=str(row["id"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
+            )
+            return self._read_ready_manifest(fresh)
+
+    @staticmethod
+    def _assert_manifest_matches_bindings(actual: DesignJobManifest) -> None:
+        if actual.active_working_copy_id is not None or actual.source_snapshots:
+            raise JobFailure(
+                "JOB_OPERATIONAL_BINDING_FORGED",
+                "core Job manifest contains disk-only operational bindings",
+            )
 
     @staticmethod
     def _assert_manifest_matches(
         actual: DesignJobManifest, expected: DesignJobManifest
     ) -> None:
+        DesignJobManager._assert_manifest_matches_bindings(actual)
         actual_payload = actual.as_dict()
         expected_payload = expected.as_dict()
         mismatches = [
@@ -1029,7 +1156,11 @@ class DesignJobManager:
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
-        return self._read_ready_manifest(row)
+        return self._read_ready_manifest_under_lock(
+            row=row,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
 
     def list(
         self,
@@ -1047,7 +1178,14 @@ class DesignJobManager:
             job_type=job_type,
             family_id=family_id,
         )
-        return [self._read_ready_manifest(row) for row in rows]
+        return [
+            self._read_ready_manifest_under_lock(
+                row=row,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+            )
+            for row in rows
+        ]
 
     def resolve(
         self,
@@ -1067,7 +1205,14 @@ class DesignJobManager:
             family_id=family_id,
             statuses=statuses,
         )
-        return [self._read_ready_manifest(row) for row in rows]
+        return [
+            self._read_ready_manifest_under_lock(
+                row=row,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+            )
+            for row in rows
+        ]
 
     def _transition(
         self,
@@ -1089,10 +1234,30 @@ class DesignJobManager:
         if row.get("revision") != expected_revision:
             raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
         root = self._final_path(row)
-        with locked_job_root(job_root=root):
-            current = self._read_ready_manifest(row)
+        with locked_job_root(job_root=root) as locked:
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
+            )
+            if fresh.get("revision") != expected_revision:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+            if status == "active":
+                if fresh.get("status") not in _TERMINAL_STATUSES:
+                    raise JobFailure(
+                        "JOB_NOT_TERMINAL", "only a terminal Job can be reopened"
+                    )
+            elif fresh.get("status") in _TERMINAL_STATUSES:
+                raise JobFailure(
+                    "JOB_TERMINAL",
+                    "terminal Job mutations require an explicit reopen operation",
+                )
+            self._read_ready_manifest(fresh)
             try:
-                updated_row = self.repository.transition_design_job(
+                self.repository.transition_design_job(
                     job_id=job_id,
                     organization_id=organization_id,
                     design_group_id=design_group_id,
@@ -1113,12 +1278,22 @@ class DesignJobManager:
                         "JOB_STALE_REVISION", "expected Job revision is stale"
                     ) from exc
                 raise
-            updated = self._manifest_from_row(
-                updated_row,
-                active_working_copy_id=current.active_working_copy_id,
-                source_snapshots=current.source_snapshots,
+            self._checkpoint("after_lifecycle_transition")
+            authoritative = self._fresh_locked_row(
+                original=fresh,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(fresh["directory_name"]),
+                allow_unrecorded=False,
             )
-            atomic_replace(root / "job.json", _manifest_bytes(updated))
+            if int(authoritative["revision"]) != expected_revision + 1:
+                raise JobFailure(
+                    "JOB_PROJECTION_INCOMPLETE",
+                    "authoritative transition committed at an unexpected revision",
+                )
+            updated = self._manifest_from_row(authoritative)
+            self._replace_projection(locked / "job.json", updated)
         return updated
 
     def close(
@@ -1137,16 +1312,6 @@ class DesignJobManager:
             raise JobFailure(
                 "JOB_INPUT_INVALID",
                 "close status must be completed, cancelled, or archived",
-            )
-        row = self._get_authoritative_row(
-            job_id=job_id,
-            organization_id=organization_id,
-            design_group_id=design_group_id,
-        )
-        if row.get("status") in _TERMINAL_STATUSES:
-            raise JobFailure(
-                "JOB_TERMINAL",
-                "terminal Job mutations require an explicit reopen operation",
             )
         return self._transition(
             job_id=job_id,
@@ -1170,13 +1335,6 @@ class DesignJobManager:
         actor_id: str,
         reason: str,
     ) -> DesignJobManifest:
-        row = self._get_authoritative_row(
-            job_id=job_id,
-            organization_id=organization_id,
-            design_group_id=design_group_id,
-        )
-        if row.get("status") not in _TERMINAL_STATUSES:
-            raise JobFailure("JOB_NOT_TERMINAL", "only a terminal Job can be reopened")
         return self._transition(
             job_id=job_id,
             organization_id=organization_id,
@@ -1193,11 +1351,23 @@ class DesignJobManager:
         return {"code": code, "message": message}
 
     def _doctor_report(
-        self, *, row: Mapping[str, object], issues: list[dict[str, str]]
+        self,
+        *,
+        row: Mapping[str, object],
+        issues: list[dict[str, str]],
+        manifest_sha256: str | None,
+        verified_snapshots: Sequence[Mapping[str, object]],
     ) -> dict[str, object]:
         report: dict[str, object] = {
             "schema_version": JOB_DOCTOR_SCHEMA,
             "job_id": str(row.get("id")),
+            "workspace_id": str(row.get("workspace_id")),
+            "authoritative_revision": row.get("revision"),
+            "authoritative_updated_at": _parse_timestamp(
+                row.get("updated_at"), "updated_at"
+            ),
+            "manifest_sha256": manifest_sha256,
+            "verified_snapshots": [dict(snapshot) for snapshot in verified_snapshots],
             "status": "ok" if not issues else "blocked",
             "issues": issues,
         }
@@ -1206,6 +1376,25 @@ class DesignJobManager:
         ).encode("utf-8")
         report["receipt_sha256"] = hashlib.sha256(receipt_payload).hexdigest()
         return report
+
+    def _directory_contract_issues(self, root: Path) -> list[dict[str, str]]:
+        issues: list[dict[str, str]] = []
+        for relative in _DIRECTORY_CONTRACT:
+            try:
+                candidate = managed_job_path(
+                    job_root=root,
+                    relative_path=relative,
+                    allow_missing_leaf=False,
+                )
+                list_managed_directory(candidate)
+            except (JobFailure, SecureFilesystemError) as exc:
+                issues.append(
+                    self._issue(
+                        exc.code,
+                        f"required managed directory is missing or unsafe: {relative}",
+                    )
+                )
+        return issues
 
     def doctor(
         self,
@@ -1227,89 +1416,80 @@ class DesignJobManager:
                     "authoritative Job provisioning is incomplete",
                 )
             )
-            return self._doctor_report(row=row, issues=issues)
+            return self._doctor_report(
+                row=row,
+                issues=issues,
+                manifest_sha256=None,
+                verified_snapshots=(),
+            )
         try:
             root = self._final_path(row)
         except JobFailure as exc:
             issues.append(self._issue(exc.code, exc.message))
-            return self._doctor_report(row=row, issues=issues)
-        for relative in _DIRECTORY_CONTRACT:
+            return self._doctor_report(
+                row=row,
+                issues=issues,
+                manifest_sha256=None,
+                verified_snapshots=(),
+            )
+        manifest_sha256: str | None = None
+        with locked_job_root(job_root=root) as locked:
             try:
-                candidate = managed_job_path(
-                    job_root=root,
-                    relative_path=relative,
-                    allow_missing_leaf=False,
+                fresh = self._fresh_locked_row(
+                    original=row,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    directory_name=str(row["directory_name"]),
+                    allow_unrecorded=False,
                 )
-                if not candidate.is_dir():
-                    issues.append(
-                        self._issue(
-                            "JOB_UNEXPECTED_FILE_TYPE",
-                            f"required managed directory is not a directory: {relative}",
-                        )
-                    )
             except JobFailure as exc:
-                issues.append(self._issue(exc.code, f"{relative}: {exc.message}"))
-        try:
-            manifest_path = managed_job_path(
-                job_root=root,
-                relative_path="job.json",
-                allow_missing_leaf=False,
-            )
-            if not manifest_path.is_file() or manifest_path.is_symlink():
-                raise _invalid_manifest("job.json must be a regular managed file")
-            actual = DesignJobManifest.from_dict(_read_json(manifest_path))
-        except JobFailure as exc:
-            issues.append(self._issue(exc.code, exc.message))
-            return self._doctor_report(row=row, issues=issues)
-        expected = self._manifest_from_row(
-            row,
-            active_working_copy_id=actual.active_working_copy_id,
-            source_snapshots=actual.source_snapshots,
-        )
-        actual_payload = actual.as_dict()
-        expected_payload = expected.as_dict()
-        if actual.revision != expected.revision:
-            issues.append(
-                self._issue(
-                    "JOB_REVISION_MISMATCH",
-                    "job.json revision disagrees with PostgreSQL",
-                )
-            )
-        mismatched = [
-            field
-            for field in _AUTHORITATIVE_MANIFEST_FIELDS
-            if field != "revision" and actual_payload[field] != expected_payload[field]
-        ]
-        if mismatched:
-            issues.append(
-                self._issue(
-                    "JOB_MANIFEST_MISMATCH",
-                    "job.json authoritative fields disagree with PostgreSQL",
-                )
-            )
-        for snapshot in actual.source_snapshots:
+                issues.append(self._issue(exc.code, exc.message))
+                fresh = row
+            issues.extend(self._directory_contract_issues(locked))
             try:
-                snapshot_path = managed_job_path(
-                    job_root=root,
-                    relative_path=str(snapshot["stored_path"]),
-                    allow_missing_leaf=False,
-                )
-                digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-                if digest != snapshot["sha256"]:
+                raw, manifest_read = _read_json_with_evidence(locked / "job.json")
+                manifest_sha256 = manifest_read.sha256
+                actual = DesignJobManifest.from_dict(raw)
+            except JobFailure as exc:
+                issues.append(self._issue(exc.code, exc.message))
+            else:
+                expected = self._manifest_from_row(fresh)
+                actual_payload = actual.as_dict()
+                expected_payload = expected.as_dict()
+                if actual.active_working_copy_id is not None or actual.source_snapshots:
                     issues.append(
                         self._issue(
-                            "JOB_SNAPSHOT_HASH_MISMATCH",
-                            "a source snapshot no longer matches its recorded SHA-256",
+                            "JOB_OPERATIONAL_BINDING_FORGED",
+                            "core Job manifest contains disk-only operational bindings",
                         )
                     )
-            except (JobFailure, OSError):
-                issues.append(
-                    self._issue(
-                        "JOB_SNAPSHOT_HASH_MISMATCH",
-                        "a source snapshot is missing or unsafe",
+                if actual.revision != expected.revision:
+                    issues.append(
+                        self._issue(
+                            "JOB_REVISION_MISMATCH",
+                            "job.json revision disagrees with PostgreSQL",
+                        )
                     )
-                )
-        return self._doctor_report(row=row, issues=issues)
+                mismatched = [
+                    field
+                    for field in _AUTHORITATIVE_MANIFEST_FIELDS
+                    if field != "revision"
+                    and actual_payload[field] != expected_payload[field]
+                ]
+                if mismatched:
+                    issues.append(
+                        self._issue(
+                            "JOB_MANIFEST_MISMATCH",
+                            "job.json authoritative fields disagree with PostgreSQL",
+                        )
+                    )
+        return self._doctor_report(
+            row=fresh,
+            issues=issues,
+            manifest_sha256=manifest_sha256,
+            verified_snapshots=(),
+        )
 
     def repair(
         self,
@@ -1334,10 +1514,30 @@ class DesignJobManager:
                     actor_id=actor_id,
                 )
         root = self._final_path(row)
-        with locked_job_root(job_root=root):
-            manifest_path = root / "job.json"
-            payload: Mapping[str, object] | None = None
-            if manifest_path.exists() or manifest_path.is_symlink():
+        with locked_job_root(job_root=root) as locked:
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
+            )
+            if self._directory_contract_issues(locked):
+                raise JobFailure(
+                    "JOB_REPAIR_UNSAFE",
+                    "Job directory contract is incomplete or unsafe",
+                )
+            try:
+                root_entries = {
+                    entry.name: entry for entry in list_managed_directory(locked)
+                }
+            except SecureFilesystemError as exc:
+                raise JobFailure(
+                    "JOB_REPAIR_UNSAFE", "Job root cannot be enumerated safely"
+                ) from exc
+            manifest_path = locked / "job.json"
+            if "job.json" in root_entries:
                 try:
                     payload = _read_json(manifest_path)
                 except JobFailure as exc:
@@ -1346,56 +1546,51 @@ class DesignJobManager:
                         "existing job.json cannot prove the Job identity",
                     ) from exc
                 identity = {
-                    "job_id": str(row.get("id")),
-                    "workspace_id": str(row.get("workspace_id")),
-                    "directory_name": str(row.get("directory_name")),
+                    "job_id": str(fresh.get("id")),
+                    "workspace_id": str(fresh.get("workspace_id")),
+                    "directory_name": str(fresh.get("directory_name")),
                 }
                 if any(str(payload.get(field)) != value for field, value in identity.items()):
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
                         "job.json identity does not match the authoritative Job",
                     )
-                candidate_payload = dict(payload)
-                authoritative = self._manifest_from_row(row).as_dict()
-                for field in _AUTHORITATIVE_MANIFEST_FIELDS:
-                    candidate_payload[field] = authoritative[field]
-                candidate_payload["schema_version"] = JOB_MANIFEST_SCHEMA
                 try:
-                    repaired = DesignJobManifest.from_dict(candidate_payload)
+                    existing = DesignJobManifest.from_dict(payload)
                 except JobFailure as exc:
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
-                        "job.json operational bindings cannot be repaired safely",
+                        "job.json cannot be validated for deterministic repair",
                     ) from exc
-                for snapshot in repaired.source_snapshots:
-                    try:
-                        path = managed_job_path(
-                            job_root=root,
-                            relative_path=str(snapshot["stored_path"]),
-                            allow_missing_leaf=False,
-                        )
-                        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-                    except (JobFailure, OSError) as exc:
-                        raise JobFailure(
-                            "JOB_REPAIR_UNSAFE",
-                            "source snapshot identity cannot be verified",
-                        ) from exc
-                    if actual != snapshot["sha256"]:
-                        raise JobFailure(
-                            "JOB_REPAIR_UNSAFE",
-                            "source snapshot bytes changed; repair will not overwrite them",
-                        )
-                atomic_replace(manifest_path, _manifest_bytes(repaired))
+                if existing.active_working_copy_id is not None or existing.source_snapshots:
+                    raise JobFailure(
+                        "JOB_REPAIR_UNSAFE",
+                        "disk-only operational bindings cannot be repaired",
+                    )
+                repaired = self._manifest_from_row(fresh)
+                self._replace_projection(manifest_path, repaired)
                 return repaired
-            working_entries = list((root / "models" / "working").iterdir())
-            source_entries = list((root / "inputs" / "source").iterdir())
+            try:
+                working_entries = list_managed_directory(locked / "models/working")
+                source_entries = list_managed_directory(locked / "inputs/source")
+            except SecureFilesystemError as exc:
+                raise JobFailure(
+                    "JOB_REPAIR_UNSAFE",
+                    "model directories cannot be enumerated safely",
+                ) from exc
             if working_entries or source_entries:
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",
                     "missing job.json cannot be reconstructed around existing model bytes",
                 )
-            repaired = self._manifest_from_row(row)
-            atomic_publish_new(manifest_path, _manifest_bytes(repaired))
+            repaired = self._manifest_from_row(fresh)
+            try:
+                atomic_publish_new(manifest_path, _manifest_bytes(repaired))
+            except (OSError, SecureFilesystemError) as exc:
+                raise JobFailure(
+                    "JOB_PROJECTION_INCOMPLETE",
+                    "PostgreSQL is authoritative but job.json publication is incomplete",
+                ) from exc
             return repaired
 
 
