@@ -6,7 +6,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterator
@@ -98,12 +98,25 @@ class WorkspaceManifest:
     workspace_id: uuid.UUID
     actor_id: str
     artifact_root: Path
-    jobs_root: Path
     standard_parts_sources: Path
     product_families: Path
     default_product_family_id: str | None
     freecad_command: str | None
     raw: Mapping[str, object]
+    jobs_root: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        paths = self.raw.get("paths")
+        jobs_value = (
+            paths.get("jobs_root", DEFAULT_JOBS_ROOT)
+            if isinstance(paths, Mapping)
+            else DEFAULT_JOBS_ROOT
+        )
+        object.__setattr__(
+            self,
+            "jobs_root",
+            _workspace_owned_path(self.workspace, jobs_value, "jobs_root"),
+        )
 
 
 @dataclass(frozen=True)
@@ -486,11 +499,6 @@ def read_workspace_manifest(workspace: Path) -> WorkspaceManifest:
             paths.get("artifact_root"),
             "artifact_root",
         ),
-        jobs_root=_workspace_owned_path(
-            canonical_workspace,
-            paths.get("jobs_root", DEFAULT_JOBS_ROOT),
-            "jobs_root",
-        ),
         standard_parts_sources=_workspace_owned_path(
             canonical_workspace,
             paths.get("standard_parts_sources"),
@@ -816,8 +824,8 @@ def initialize_workspace(
                 "explicit actor differs from initialized workspace default",
             )
         jobs_created = False
+        relative_jobs_root = manifest.jobs_root.relative_to(canonical).as_posix()
         if not manifest.jobs_root.exists():
-            relative_jobs_root = manifest.jobs_root.relative_to(canonical).as_posix()
             with _initialization_lock(canonical):
                 _ensure_managed_directory(canonical, relative_jobs_root)
                 jobs_created = True
@@ -827,17 +835,17 @@ def initialize_workspace(
             "config/standard_parts_sources.json",
             "config/product_families",
             "data/artifacts",
-            "jobs",
+            relative_jobs_root,
         )
         return InitResult(
             status="ok",
             result="already_initialized",
             workspace=canonical,
             manifest_path=manifest_path,
-            created=("jobs",) if jobs_created else (),
+            created=(relative_jobs_root,) if jobs_created else (),
             reused=tuple(
                 path for path in managed_names
-                if path != "jobs" or not jobs_created
+                if path != relative_jobs_root or not jobs_created
             ),
             next_steps=(),
         )

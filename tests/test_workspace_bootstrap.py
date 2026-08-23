@@ -42,6 +42,7 @@ def write_manifest_for_test(
     workspace_id: object = "00000000-0000-4000-8000-000000000001",
     actor_id: object = "actor-test",
     artifact_root: object = "data/artifacts",
+    jobs_root: object | None = None,
     standard_parts_sources: object = "config/standard_parts_sources.json",
     product_families: object = "config/product_families",
     default_product_family_id: object = None,
@@ -81,6 +82,7 @@ def write_manifest_for_test(
                     "artifact_root": artifact_root,
                     "standard_parts_sources": standard_parts_sources,
                     "product_families": product_families,
+                    **({"jobs_root": jobs_root} if jobs_root is not None else {}),
                 },
                 "default_product_family_id": default_product_family_id,
                 "freecad": {"command": freecad_command},
@@ -396,6 +398,26 @@ def test_init_creates_jobs_root(tmp_path: Path) -> None:
     result = initialize_workspace(workspace=workspace, actor_id="actor-1", dry_run=False)
     assert (workspace / "jobs").is_dir()
     assert "jobs" in result.created
+
+
+def test_init_upgrades_legacy_manifest_jobs_root_without_rewriting_manifest(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "legacy workspace"
+    write_manifest_for_test(workspace, jobs_root="var/design-jobs")
+    manifest_path = workspace / "config/mechanical_design.json"
+    before = manifest_path.read_bytes()
+
+    result = initialize_workspace(
+        workspace=workspace,
+        actor_id="actor-test",
+        dry_run=False,
+    )
+
+    assert (workspace / "var/design-jobs").is_dir()
+    assert result.created == ("var/design-jobs",)
+    assert "var/design-jobs" not in result.reused
+    assert manifest_path.read_bytes() == before
 
 
 def test_workspace_selection_uses_runtime_before_process_and_env_file(
