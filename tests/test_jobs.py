@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+from datetime import datetime, timezone
 import json
+from pathlib import Path
+from typing import Callable
+from uuid import UUID
 
 import pytest
 
+from mechanical_design_agent.jobs import (
+    DesignJobManager,
+    DesignJobManifest,
+    JobFailure,
+    managed_job_path,
+)
 from mechanical_design_agent.repository import PostgresRepository
+from mechanical_design_agent.workspace_bootstrap import WorkspaceManifest
 
 
 ORGANIZATION_ID = "organization-001"
@@ -523,3 +534,583 @@ def test_job_list_reads_return_complete_rows_and_remain_scoped() -> None:
         job_type=None,
         family_id=None,
     ) == []
+
+
+WORKSPACE_ID = UUID("20000000-0000-4000-8000-000000000001")
+JOB_ID = UUID("10000000-0000-4000-8000-000000000001")
+NOW = datetime(2026, 8, 23, 8, 15, 30, tzinfo=timezone.utc)
+
+
+class _ManagerRepository:
+    def __init__(self) -> None:
+        self.jobs: dict[str, dict[str, object]] = {}
+        self.tokens: dict[tuple[str, str], str] = {}
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    @staticmethod
+    def _scope(
+        row: dict[str, object], organization_id: str, design_group_id: str
+    ) -> bool:
+        return (
+            row["organization_id"] == organization_id
+            and row["design_group_id"] == design_group_id
+        )
+
+    def create_design_job(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("create", dict(kwargs)))
+        token_key = (str(kwargs["workspace_id"]), str(kwargs["idempotency_token"]))
+        existing = self.tokens.get(token_key)
+        if existing is not None:
+            row = self.jobs[existing]
+            if not self._scope(
+                row,
+                str(kwargs["organization_id"]),
+                str(kwargs["design_group_id"]),
+            ):
+                raise KeyError("unknown design_job_id or unauthorized")
+            return copy.deepcopy(row)
+        row: dict[str, object] = {
+            "id": str(kwargs["job_id"]),
+            "workspace_id": str(kwargs["workspace_id"]),
+            "display_id": kwargs["display_id"],
+            "job_type": kwargs["job_type"],
+            "title": kwargs["title"],
+            "slug": kwargs["slug"],
+            "status": "active",
+            "phase": (
+                "requirements"
+                if kwargs["job_type"] == "mechanical_design"
+                else "intake"
+            ),
+            "revision": 0,
+            "organization_id": kwargs["organization_id"],
+            "design_group_id": kwargs["design_group_id"],
+            "family_id": kwargs["family_id"],
+            "directory_name": None,
+            "idempotency_token": kwargs["idempotency_token"],
+            "blocked_reason": None,
+            "provisioning_state": "provisioning",
+            "created_by": kwargs["actor_id"],
+            "created_at": NOW,
+            "updated_at": NOW,
+        }
+        self.jobs[str(row["id"])] = row
+        self.tokens[token_key] = str(row["id"])
+        return copy.deepcopy(row)
+
+    def record_design_job_directory(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("record_directory", dict(kwargs)))
+        row = self.get_design_job(
+            job_id=str(kwargs["job_id"]),
+            organization_id=str(kwargs["organization_id"]),
+            design_group_id=str(kwargs["design_group_id"]),
+        )
+        persisted = self.jobs[str(kwargs["job_id"])]
+        if row["revision"] != kwargs["expected_revision"]:
+            raise ValueError("stale design job revision")
+        if row["directory_name"] is not None:
+            raise ValueError("design job directory already recorded")
+        persisted["directory_name"] = kwargs["directory_name"]
+        persisted["provisioning_state"] = "ready"
+        persisted["revision"] = int(persisted["revision"]) + 1
+        persisted["updated_at"] = NOW
+        return copy.deepcopy(persisted)
+
+    def transition_design_job(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("transition", dict(kwargs)))
+        row = self.get_design_job(
+            job_id=str(kwargs["job_id"]),
+            organization_id=str(kwargs["organization_id"]),
+            design_group_id=str(kwargs["design_group_id"]),
+        )
+        persisted = self.jobs[str(kwargs["job_id"])]
+        if row["revision"] != kwargs["expected_revision"]:
+            raise ValueError("stale design job revision")
+        persisted["status"] = kwargs["status"]
+        persisted["phase"] = kwargs["phase"]
+        persisted["revision"] = int(persisted["revision"]) + 1
+        persisted["updated_at"] = NOW
+        return copy.deepcopy(persisted)
+
+    def get_design_job(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("get", dict(kwargs)))
+        row = self.jobs.get(str(kwargs["job_id"]))
+        if row is None or not self._scope(
+            row,
+            str(kwargs["organization_id"]),
+            str(kwargs["design_group_id"]),
+        ):
+            raise KeyError("unknown design_job_id or unauthorized")
+        return copy.deepcopy(row)
+
+    def list_design_jobs(self, **kwargs: object) -> list[dict[str, object]]:
+        self.calls.append(("list", dict(kwargs)))
+        return [
+            copy.deepcopy(row)
+            for row in self.jobs.values()
+            if self._scope(
+                row,
+                str(kwargs["organization_id"]),
+                str(kwargs["design_group_id"]),
+            )
+            and (kwargs["status"] is None or row["status"] == kwargs["status"])
+            and (
+                kwargs["job_type"] is None or row["job_type"] == kwargs["job_type"]
+            )
+            and (kwargs["family_id"] is None or row["family_id"] == kwargs["family_id"])
+        ]
+
+    def resolve_design_jobs(self, **kwargs: object) -> list[dict[str, object]]:
+        self.calls.append(("resolve", dict(kwargs)))
+        query = str(kwargs["query"]).casefold()
+        statuses = tuple(kwargs.get("statuses", ("active", "blocked")))
+        return [
+            copy.deepcopy(row)
+            for row in self.jobs.values()
+            if self._scope(
+                row,
+                str(kwargs["organization_id"]),
+                str(kwargs["design_group_id"]),
+            )
+            and row["status"] in statuses
+            and (
+                kwargs.get("job_type") is None
+                or row["job_type"] == kwargs["job_type"]
+            )
+            and (
+                kwargs.get("family_id") is None
+                or row["family_id"] == kwargs["family_id"]
+            )
+            and any(
+                query in str(row[field]).casefold()
+                for field in ("display_id", "title", "slug")
+            )
+        ]
+
+
+def _workspace(tmp_path: Path) -> WorkspaceManifest:
+    workspace = tmp_path / "机械设计 workspace"
+    (workspace / "data/artifacts").mkdir(parents=True)
+    (workspace / "config/product_families").mkdir(parents=True)
+    (workspace / "config/standard_parts_sources.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (workspace / "jobs").mkdir()
+    return WorkspaceManifest(
+        workspace=workspace,
+        workspace_id=WORKSPACE_ID,
+        actor_id=ACTOR_ID,
+        artifact_root=workspace / "data/artifacts",
+        standard_parts_sources=workspace / "config/standard_parts_sources.json",
+        product_families=workspace / "config/product_families",
+        default_product_family_id=None,
+        freecad_command=None,
+        raw={"paths": {"jobs_root": "jobs"}},
+    )
+
+
+def _manager(
+    tmp_path: Path,
+    repository: _ManagerRepository | None = None,
+    *,
+    checkpoint: Callable[[str], None] | None = None,
+) -> tuple[DesignJobManager, _ManagerRepository]:
+    selected_repository = repository or _ManagerRepository()
+    return (
+        DesignJobManager(
+            _workspace(tmp_path),
+            selected_repository,
+            uuid_factory=lambda: JOB_ID,
+            now_factory=lambda: NOW,
+            checkpoint=checkpoint,
+        ),
+        selected_repository,
+    )
+
+
+def _create_managed_job(manager: DesignJobManager) -> DesignJobManifest:
+    return manager.create(
+        job_type="mechanical_design",
+        title="Pump / housing 设计",
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        family_id="family-001",
+        idempotency_token="request-001",
+        actor_id=ACTOR_ID,
+    )
+
+
+def test_manager_provisions_exact_portable_layout_and_manifest(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+
+    manifest = _create_managed_job(manager)
+
+    assert manifest.job_id == JOB_ID
+    assert manifest.workspace_id == WORKSPACE_ID
+    assert manifest.display_id == "JOB-20260823-001"
+    assert manifest.slug == "pump-housing-设计"
+    assert manifest.phase == "requirements"
+    assert manifest.revision == 1
+    assert manifest.active_working_copy_id is None
+    assert manifest.source_snapshots == ()
+    assert manifest.directory_name == "JOB-20260823-001-pump-housing-设计"
+    root = manager.workspace.jobs_root / manifest.directory_name
+    expected_directories = {
+        "inputs/source",
+        "requirements/draft",
+        "requirements/approved",
+        "models/working",
+        "models/revisions",
+        "models/exports",
+        "components/standard-parts",
+        "analysis",
+        "validation/specifications",
+        "validation/reports",
+        "validation/images",
+        "knowledge/retrieval-receipts",
+        "knowledge/extracted",
+        "knowledge/design-lessons",
+        "previews",
+        "delivery",
+        "provenance",
+        "logs",
+    }
+    assert expected_directories <= {
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_dir()
+    }
+    payload = json.loads((root / "job.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "MechanicalDesignJob/v1"
+    assert payload["created_at"] == "2026-08-23T08:15:30Z"
+    assert payload["updated_at"] == "2026-08-23T08:15:30Z"
+    assert payload["source_snapshots"] == []
+    assert payload["active_working_copy_id"] is None
+    assert not any(str(manager.workspace.workspace) in str(value) for value in payload.values())
+    scoped_directory_call = next(
+        values for name, values in repository.calls if name == "record_directory"
+    )
+    assert scoped_directory_call["organization_id"] == ORGANIZATION_ID
+    assert scoped_directory_call["design_group_id"] == DESIGN_GROUP_ID
+    assert not (manager.workspace.jobs_root / ".provisioning" / str(JOB_ID)).exists()
+
+
+def test_same_token_reuses_identity_and_immutable_directory(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    first = _create_managed_job(manager)
+
+    replayed = manager.create(
+        job_type="mechanical_design",
+        title="A renamed title must not rename storage",
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        family_id="family-001",
+        idempotency_token="request-001",
+        actor_id=ACTOR_ID,
+    )
+
+    assert replayed == first
+    assert len(repository.jobs) == 1
+    final_directories = [
+        path
+        for path in manager.workspace.jobs_root.iterdir()
+        if path.is_dir() and path.name != ".provisioning"
+    ]
+    assert [path.name for path in final_directories] == [first.directory_name]
+
+
+@pytest.mark.parametrize(
+    "checkpoint_name",
+    (
+        "after_db_provisioning",
+        "after_temporary_directory",
+        "after_manifest_write",
+        "after_atomic_rename",
+        "after_directory_record",
+    ),
+)
+def test_creation_retry_recovers_each_crash_boundary_without_a_second_job(
+    tmp_path: Path, checkpoint_name: str
+) -> None:
+    tripped = False
+
+    def fail_once(name: str) -> None:
+        nonlocal tripped
+        if name == checkpoint_name and not tripped:
+            tripped = True
+            raise RuntimeError(f"injected {name}")
+
+    manager, repository = _manager(tmp_path, checkpoint=fail_once)
+    with pytest.raises(RuntimeError, match=f"injected {checkpoint_name}"):
+        _create_managed_job(manager)
+
+    recovered = _create_managed_job(manager)
+
+    assert recovered.job_id == JOB_ID
+    assert len(repository.jobs) == 1
+    final_directories = [
+        path
+        for path in manager.workspace.jobs_root.iterdir()
+        if path.is_dir() and path.name != ".provisioning"
+    ]
+    assert [path.name for path in final_directories] == [recovered.directory_name]
+    assert not (manager.workspace.jobs_root / ".provisioning" / str(JOB_ID)).exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "../escape.FCStd",
+        "inputs/../../escape.FCStd",
+        "/tmp/escape.FCStd",
+        "C:\\escape.FCStd",
+        "C:/escape.FCStd",
+        "inputs\\source\\escape.FCStd",
+        "inputs/source/../escape.FCStd",
+    ),
+)
+def test_managed_job_path_rejects_traversal_and_platform_absolute_spellings(
+    tmp_path: Path, value: str
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+
+    with pytest.raises(JobFailure) as captured:
+        managed_job_path(job_root=root, relative_path=value, allow_missing_leaf=True)
+
+    assert captured.value.code == "JOB_PATH_OUTSIDE"
+
+
+def test_managed_job_path_supports_spaces_and_unicode_but_rejects_symlink(
+    tmp_path: Path,
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    safe = root / "analysis" / "载荷 case 1"
+    safe.mkdir()
+    assert managed_job_path(
+        job_root=root,
+        relative_path="analysis/载荷 case 1/result.json",
+        allow_missing_leaf=True,
+    ) == safe / "result.json"
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "analysis" / "escape-link"
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(JobFailure) as captured:
+        managed_job_path(
+            job_root=root,
+            relative_path="analysis/escape-link/model.FCStd",
+            allow_missing_leaf=True,
+        )
+    assert captured.value.code == "JOB_PATH_UNSAFE"
+
+
+def test_manifest_validation_rejects_invalid_uuid_hash_timestamp_phase_and_path() -> None:
+    valid: dict[str, object] = {
+        "schema_version": "MechanicalDesignJob/v1",
+        "job_id": str(JOB_ID),
+        "display_id": "JOB-20260823-001",
+        "job_type": "mechanical_design",
+        "workspace_id": str(WORKSPACE_ID),
+        "title": "Pump",
+        "slug": "pump",
+        "status": "active",
+        "phase": "requirements",
+        "revision": 1,
+        "organization_id": ORGANIZATION_ID,
+        "design_group_id": DESIGN_GROUP_ID,
+        "family_id": None,
+        "directory_name": "JOB-20260823-001-pump",
+        "active_working_copy_id": None,
+        "source_snapshots": [
+            {
+                "snapshot_id": "30000000-0000-4000-8000-000000000001",
+                "stored_path": "inputs/source/原始 model.FCStd",
+                "sha256": "a" * 64,
+                "source_kind": "existing_model",
+                "source_model_revision_id": "40000000-0000-4000-8000-000000000001",
+            }
+        ],
+        "created_at": "2026-08-23T08:15:30Z",
+        "created_by": ACTOR_ID,
+        "updated_at": "2026-08-23T08:15:30+00:00",
+    }
+    assert DesignJobManifest.from_dict(valid).source_snapshots[0]["sha256"] == "a" * 64
+
+    invalid_cases = (
+        ("job_id", "not-a-uuid"),
+        ("phase", "database_publication"),
+        ("created_at", "yesterday"),
+        ("display_id", "job-1"),
+    )
+    for field, value in invalid_cases:
+        payload = copy.deepcopy(valid)
+        payload[field] = value
+        with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
+            DesignJobManifest.from_dict(payload)
+
+    for field, value in (
+        ("sha256", "A" * 64),
+        ("sha256", "a" * 63),
+        ("stored_path", "../source.FCStd"),
+        ("stored_path", "C:\\source.FCStd"),
+    ):
+        payload = copy.deepcopy(valid)
+        snapshots = payload["source_snapshots"]
+        assert isinstance(snapshots, list)
+        snapshots[0][field] = value
+        with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
+            DesignJobManifest.from_dict(payload)
+
+    unexpected_path = copy.deepcopy(valid)
+    unexpected_path["original_source_path"] = "/Users/private/source.FCStd"
+    with pytest.raises(JobFailure, match="JOB_MANIFEST_INVALID"):
+        DesignJobManifest.from_dict(unexpected_path)
+
+
+def test_doctor_reports_hand_edit_and_revision_mismatch_then_repair_republishes(
+    tmp_path: Path,
+) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    manifest_path = root / "job.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["title"] = "hand edited"
+    payload["revision"] = 99
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+
+    assert report["status"] == "blocked"
+    assert {issue["code"] for issue in report["issues"]} >= {
+        "JOB_MANIFEST_MISMATCH",
+        "JOB_REVISION_MISMATCH",
+    }
+    model = root / "models/working/pump.FCStd"
+    model.write_bytes(b"changed model bytes must be preserved")
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert repaired.revision == repository.jobs[str(JOB_ID)]["revision"]
+    assert repaired.title == "Pump / housing 设计"
+    assert model.read_bytes() == b"changed model bytes must be preserved"
+    assert manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )["status"] == "ok"
+
+
+def test_repair_refuses_manifest_identity_change(tmp_path: Path) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    manifest_path = manager.workspace.jobs_root / manifest.directory_name / "job.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["job_id"] = "50000000-0000-4000-8000-000000000001"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobFailure) as captured:
+        manager.repair(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+
+    assert captured.value.code == "JOB_REPAIR_UNSAFE"
+
+
+def test_lifecycle_and_candidate_methods_republish_and_keep_scope(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    created = _create_managed_job(manager)
+
+    assert manager.list(
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        status="active",
+        job_type=None,
+        family_id=None,
+    ) == [created]
+    assert manager.resolve(
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        query="housing",
+        job_type=None,
+        family_id=None,
+    ) == [created]
+    closed = manager.close(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=created.revision,
+        status="completed",
+        phase="completed",
+        actor_id=ACTOR_ID,
+        reason="All governed gates completed",
+    )
+    reopened = manager.reopen(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=closed.revision,
+        phase="lesson_capture",
+        actor_id=ACTOR_ID,
+        reason="Capture a corrected lesson",
+    )
+
+    assert closed.status == "completed"
+    assert reopened.status == "active"
+    assert reopened.phase == "lesson_capture"
+    for name, values in repository.calls:
+        if name in {"get", "transition", "resolve", "list"}:
+            assert values["organization_id"] == ORGANIZATION_ID
+            assert values["design_group_id"] == DESIGN_GROUP_ID
+    on_disk = json.loads(
+        (
+            manager.workspace.jobs_root
+            / reopened.directory_name
+            / "job.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert on_disk["revision"] == reopened.revision
+    assert on_disk["status"] == "active"
+
+
+def test_close_rejects_a_terminal_job_without_mutating_it(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    created = _create_managed_job(manager)
+    closed = manager.close(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=created.revision,
+        status="cancelled",
+        phase="requirements",
+        actor_id=ACTOR_ID,
+        reason="User cancelled the design request",
+    )
+
+    with pytest.raises(JobFailure) as captured:
+        manager.close(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            expected_revision=closed.revision,
+            status="archived",
+            phase="requirements",
+            actor_id=ACTOR_ID,
+            reason="Terminal state must be reopened before another write",
+        )
+
+    assert captured.value.code == "JOB_TERMINAL"
+    assert repository.jobs[str(JOB_ID)]["revision"] == closed.revision
