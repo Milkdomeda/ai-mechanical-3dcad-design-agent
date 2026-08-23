@@ -43,6 +43,11 @@ EXPECTED_PUBLIC_SCRIPTS = (
     "scripts/windows_database_deployment_acceptance.ps1",
     "scripts/windows_release_acceptance.ps1",
 )
+EXPECTED_PROJECT_SKILL_SOURCE_TREES = (
+    ".agents/skills/freecad-model-validation",
+    ".agents/skills/freecad-standard-parts",
+    ".agents/skills/mechanical-design-job-workspace",
+)
 REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/database_deployment_helpers.py",
     "tests/test_database_deployment.py",
@@ -70,6 +75,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "compose.yaml" in manifest.root_files
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
+    assert ".agents/skills/README.md" in manifest.public_docs
     assert all(
         asset.as_posix() in manifest.public_docs
         for asset in PUBLIC_README_ASSETS
@@ -80,7 +86,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "tests/test_freecad_gui_mcp_integration_live.py" in manifest.public_tests
     assert "tests/test_agent_skills.py" in manifest.public_tests
     assert manifest.source_trees == (
-        ".agents/skills",
+        *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
         "examples/product_families",
         "src/mechanical_design_agent",
     )
@@ -96,6 +102,15 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert Path("public-repository.toml") in files
     assert Path("examples/product_families/example-family.json") in files
     assert Path("src/mechanical_design_agent/__init__.py") in files
+    assert Path(".agents/skills/mechanical-design-job-workspace/SKILL.md") in files
+    assert (
+        Path(".agents/skills/mechanical-design-job-workspace/agents/openai.yaml")
+        in files
+    )
+    assert (
+        Path(".agents/skills/mechanical-design-job-workspace/references/job-contract.md")
+        in files
+    )
     assert Path("compose.yaml") in files
     binary_assets = {
         path for path in files if path.suffix.lower() in CAD_OR_REPORT_SUFFIXES

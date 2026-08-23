@@ -16,6 +16,7 @@ root_files = [
 ]
 
 public_docs = [
+  ".agents/skills/README.md",
   "docs/ARCHITECTURE.md",
   "docs/DATABASE_DEPLOYMENT.md",
   "docs/ENGINEER_LEARNING_PLAYBOOK.md",
@@ -27,7 +28,9 @@ public_docs = [
 ]
 
 source_trees = [
-  ".agents/skills",
+  ".agents/skills/freecad-model-validation",
+  ".agents/skills/freecad-standard-parts",
+  ".agents/skills/mechanical-design-job-workspace",
   "examples/product_families",
   "src/mechanical_design_agent",
 ]

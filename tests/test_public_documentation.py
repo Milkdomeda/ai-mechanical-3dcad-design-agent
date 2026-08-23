@@ -41,6 +41,38 @@ def test_public_identity_and_release_boundary() -> None:
     assert "ai-mechanical-3dcad-design-agent" in text
 
 
+def test_design_job_routing_is_public_and_precedes_model_lifecycle() -> None:
+    agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+    skill = (
+        PROJECT_ROOT
+        / ".agents"
+        / "skills"
+        / "mechanical-design-job-workspace"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert agents.index("## Product Job routing") < agents.index(
+        "## Managed model and change lifecycle"
+    )
+    assert "Product Family and Design Lesson database writes are Job operations" in agents
+    assert "Changing their implementation or schema is software development" in agents
+    assert "Do not create a Git branch or Git worktree" in agents
+    assert "design_job_resolve" in agents
+    assert "design_job_create" in agents
+    assert "same design" in agents.casefold()
+    assert "independent demand" in agents.casefold()
+    assert "ambigu" in agents.casefold()
+    assert "mechanical-design-job-workspace" in readme
+    assert "Three project-owned skills" in readme
+    assert "`superpowers:brainstorming`" in readme
+    assert "optional" in readme.casefold()
+    assert "not bundled" in readme.casefold()
+    assert "not installed" in normalized(README).casefold()
+    assert "design_job_resolve" in skill
+    assert "design_job_create" in skill
+
+
 def test_freecad_gui_mcp_boundary() -> None:
     text = normalized(README)
     assert "required for the recommended interactive FreeCAD workflow" in text

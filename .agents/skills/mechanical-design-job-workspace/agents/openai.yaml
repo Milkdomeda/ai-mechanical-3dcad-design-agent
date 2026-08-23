@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mechanical Design Job Workspace"
+  short_description: "Route FreeCAD product work through Jobs"
+  default_prompt: "Use $mechanical-design-job-workspace to route this FreeCAD product request through the correct Design Job."
+policy:
+  allow_implicit_invocation: true

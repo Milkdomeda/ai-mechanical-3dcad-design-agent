@@ -19,10 +19,10 @@ Version 0.2.0 is a coding-agent/MCP-server release. It includes deterministic
 workspace bootstrap, product-family configuration, model analysis, engineering
 knowledge workflows, standard-part provenance, validation resources, and
 package-owned database migrations. It also publishes project-owned agent
-instructions and skills for standard-part selection and FreeCAD model
-validation. It does not bundle a language model, a CAD model library, generated
-output, engineering reports, database services, or a FreeCAD GUI MCP
-integration.
+instructions and skills for Design Job routing, standard-part selection, and
+FreeCAD model validation. It does not bundle a language model, a CAD model
+library, generated output, engineering reports, database services, or a FreeCAD
+GUI MCP integration.
 
 See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
 [Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md) for the
@@ -47,7 +47,11 @@ contain no production credentials or real project data.
 ## Agent instructions and skills
 
 The repository root [`AGENTS.md`](AGENTS.md) defines the recommended operating
-boundary for coding agents. Two project-owned skills are included:
+boundary for coding agents. Three project-owned skills are included:
+
+- [`mechanical-design-job-workspace`](.agents/skills/mechanical-design-job-workspace/SKILL.md)
+  routes every product operation through a controlled Design Job before work on
+  a new design, existing model, resumed job, Product Family, or Design Lesson.
 
 - [`freecad-standard-parts`](.agents/skills/freecad-standard-parts/SKILL.md)
   selects and imports reusable standard mechanical components while preserving
@@ -63,8 +67,8 @@ themselves into a user's global agent environment.
 
 The external [`superpowers:brainstorming`](https://github.com/obra/superpowers)
 skill is recommended for turning an incomplete mechanical-design request into
-reviewable requirements before modeling. It is optional and is not bundled,
-installed, or required by this project.
+reviewable requirements before modeling. It is optional, not bundled, not
+installed, and not required by this project.
 
 - **Codex App:** open **Plugins**, find **Superpowers** in the Coding category,
   and choose **Install**.
