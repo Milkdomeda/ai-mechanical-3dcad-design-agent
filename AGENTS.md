@@ -37,8 +37,10 @@
 
 ## Product Job routing
 
-- Treat a new design, existing model, resume, Product Family onboarding, or Design Lessons request as a product operation. Its first operation resolves or creates a Job through `design_job_resolve` and, only when there is no same-design Job, `design_job_create`.
-- Reuse the uniquely resolved Job for the same design. An independent demand creates a new Job. If resolution has multiple candidates or the intended design is unclear, present candidates and stop for direction; never select one implicitly. Use `design_job_get` or `design_job_list` only through the configured Mechanical Design MCP, never an arbitrary filesystem path, as Job identity.
+- Treat a new design, existing model, resume, Product Family onboarding, or Design Lessons request as a product operation. A supplied Job UUID or display ID calls `design_job_get` for authorized state; do not treat that identity as a `design_job_resolve` query.
+- An explicitly independent demand calls `design_job_create` directly, even when similar Jobs exist. For continue/resume without an explicit ID, call `design_job_resolve` only for `active` and `blocked`: reuse the one same design candidate, return multiple candidates and stop, and with zero candidates clarify independent/new intent before creating. Never select or create from ambiguity.
+- New, existing, and resumed mechanical design use `mechanical_design`; Product Family intake/onboarding uses `product_family_onboarding`. Product Family review, knowledge, and database publication reuse that original onboarding Job. A Design Lesson uses only its originating `mechanical_design` Job; stop if the origin is missing or ambiguous and never create a replacement or onboarding Job.
+- Use `design_job_list`, `design_job_get`, `design_job_close`, or `design_job_reopen` only through the configured Mechanical Design MCP, never an arbitrary filesystem path, as Job identity.
 - Product work uses its Job workspace. Do not create a Git branch or Git worktree. Software changes to agent implementation, schemas, migrations, or tests may use the normal Git workflow. Explicitly split mixed product/software requests before acting.
 - Source snapshots and downstream working-copy, evidence, and lesson bindings are Task 6 governed behavior. Do not claim Task 4 Job lifecycle APIs execute those bindings; preserve the resolved Job ID and stop when a required governed binding is unavailable.
 - Product Family and Design Lesson database writes are Job operations. Changing their implementation or schema is software development.

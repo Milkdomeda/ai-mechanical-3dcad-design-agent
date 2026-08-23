@@ -63,6 +63,7 @@ EXPECTED_TEST = {
     "packaging": "26.3",
     "pluggy": "1.6.0",
     "pytest": "9.1.1",
+    "pyyaml": "6.0.3",
 }
 
 

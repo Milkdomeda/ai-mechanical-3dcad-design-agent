@@ -652,6 +652,25 @@ audit_date = 2026-08-16
 validation_state = "verified"
 
 [[components]]
+id = "pyyaml"
+name = "PyYAML"
+component_kind = "python_distribution"
+scope = "test"
+relationship = "installed_dependency"
+distribution = "not_distributed_by_project"
+direct = true
+version = "6.0.3"
+spdx = "MIT"
+attribution = "Kirill Simonov and PyYAML contributors"
+source_url = "https://pypi.org/project/PyYAML/6.0.3/"
+license_url = "https://github.com/yaml/pyyaml/blob/6.0.3/LICENSE"
+purpose = "Parses project Skill frontmatter and Agent metadata as YAML in the release test suite."
+evidence_source = "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz"
+evidence_sha256 = "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"
+audit_date = 2026-08-23
+validation_state = "verified"
+
+[[components]]
 id = "python-dotenv"
 name = "python-dotenv"
 component_kind = "python_distribution"

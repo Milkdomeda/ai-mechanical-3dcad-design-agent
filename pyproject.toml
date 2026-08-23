@@ -16,6 +16,7 @@ dependencies = [
 [dependency-groups]
 test = [
     "jsonschema>=4.23.0,<5",
+    "pyyaml>=6.0,<7",
     "pytest>=8.3.0,<10",
 ]
 

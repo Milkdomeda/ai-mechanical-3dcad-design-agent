@@ -10,18 +10,29 @@ a resume, Product Family onboarding, or Design Lessons. It covers public
 FreeCAD work on macOS and Windows only; it does not add Blender, rendering, or
 video work.
 
-## Route the request first
+## Routing decision matrix
 
-The first product operation resolves or creates a Job through the configured
-Mechanical Design MCP:
+Apply the first matching row through the configured Mechanical Design MCP.
 
-1. Call `design_job_resolve` with the known scope and design intent.
-2. Reuse the one matching Job for the same design; call `design_job_get` to
-   confirm its current identity and state. An independent demand creates a new
-   Job with `design_job_create` and an idempotency token.
-3. If resolution returns more than one candidate, or the design intent is not
-   sufficient to distinguish one, present the candidates and stop for user
-   direction. Treat that ambiguity as blocking; never choose a Job implicitly.
+| Incoming request | Required action | Stop rule |
+| --- | --- | --- |
+| Explicit Job UUID or display ID | Call `design_job_get` for authorized state. | Never pass the ID as a `design_job_resolve` query. |
+| Explicitly independent demand | Call `design_job_create` directly with an idempotency token. | Do not resolve merely similar Jobs first. |
+| Resume without an explicit ID; one active/blocked candidate | Call `design_job_resolve` for `active` and `blocked`; reuse it. | Do not create a duplicate Job. |
+| Resume without an explicit ID; multiple candidates | Return candidates. | Stop; never select or create automatically. |
+| Resume without an explicit ID; zero candidates | Clarify whether the demand is independent/new. | Create only after that explicit intent. |
+
+Never treat a UUID or display ID as text to resolve, and never auto-create from
+an ambiguous intent.
+
+## Provenance and Job type
+
+| Product operation | Job type | Provenance rule |
+| --- | --- | --- |
+| New, existing, or resumed mechanical design | `mechanical_design` | Use the routed Job. |
+| Product Family intake/onboarding | `product_family_onboarding` | Create or reuse the onboarding Job through the routing matrix. |
+| Product Family review, knowledge, or database publication | `product_family_onboarding` | Reuse the original onboarding Job. |
+| Design Lesson | Originating `mechanical_design` only | Stop if origin is missing or ambiguous; never create a replacement or onboarding Job. |
 
 Job identity is not an arbitrary filesystem path. Read [the Job
 contract](references/job-contract.md) for the Task 4 interfaces, their

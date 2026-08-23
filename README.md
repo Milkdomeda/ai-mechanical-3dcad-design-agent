@@ -52,6 +52,9 @@ boundary for coding agents. Three project-owned skills are included:
 - [`mechanical-design-job-workspace`](.agents/skills/mechanical-design-job-workspace/SKILL.md)
   routes every product operation through a controlled Design Job before work on
   a new design, existing model, resumed job, Product Family, or Design Lesson.
+  A supplied Job UUID/display ID is checked with `design_job_get`; an explicitly
+  independent demand creates directly; an unreferenced resume resolves only
+  active/blocked candidates and stops on ambiguity.
 
 - [`freecad-standard-parts`](.agents/skills/freecad-standard-parts/SKILL.md)
   selects and imports reusable standard mechanical components while preserving
