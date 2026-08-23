@@ -943,6 +943,21 @@ def _create_managed_job(manager: DesignJobManager) -> DesignJobManifest:
     )
 
 
+def _repair(manager: DesignJobManager, **kwargs: object):
+    """Use the public receipt-bound repair contract in Task 3 regressions."""
+    report = manager.doctor(
+        job_id=str(kwargs["job_id"]),
+        organization_id=str(kwargs["organization_id"]),
+        design_group_id=str(kwargs["design_group_id"]),
+    )
+    return manager.repair(
+        **kwargs,
+        expected_revision=int(report["authoritative_revision"]),
+        doctor_receipt_hash=str(report["receipt_sha256"]),
+        reason="repair regression",
+    )
+
+
 def test_manager_provisions_exact_portable_layout_and_manifest(tmp_path: Path) -> None:
     manager, repository = _manager(tmp_path)
 
@@ -1339,7 +1354,7 @@ def test_doctor_reports_hand_edit_and_revision_mismatch_then_repair_republishes(
     }
     model = root / "models/working/pump.FCStd"
     model.write_bytes(b"changed model bytes must be preserved")
-    repaired = manager.repair(
+    repaired = _repair(manager,
         job_id=str(JOB_ID),
         organization_id=ORGANIZATION_ID,
         design_group_id=DESIGN_GROUP_ID,
@@ -1355,6 +1370,37 @@ def test_doctor_reports_hand_edit_and_revision_mismatch_then_repair_republishes(
     )["status"] == "ok"
 
 
+def test_doctor_fails_closed_before_manifest_reads_when_locked_authority_is_revoked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RevokingRepository(_ManagerRepository):
+        fail_after: int | None = None
+
+        def get_design_job(self, **kwargs: object) -> dict[str, object]:
+            if self.fail_after is not None and len(self.calls) > self.fail_after:
+                raise KeyError("private Job title and path")
+            return super().get_design_job(**kwargs)
+
+    repository = RevokingRepository()
+    manager, _ = _manager(tmp_path, repository)
+    _create_managed_job(manager)
+    repository.fail_after = len(repository.calls)
+    monkeypatch.setattr(
+        manager,
+        "_directory_contract_issues",
+        lambda _root: pytest.fail("doctor read the managed Job after authorization failed"),
+    )
+
+    with pytest.raises(JobFailure) as captured:
+        manager.doctor(
+            job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+        )
+
+    assert captured.value.code == "JOB_ACCESS_UNAVAILABLE"
+    assert "private" not in str(captured.value)
+
+
 def test_repair_refuses_manifest_identity_change(tmp_path: Path) -> None:
     manager, _ = _manager(tmp_path)
     manifest = _create_managed_job(manager)
@@ -1364,7 +1410,7 @@ def test_repair_refuses_manifest_identity_change(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(JobFailure) as captured:
-        manager.repair(
+        _repair(manager,
             job_id=str(JOB_ID),
             organization_id=ORGANIZATION_ID,
             design_group_id=DESIGN_GROUP_ID,
@@ -1372,6 +1418,30 @@ def test_repair_refuses_manifest_identity_change(tmp_path: Path) -> None:
         )
 
     assert captured.value.code == "JOB_REPAIR_UNSAFE"
+
+
+def test_repair_recomputes_the_doctor_receipt_under_its_job_lock(tmp_path: Path) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    report = manager.doctor(
+        job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    path = manager.workspace.jobs_root / manifest.directory_name / "job.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["revision"] = 99
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobFailure) as captured:
+        manager.repair(
+            job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID, actor_id=ACTOR_ID,
+            expected_revision=manifest.revision,
+            doctor_receipt_hash=str(report["receipt_sha256"]),
+            reason="repair receipt regression",
+        )
+
+    assert captured.value.code == "JOB_DOCTOR_RECEIPT_MISMATCH"
 
 
 def test_get_doctor_and_repair_reject_forged_operational_bindings(
@@ -1396,7 +1466,7 @@ def test_get_doctor_and_repair_reject_forged_operational_bindings(
         design_group_id=DESIGN_GROUP_ID,
     )
     with pytest.raises(JobFailure) as repair_failure:
-        manager.repair(
+        _repair(manager,
             job_id=str(JOB_ID),
             organization_id=ORGANIZATION_ID,
             design_group_id=DESIGN_GROUP_ID,
@@ -1420,7 +1490,7 @@ def test_missing_manifest_repair_validates_the_full_directory_contract(
     (root / "validation/images").rmdir()
 
     with pytest.raises(JobFailure) as captured:
-        manager.repair(
+        _repair(manager,
             job_id=str(JOB_ID),
             organization_id=ORGANIZATION_ID,
             design_group_id=DESIGN_GROUP_ID,
@@ -1465,7 +1535,7 @@ def test_doctor_and_missing_manifest_repair_use_only_pinned_read_enumeration(
                 AssertionError("detached iterdir is forbidden")
             ),
         )
-        repaired = manager.repair(
+        repaired = _repair(manager,
             job_id=str(JOB_ID),
             organization_id=ORGANIZATION_ID,
             design_group_id=DESIGN_GROUP_ID,
@@ -1502,7 +1572,7 @@ def test_repair_freshens_authority_after_lock_when_transition_commits_concurrent
             yield locked
 
     monkeypatch.setattr(jobs_module, "locked_job_root", transition_while_waiting)
-    repaired = manager.repair(
+    repaired = _repair(manager,
         job_id=str(JOB_ID),
         organization_id=ORGANIZATION_ID,
         design_group_id=DESIGN_GROUP_ID,
@@ -1586,7 +1656,7 @@ def test_lifecycle_projection_failure_is_typed_and_repairable(
 
     assert captured.value.code == "JOB_PROJECTION_INCOMPLETE"
     assert repository.jobs[str(JOB_ID)]["revision"] == created.revision + 1
-    repaired = manager.repair(
+    repaired = _repair(manager,
         job_id=str(JOB_ID),
         organization_id=ORGANIZATION_ID,
         design_group_id=DESIGN_GROUP_ID,

@@ -12,6 +12,7 @@ from .config import Settings
 from .database_bootstrap import bootstrap_databases
 from .migrations import postgres_migrations_directory
 from .jobs import JobFailure
+from .job_errors import safe_job_error
 from .repository import PostgresRepository
 from .service import MechanicalDesignService
 from .smoke import run_test_fixture
@@ -87,9 +88,11 @@ def _print_result(value: dict[str, object]) -> None:
 
 def _job_binding(args: argparse.Namespace) -> str:
     """Use only an explicit CLI binding or this process's environment binding."""
-    explicit = getattr(args, "job", "")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
+    explicit = getattr(args, "job", None)
+    if explicit is not None:
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+        raise JobFailure("JOB_INPUT_INVALID", "explicit --job must be a nonblank Job UUID or display ID")
     process_value = os.environ.get("MECH_DESIGN_JOB_ID", "").strip()
     if process_value:
         return process_value
@@ -100,13 +103,7 @@ def _job_binding(args: argparse.Namespace) -> str:
 
 
 def _job_error(error: Exception) -> dict[str, object]:
-    return {
-        "schema_version": "MechanicalDesignJobError/v1",
-        "status": "blocked",
-        "code": getattr(error, "code", "JOB_INPUT_INVALID"),
-        "message": getattr(error, "message", str(error)),
-        "candidates": [],
-    }
+    return safe_job_error(error)
 
 
 def main() -> None:
@@ -194,6 +191,7 @@ def main() -> None:
     job_create.add_argument("--design-group-id", required=True)
     job_create.add_argument("--family-id", default="")
     job_create.add_argument("--idempotency-token", required=True)
+    job_create.add_argument("--source-file", dest="source_files", action="append", default=[])
 
     job_list = job_sub.add_parser("list")
     _add_bootstrap_args(job_list)
@@ -203,7 +201,7 @@ def main() -> None:
 
     job_status = job_sub.add_parser("status")
     _add_bootstrap_args(job_status)
-    job_status.add_argument("--job", default="")
+    job_status.add_argument("--job", default=None)
 
     job_resolve = job_sub.add_parser("resolve")
     _add_bootstrap_args(job_resolve)
@@ -214,7 +212,7 @@ def main() -> None:
 
     job_close = job_sub.add_parser("close")
     _add_bootstrap_args(job_close)
-    job_close.add_argument("--job", default="")
+    job_close.add_argument("--job", default=None)
     job_close.add_argument("--expected-revision", type=int, required=True)
     job_close.add_argument("--status", required=True)
     job_close.add_argument("--phase", required=True)
@@ -223,7 +221,7 @@ def main() -> None:
 
     job_reopen = job_sub.add_parser("reopen")
     _add_bootstrap_args(job_reopen)
-    job_reopen.add_argument("--job", default="")
+    job_reopen.add_argument("--job", default=None)
     job_reopen.add_argument("--expected-revision", type=int, required=True)
     job_reopen.add_argument("--phase", required=True)
     job_reopen.add_argument("--reason", required=True)
@@ -231,11 +229,11 @@ def main() -> None:
 
     job_doctor = job_sub.add_parser("doctor")
     _add_bootstrap_args(job_doctor)
-    job_doctor.add_argument("--job", default="")
+    job_doctor.add_argument("--job", default=None)
 
     job_repair = job_sub.add_parser("repair")
     _add_bootstrap_args(job_repair)
-    job_repair.add_argument("--job", default="")
+    job_repair.add_argument("--job", default=None)
     job_repair.add_argument("--expected-revision", type=int, required=True)
     job_repair.add_argument("--doctor-receipt-sha256", required=True)
     job_repair.add_argument("--reason", required=True)
@@ -378,7 +376,7 @@ def main() -> None:
             _print(repository.apply_migrations(migrations))
         return
     try:
-        settings = runtime.operational_settings()
+        settings = runtime.job_operational_settings() if args.command == "job" else runtime.operational_settings()
     except DiagnosticGateError as exc:
         _print_result(exc.response)
         return
@@ -394,9 +392,9 @@ def main() -> None:
     if args.command == "smoke-fixture":
         _print(run_test_fixture(settings, args.source))
         return
-    service = MechanicalDesignService(settings)
     if args.command == "job":
         try:
+            service = MechanicalDesignService(settings)
             if args.job_command == "create":
                 result = service.design_job_create(
                     job_type=args.job_type,
@@ -405,6 +403,7 @@ def main() -> None:
                     design_group_id=args.design_group_id,
                     family_id=args.family_id or None,
                     idempotency_token=args.idempotency_token,
+                    source_files=args.source_files,
                 )
             elif args.job_command == "list":
                 result = service.design_job_list(
@@ -422,7 +421,7 @@ def main() -> None:
             else:
                 job_id = _job_binding(args)
                 if args.job_command == "status":
-                    result = service.design_job_get(job_id)
+                    result = service.design_job_get(job_id=job_id)
                 elif args.job_command == "close":
                     result = service.design_job_close(
                         job_id=job_id,
@@ -441,7 +440,7 @@ def main() -> None:
                         confirmation=args.confirmation,
                     )
                 elif args.job_command == "doctor":
-                    result = service.design_job_doctor(job_id)
+                    result = service.design_job_doctor(job_id=job_id)
                 else:
                     result = service.design_job_repair(
                         job_id=job_id,
@@ -450,7 +449,7 @@ def main() -> None:
                         reason=args.reason,
                         confirmation=args.confirmation,
                     )
-        except (JobFailure, ValueError, PermissionError) as exc:
+        except Exception as exc:
             _print_result(_job_error(exc))
             return
         if args.job_command == "doctor":
@@ -458,6 +457,7 @@ def main() -> None:
         else:
             _print(result)
         return
+    service = MechanicalDesignService(settings)
     if args.command == "status":
         _print(service.system_status())
     elif args.command == "bootstrap":

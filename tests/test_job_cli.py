@@ -17,7 +17,7 @@ class _ReadyRuntime:
         assert probe is True
         assert getattr(request, "capability", request) == "design_job_workspace"
 
-    def operational_settings(self) -> object:
+    def job_operational_settings(self) -> object:
         return object()
 
 
@@ -34,7 +34,7 @@ class _JobCliService:
         self.calls.append(("list", kwargs))
         return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
 
-    def design_job_get(self, job_id: str) -> dict[str, object]:
+    def design_job_get(self, *, job_id: str) -> dict[str, object]:
         self.calls.append(("status", job_id))
         return {"schema_version": "MechanicalDesignJob/v1", "job_id": job_id, "revision": 4}
 
@@ -187,3 +187,40 @@ def test_job_cli_explicit_job_overrides_process_scoped_binding_without_persistin
     assert result["job_id"] == explicit
     assert service.calls == [("status", explicit)]
 
+
+def test_job_cli_explicit_blank_never_falls_back_to_process_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _JobCliService()
+    monkeypatch.setattr(cli.BootstrapRuntime, "from_process", lambda **_kwargs: _ReadyRuntime())
+    monkeypatch.setattr(cli, "MechanicalDesignService", lambda _settings: service)
+    monkeypatch.setenv("MECH_DESIGN_JOB_ID", service.job_id)
+
+    with pytest.raises(SystemExit) as captured:
+        _run_cli(monkeypatch, capsys, "job", "status", "--job", "")
+
+    response = json.loads(capsys.readouterr().out)
+    assert captured.value.code == 3
+    assert response["schema_version"] == "MechanicalDesignJobError/v1"
+    assert response["code"] == "JOB_INPUT_INVALID"
+    assert service.calls == []
+
+
+def test_job_cli_redacts_unexpected_repository_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FailingService(_JobCliService):
+        def design_job_list(self, **kwargs: object) -> dict[str, object]:
+            raise RuntimeError("/private/secret/Authorized Pump")
+
+    monkeypatch.setattr(cli.BootstrapRuntime, "from_process", lambda **_kwargs: _ReadyRuntime())
+    monkeypatch.setattr(cli, "MechanicalDesignService", lambda _settings: FailingService())
+    with pytest.raises(SystemExit) as captured:
+        _run_cli(monkeypatch, capsys, "job", "list")
+    response = json.loads(capsys.readouterr().out)
+    assert captured.value.code == 3
+    assert response["code"] == "JOB_REQUEST_FAILED"
+    assert response["next_action"]
+    assert "secret" not in json.dumps(response)

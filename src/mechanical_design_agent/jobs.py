@@ -471,6 +471,25 @@ class DesignJobManifest:
         }
 
 
+@dataclass(frozen=True)
+class DesignJobRepairResult:
+    """A repaired projection and the non-secret mutation audit binding."""
+
+    manifest: DesignJobManifest
+    audit: Mapping[str, object]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "MechanicalDesignJobRepair/v1",
+            "job": self.manifest.as_dict(),
+            "audit": dict(self.audit),
+        }
+
+    def __getattr__(self, name: str) -> object:
+        # Retain the manifest-shaped manager result for existing internal callers.
+        return getattr(self.manifest, name)
+
+
 class _JobRepository(Protocol):
     def create_design_job(self, **kwargs: object) -> dict[str, Any]: ...
     def record_design_job_directory(self, **kwargs: object) -> dict[str, Any]: ...
@@ -1264,14 +1283,20 @@ class DesignJobManager:
             raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
         root = self._final_path(row)
         with locked_job_root(job_root=root) as locked:
-            fresh = self._fresh_locked_row(
-                original=row,
-                job_id=job_id,
-                organization_id=organization_id,
-                design_group_id=design_group_id,
-                directory_name=str(row["directory_name"]),
-                allow_unrecorded=False,
-            )
+            try:
+                fresh = self._fresh_locked_row(
+                    original=row,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    directory_name=str(row["directory_name"]),
+                    allow_unrecorded=False,
+                )
+            except Exception as exc:
+                raise JobFailure(
+                    "JOB_ACCESS_UNAVAILABLE",
+                    "authorized Job state is unavailable; reauthorize and retry",
+                ) from exc
             if fresh.get("revision") != expected_revision:
                 raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
             if status == "active":
@@ -1472,9 +1497,14 @@ class DesignJobManager:
                     directory_name=str(row["directory_name"]),
                     allow_unrecorded=False,
                 )
-            except JobFailure as exc:
-                issues.append(self._issue(exc.code, exc.message))
-                fresh = row
+            except Exception as exc:
+                # Authorization is checked again while holding the Job lock.  A
+                # stale/revoked/failed authority read must never be converted
+                # into disk diagnostics, which could disclose the Job path.
+                raise JobFailure(
+                    "JOB_ACCESS_UNAVAILABLE",
+                    "authorized Job state is unavailable; reauthorize and retry",
+                ) from exc
             issues.extend(self._directory_contract_issues(locked))
             try:
                 raw, manifest_read = _read_json_with_evidence(locked / "job.json")
@@ -1527,46 +1557,57 @@ class DesignJobManager:
         organization_id: str,
         design_group_id: str,
         actor_id: str,
-        expected_revision: int | None = None,
-    ) -> DesignJobManifest:
+        expected_revision: int,
+        doctor_receipt_hash: str,
+        reason: str,
+    ) -> DesignJobRepairResult:
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise JobFailure(
+                "JOB_INPUT_INVALID", "expected_revision must be a non-negative integer"
+            )
+        if not isinstance(doctor_receipt_hash, str) or _SHA256.fullmatch(doctor_receipt_hash) is None:
+            raise JobFailure("JOB_INPUT_INVALID", "doctor_receipt_hash must be a SHA-256 digest")
+        if not isinstance(reason, str) or not reason.strip():
+            raise JobFailure("JOB_INPUT_INVALID", "reason is required")
         row = self._get_authoritative_row(
             job_id=job_id,
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
-        if expected_revision is not None:
-            if type(expected_revision) is not int or expected_revision < 0:
-                raise JobFailure(
-                    "JOB_INPUT_INVALID",
-                    "expected_revision must be a non-negative integer",
-                )
-            if row.get("revision") != expected_revision:
-                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        if row.get("revision") != expected_revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
         if row.get("provisioning_state") == "provisioning":
-            with self._locked_jobs_root() as jobs_root:
-                return self._finish_provisioning(
-                    row=row,
-                    jobs_root=jobs_root,
-                    organization_id=organization_id,
-                    design_group_id=design_group_id,
-                    actor_id=actor_id,
-                    expected_revision=expected_revision,
-                )
+            raise JobFailure(
+                "JOB_REPAIR_UNSAFE",
+                "Job provisioning is incomplete and cannot be receipt-bound repaired",
+            )
         root = self._final_path(row)
         with locked_job_root(job_root=root) as locked:
-            fresh = self._fresh_locked_row(
-                original=row,
-                job_id=job_id,
-                organization_id=organization_id,
-                design_group_id=design_group_id,
-                directory_name=str(row["directory_name"]),
-                allow_unrecorded=False,
-            )
-            if (
-                expected_revision is not None
-                and fresh.get("revision") != expected_revision
-            ):
+            try:
+                fresh = self._fresh_locked_row(
+                    original=row,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    directory_name=str(row["directory_name"]),
+                    allow_unrecorded=False,
+                )
+            except Exception as exc:
+                raise JobFailure(
+                    "JOB_ACCESS_UNAVAILABLE",
+                    "authorized Job state is unavailable; reauthorize and retry",
+                ) from exc
+            if fresh.get("revision") != expected_revision:
                 raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+            # Recompute the receipt under this same lock.  This makes the
+            # caller's doctor evidence a precondition of the write, rather
+            # than a check made by a separate service-level operation.
+            doctor = self._doctor_report_for_locked_row(locked=locked, row=fresh)
+            if doctor["receipt_sha256"] != doctor_receipt_hash:
+                raise JobFailure(
+                    "JOB_DOCTOR_RECEIPT_MISMATCH",
+                    "doctor receipt does not match the authorized Job state",
+                )
             if self._directory_contract_issues(locked):
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",
@@ -1613,7 +1654,7 @@ class DesignJobManager:
                     )
                 repaired = self._manifest_from_row(fresh)
                 self._replace_projection(manifest_path, repaired)
-                return repaired
+                return self._repair_result(repaired, reason, actor_id)
             try:
                 working_entries = list_managed_directory(locked / "models/working")
                 source_entries = list_managed_directory(locked / "inputs/source")
@@ -1635,12 +1676,59 @@ class DesignJobManager:
                     "JOB_PROJECTION_INCOMPLETE",
                     "PostgreSQL is authoritative but job.json publication is incomplete",
                 ) from exc
-            return repaired
+            return self._repair_result(repaired, reason, actor_id)
+
+    def _repair_result(
+        self, manifest: DesignJobManifest, reason: str, actor_id: str
+    ) -> DesignJobRepairResult:
+        return DesignJobRepairResult(
+            manifest=manifest,
+            audit=MappingProxyType(
+                {
+                    "action": "repair",
+                    "reason": reason.strip(),
+                    "actor_id": actor_id,
+                    "authoritative_revision": manifest.revision,
+                }
+            ),
+        )
+
+    def _doctor_report_for_locked_row(
+        self, *, locked: Path, row: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Compute a doctor receipt from pinned bytes while the Job lock is held."""
+        issues = self._directory_contract_issues(locked)
+        manifest_sha256: str | None = None
+        try:
+            raw, manifest_read = _read_json_with_evidence(locked / "job.json")
+            manifest_sha256 = manifest_read.sha256
+            actual = DesignJobManifest.from_dict(raw)
+            expected = self._manifest_from_row(row)
+            actual_payload = actual.as_dict()
+            expected_payload = expected.as_dict()
+            if actual.active_working_copy_id is not None or actual.source_snapshots:
+                issues.append(self._issue("JOB_OPERATIONAL_BINDING_FORGED", "core Job manifest contains disk-only operational bindings"))
+            if actual.revision != expected.revision:
+                issues.append(self._issue("JOB_REVISION_MISMATCH", "job.json revision disagrees with PostgreSQL"))
+            if any(
+                field != "revision" and actual_payload[field] != expected_payload[field]
+                for field in _AUTHORITATIVE_MANIFEST_FIELDS
+            ):
+                issues.append(self._issue("JOB_MANIFEST_MISMATCH", "job.json authoritative fields disagree with PostgreSQL"))
+        except JobFailure as exc:
+            issues.append(self._issue(exc.code, exc.message))
+        return self._doctor_report(
+            row=row,
+            issues=issues,
+            manifest_sha256=manifest_sha256,
+            verified_snapshots=(),
+        )
 
 
 __all__ = [
     "DesignJobManager",
     "DesignJobManifest",
+    "DesignJobRepairResult",
     "JOB_MANIFEST_SCHEMA",
     "JobFailure",
     "locked_job_root",

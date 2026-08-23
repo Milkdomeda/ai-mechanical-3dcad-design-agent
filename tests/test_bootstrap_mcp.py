@@ -430,7 +430,7 @@ def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identi
             self.calls.append(("list", kwargs))
             return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
 
-        def design_job_get(self, job_id: str) -> dict[str, object]:
+        def design_job_get(self, *, job_id: str) -> dict[str, object]:
             self.calls.append(("get", {"job_id": job_id}))
             return {"schema_version": "MechanicalDesignJob/v1", "job_id": job_id}
 
@@ -465,6 +465,20 @@ def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identi
     for name in names:
         description = mcp._tool_manager._tools[name].description
         assert "do not create a Git worktree" in description
+    assert mcp._tool_manager._tools["design_job_create"].parameters == {
+        "type": "object",
+        "title": "design_job_createArguments",
+        "required": ["job_type", "title", "organization_id", "design_group_id", "idempotency_token"],
+        "properties": {
+            "job_type": {"title": "Job Type", "type": "string"},
+            "title": {"title": "Title", "type": "string"},
+            "organization_id": {"title": "Organization Id", "type": "string"},
+            "design_group_id": {"title": "Design Group Id", "type": "string"},
+            "idempotency_token": {"title": "Idempotency Token", "type": "string"},
+            "family_id": {"default": "", "title": "Family Id", "type": "string"},
+            "source_files": {"default": [], "items": {"type": "string"}, "title": "Source Files", "type": "array"},
+        },
+    }
     created = json.loads(
         tool(mcp, "design_job_create")(
             "mechanical_design",
@@ -480,6 +494,24 @@ def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identi
     assert created["schema_version"] == "MechanicalDesignJob/v1"
     assert resolved["candidates"] == []
     assert "path" not in tool(mcp, "design_job_get").__annotations__
+
+
+def test_design_job_mcp_uses_the_shared_redacted_error_contract(tmp_path: Path) -> None:
+    class FailingJobService:
+        def design_job_get(self, *, job_id: str) -> dict[str, object]:
+            raise PermissionError(f"unauthorized title at /private/{job_id}")
+
+    mcp = create_mcp(
+        service=FailingJobService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    with pytest.raises(ToolError) as captured:
+        tool(mcp, "design_job_get")("00000000-0000-4000-8000-000000000499")
+    response = json.loads(str(captured.value))
+    assert response["schema_version"] == "MechanicalDesignJobError/v1"
+    assert response["code"] == "JOB_REQUEST_FAILED"
+    assert response["next_action"]
+    assert "private" not in json.dumps(response)
 
 
 def test_unmapped_proxy_member_is_blocked_without_constructing_service(
@@ -498,3 +530,39 @@ def test_unmapped_proxy_member_is_blocked_without_constructing_service(
     response = json.loads(str(captured.value))
     assert response["status"] == "blocked"
     assert response["code"] == "CAPABILITY_MAPPING_MISSING"
+
+
+def test_job_proxy_uses_family_independent_job_operational_settings() -> None:
+    job_settings = object()
+
+    class JobRuntime:
+        def require_initialized(self, capability: str) -> None:
+            assert capability == "design_job_workspace"
+
+        def require_capability(self, request: object, *, probe: bool) -> None:
+            assert getattr(request, "capability", request) == "design_job_workspace"
+            assert probe is True
+
+        def job_operational_settings(self) -> object:
+            return job_settings
+
+        def operational_settings(self) -> object:
+            pytest.fail("Job operations must not require a selected product family")
+
+        def blocked_response(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+        def status(self) -> dict[str, object]:
+            return {}
+
+    class JobService:
+        def design_job_list(self) -> dict[str, object]:
+            return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
+
+    constructed: list[object] = []
+    proxy = _LazyServiceProxy(
+        runtime=JobRuntime(),
+        service_factory=lambda settings: constructed.append(settings) or JobService(),
+    )
+    assert proxy.design_job_list()["jobs"] == []
+    assert constructed == [job_settings]

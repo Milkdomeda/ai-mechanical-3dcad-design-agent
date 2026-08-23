@@ -19,6 +19,7 @@ from .context import DesignContextBuilder
 from .design_lessons import match_design_lesson, normalize_design_features
 from .models import require_safe_id
 from .service import MechanicalDesignService
+from .job_errors import safe_job_error_json
 from .workspace_bootstrap import BootstrapFailure
 
 
@@ -34,6 +35,14 @@ def _json(value: Any) -> str:
         )
     except ValueError as exc:
         raise ValueError("non-finite JSON value cannot be serialized") from exc
+
+
+def _job_json(call: Callable[[], object]) -> str:
+    """Map every public Job failure to the redacted v1 transport contract."""
+    try:
+        return _json(call())
+    except Exception as exc:
+        raise ToolError(safe_job_error_json(exc)) from None
 
 
 def _strict_json_loads(value: str) -> Any:
@@ -258,11 +267,11 @@ class _LazyServiceProxy:
         self,
         *,
         runtime: BootstrapRuntime,
-        service_factory: Callable[[Settings], Any],
+        service_factory: Callable[[object], Any],
     ) -> None:
         self.runtime = runtime
         self.service_factory = service_factory
-        self._service: Any | None = None
+        self._services: dict[str, Any] = {}
         self._lock = Lock()
 
     def _mapping_failure(self, member: str) -> ToolError:
@@ -283,14 +292,19 @@ class _LazyServiceProxy:
             self.runtime.require_capability(request, probe=True)
         except DiagnosticGateError as exc:
             raise ToolError(_json(exc.response)) from None
-        if self._service is not None:
-            return self._service
+        key = "job" if request.capability == "design_job_workspace" else "operational"
+        if key in self._services:
+            return self._services[key]
         with self._lock:
-            if self._service is not None:
-                return self._service
+            if key in self._services:
+                return self._services[key]
             try:
-                settings = self.runtime.operational_settings()
-                self._service = self.service_factory(settings)
+                settings = (
+                    self.runtime.job_operational_settings()
+                    if key == "job"
+                    else self.runtime.operational_settings()
+                )
+                self._services[key] = self.service_factory(settings)
             except DiagnosticGateError as exc:
                 raise ToolError(_json(exc.response)) from None
             except Exception as exc:
@@ -303,7 +317,7 @@ class _LazyServiceProxy:
                     ),
                 )
                 raise ToolError(_json(response)) from None
-        return self._service
+        return self._services[key]
 
     def __getattr__(self, member: str) -> Any:
         request = SERVICE_METHOD_CAPABILITIES.get(member)
@@ -390,7 +404,7 @@ def create_mcp(
     service: Any | None = None,
     runtime: BootstrapRuntime | None = None,
     product_family_id: str | None = None,
-    service_factory: Callable[[Settings], Any] | None = None,
+    service_factory: Callable[[object], Any] | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
         cwd=Path.cwd(),
@@ -592,9 +606,10 @@ def create_mcp(
         design_group_id: str,
         idempotency_token: str,
         family_id: str = "",
+        source_files: list[str] = [],
     ) -> str:
         """Create one scoped Design Job. Product operations do not create a Git worktree."""
-        return _json(
+        return _job_json(lambda:
             service.design_job_create(
                 job_type=job_type,
                 title=title,
@@ -602,6 +617,7 @@ def create_mcp(
                 design_group_id=design_group_id,
                 family_id=family_id or None,
                 idempotency_token=idempotency_token,
+                source_files=source_files,
             )
         )
 
@@ -612,7 +628,7 @@ def create_mcp(
         family_id: str = "",
     ) -> str:
         """List authorized Design Jobs. Product operations do not create a Git worktree."""
-        return _json(
+        return _job_json(lambda:
             service.design_job_list(
                 status=status or None,
                 job_type=job_type or None,
@@ -623,7 +639,7 @@ def create_mcp(
     @mcp.tool()
     def design_job_get(job_id: str) -> str:
         """Read one Job UUID/display ID, never a filesystem path. Product operations do not create a Git worktree."""
-        return _json(service.design_job_get(job_id))
+        return _job_json(lambda: service.design_job_get(job_id=job_id))
 
     @mcp.tool()
     def design_job_resolve(
@@ -633,17 +649,15 @@ def create_mcp(
         statuses_json: str = '["active", "blocked"]',
     ) -> str:
         """Return all authorized Job candidates without choosing one. Product operations do not create a Git worktree."""
-        statuses = _array(statuses_json, "statuses_json")
-        if not all(isinstance(item, str) for item in statuses):
-            raise ValueError("statuses_json must contain only status strings")
-        return _json(
-            service.design_job_resolve(
-                query=query,
-                job_type=job_type or None,
-                family_id=family_id or None,
+        def invoke() -> object:
+            statuses = _array(statuses_json, "statuses_json")
+            if not all(isinstance(item, str) for item in statuses):
+                raise ValueError("statuses_json must contain only status strings")
+            return service.design_job_resolve(
+                query=query, job_type=job_type or None, family_id=family_id or None,
                 statuses=tuple(statuses),
             )
-        )
+        return _job_json(invoke)
 
     @mcp.tool()
     def design_job_close(
@@ -655,7 +669,7 @@ def create_mcp(
         confirmation: str,
     ) -> str:
         """Close a Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
-        return _json(
+        return _job_json(lambda:
             service.design_job_close(
                 job_id=job_id,
                 expected_revision=expected_revision,
@@ -675,7 +689,7 @@ def create_mcp(
         confirmation: str,
     ) -> str:
         """Reopen a terminal Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
-        return _json(
+        return _job_json(lambda:
             service.design_job_reopen(
                 job_id=job_id,
                 expected_revision=expected_revision,

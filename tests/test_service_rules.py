@@ -1705,13 +1705,13 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         manager = UnauthorizedManager()
         service = self._service(manager)
         with self.assertRaises(JobFailure) as captured:
-            service.design_job_get("00000000-0000-4000-8000-000000000499")
+            service.design_job_get(job_id="00000000-0000-4000-8000-000000000499")
 
         self.assertNotIn(private_title, str(captured.exception))
         self.assertEqual([name for name, _ in manager.calls], ["get"])
         self.assertEqual(manager.calls[0][1]["organization_id"], "org-configured")
         with self.assertRaisesRegex(ValueError, "filesystem path"):
-            service.design_job_get("../private/job.json")
+            service.design_job_get(job_id="../private/job.json")
         self.assertEqual([name for name, _ in manager.calls], ["get"])
 
     def test_design_job_resolve_returns_candidates_without_selecting_one(self) -> None:
@@ -1775,8 +1775,48 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         repair = [item for item in service.design_jobs.calls if item[0] == "repair"]
         self.assertEqual(repair[0][1]["expected_revision"], 4)
         self.assertEqual([name for name, _ in service.design_jobs.calls], [
-            "close", "reopen", "doctor", "repair"
+            "close", "reopen", "repair"
         ])
+
+    def test_job_confirmation_is_one_exact_canonical_phrase(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        for confirmation in (
+            f"不关闭 {job_id}",
+            f"关闭 {job_id} now",
+            f"关闭 {job_id} {job_id}",
+            f"关闭 {job_id}x",
+            f"关闭 JOB-20260823-401",
+        ):
+            with self.assertRaisesRegex(ValueError, "canonical"):
+                service.design_job_close(
+                    job_id=job_id,
+                    expected_revision=4,
+                    status="completed",
+                    phase="completed",
+                    reason="delivered",
+                    confirmation=confirmation,
+                )
+        service.design_job_close(
+            job_id=job_id.upper(),
+            expected_revision=4,
+            status="completed",
+            phase="completed",
+            reason="delivered",
+            confirmation=f"关闭\t{job_id.upper()}",
+        )
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["close"])
+
+    def test_source_files_are_explicitly_rejected_until_snapshots_exist(self) -> None:
+        service = self._service()
+        with self.assertRaises(JobFailure) as captured:
+            service.design_job_create(
+                job_type="mechanical_design", title="Pump", organization_id="org-configured",
+                design_group_id="group-configured", family_id=None, idempotency_token="source-001",
+                source_files=["input.FCStd"],
+            )
+        self.assertEqual(captured.exception.code, "JOB_SOURCE_SNAPSHOTS_NOT_READY")
+        self.assertEqual(service.design_jobs.calls, [])
 
 
 if __name__ == "__main__":

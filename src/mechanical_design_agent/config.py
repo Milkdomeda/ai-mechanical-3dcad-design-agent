@@ -254,6 +254,18 @@ class Settings:
             return False
 
 
+@dataclass(frozen=True)
+class JobSettings:
+    """Minimal runtime configuration for family-independent Job operations."""
+
+    workspace: Path
+    package_root: Path
+    database_url: str
+    actor_id: str
+    organization_id: str
+    design_group_id: str
+
+
 def resolve_workspace_output(settings: Settings, requested: str | Path) -> Path:
     candidate = Path(requested)
     if not candidate.is_absolute():

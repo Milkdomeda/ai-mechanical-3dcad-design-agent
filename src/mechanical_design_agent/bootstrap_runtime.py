@@ -71,7 +71,7 @@ from .secure_fs import (
 )
 
 if TYPE_CHECKING:
-    from .config import Settings
+    from .config import JobSettings, Settings
 
 
 _INIT_NEXT_STEP = "mechanical-design init --workspace <path>"
@@ -1508,6 +1508,32 @@ class BootstrapRuntime:
             actor_id=inspection.actor.value,
             artifact_root=inspection.artifact_root,
             family_config_path=inspection.selected_product_family.config.path,
+        )
+
+    def job_operational_settings(self) -> JobSettings:
+        """Resolve the Job authority without selecting a product family."""
+        from .config import JobSettings
+
+        self.require_capability(CapabilityRequest("design_job_workspace"), probe=False)
+        inspection = self._inspect()
+        assert inspection.manifest is not None
+        assert inspection.actor is not None
+        database_url = inspection.secrets["postgresql"].value
+        assert database_url is not None
+        identity = inspection.manifest.raw.get("identity")
+        if not isinstance(identity, Mapping):
+            raise RuntimeError("configured Job scope is unavailable")
+        organization_id = identity.get("organization_id")
+        design_group_id = identity.get("design_group_id")
+        if not isinstance(organization_id, str) or not organization_id.strip() or not isinstance(design_group_id, str) or not design_group_id.strip():
+            raise RuntimeError("configured Job organization and design group are required")
+        return JobSettings(
+            workspace=inspection.manifest.workspace,
+            package_root=inspection.manifest.workspace,
+            database_url=database_url,
+            actor_id=inspection.actor.value,
+            organization_id=organization_id.strip(),
+            design_group_id=design_group_id.strip(),
         )
 
     def config_show(self) -> dict[str, object]:

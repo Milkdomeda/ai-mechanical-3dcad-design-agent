@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from .artifacts import ArtifactChecksumMismatchError, ArtifactStore
-from .config import Settings
+from .config import JobSettings, Settings
 from .context import DesignContextBuilder
 from .design import DesignWorkspace, derive_iteration_candidates
 from .design_lessons import (
@@ -51,12 +51,19 @@ class ImmutableReviewBindingDriftError(ValueError):
 
 
 class MechanicalDesignService:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings | JobSettings):
         self.settings = settings
         self.repository = PostgresRepository(settings.database_url)
         self.design_jobs = DesignJobManager(
             read_workspace_manifest(settings.workspace), self.repository
         )
+        if isinstance(settings, JobSettings):
+            self.bootstrap_config = {
+                "organization_id": settings.organization_id,
+                "design_group_id": settings.design_group_id,
+            }
+            self.bootstrap_error = ""
+            return
         self.artifacts = ArtifactStore(settings.artifact_root)
         self.design_lesson_staging = DesignLessonStagingStore(settings.workspace)
         self.design_lesson_reviews = DesignLessonReviewStore(settings.workspace)
@@ -139,7 +146,7 @@ class MechanicalDesignService:
         if "/" in reference or "\\" in reference or reference in {".", ".."}:
             raise ValueError("job_id must be a Job UUID or display ID, not a filesystem path")
         try:
-            UUID(reference)
+            return str(UUID(reference))
         except ValueError:
             if re.fullmatch(r"JOB-\d{8}-\d{3,}", reference) is None:
                 raise ValueError("job_id must be a Job UUID or display ID") from None
@@ -164,15 +171,20 @@ class MechanicalDesignService:
         job_reference: str,
         action: str,
     ) -> str:
-        if (
-            not isinstance(confirmation, str)
-            or job_reference not in confirmation
-            or action not in confirmation
-        ):
+        if not isinstance(confirmation, str):
+            raise ValueError("confirmation must use the canonical Job action phrase")
+        parts = confirmation.split()
+        if len(parts) == 2:
+            try:
+                parts[1] = str(UUID(parts[1]))
+            except ValueError:
+                pass
+        expected = (action, job_reference)
+        if tuple(parts) != expected:
             raise ValueError(
-                f"confirmation must include the Job ID and {action}"
+                f"confirmation must equal the canonical phrase: {action} {job_reference}"
             )
-        return confirmation
+        return " ".join(parts)
 
     def _resolve_job_reference(
         self,
@@ -218,6 +230,7 @@ class MechanicalDesignService:
         design_group_id: str,
         family_id: str | None,
         idempotency_token: str,
+        source_files: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         """Create one scoped Job; product operations never create a Git worktree."""
         self._require_database()
@@ -225,6 +238,11 @@ class MechanicalDesignService:
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
+        if source_files:
+            raise JobFailure(
+                "JOB_SOURCE_SNAPSHOTS_NOT_READY",
+                "source snapshots require the immutable snapshot workflow",
+            )
         return self._job_manifest_response(
             self.design_jobs.create(
                 job_type=job_type,
@@ -259,7 +277,7 @@ class MechanicalDesignService:
             "jobs": [self._job_manifest_response(job) for job in jobs],
         }
 
-    def design_job_get(self, job_id: str) -> dict[str, object]:
+    def design_job_get(self, *, job_id: str) -> dict[str, object]:
         """Read one UUID/display Job identity after scope authorization."""
         self._require_database()
         organization, group = self._configured_job_scope()
@@ -379,7 +397,7 @@ class MechanicalDesignService:
             )
         )
 
-    def design_job_doctor(self, job_id: str) -> dict[str, object]:
+    def design_job_doctor(self, *, job_id: str) -> dict[str, object]:
         """Inspect one authorized Job projection without changing it."""
         self._require_database()
         organization, group = self._configured_job_scope()
@@ -407,7 +425,7 @@ class MechanicalDesignService:
         self._require_database()
         reference = self._job_reference(job_id)
         revision = self._expected_job_revision(expected_revision)
-        self._required_job_reason(reason)
+        repair_reason = self._required_job_reason(reason)
         self._require_job_confirmation(
             confirmation, job_reference=reference, action="修复"
         )
@@ -421,27 +439,21 @@ class MechanicalDesignService:
             organization_id=organization,
             design_group_id=group,
         )
-        doctor = self.design_jobs.doctor(
+        repaired = self.design_jobs.repair(
             job_id=resolved_job_id,
             organization_id=organization,
             design_group_id=group,
+            actor_id=self.settings.actor_id,
+            expected_revision=revision,
+            doctor_receipt_hash=doctor_receipt_sha256,
+            reason=repair_reason,
         )
-        if doctor.get("authoritative_revision") != revision:
-            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
-        if doctor.get("receipt_sha256") != doctor_receipt_sha256:
-            raise JobFailure(
-                "JOB_DOCTOR_RECEIPT_MISMATCH",
-                "doctor receipt does not match the authorized Job state",
-            )
-        return self._job_manifest_response(
-            self.design_jobs.repair(
-                job_id=resolved_job_id,
-                organization_id=organization,
-                design_group_id=group,
-                actor_id=self.settings.actor_id,
-                expected_revision=revision,
-            )
+        repaired_manifest = getattr(repaired, "manifest", repaired)
+        response = self._job_manifest_response(repaired_manifest)
+        response["repair_audit"] = dict(
+            getattr(repaired, "audit", {"action": "repair", "reason": repair_reason})
         )
+        return response
 
     def system_status(self) -> dict[str, Any]:
         try:
