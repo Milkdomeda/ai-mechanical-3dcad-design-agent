@@ -19,6 +19,7 @@ ARCHITECTURE = PROJECT_ROOT / "docs" / "ARCHITECTURE.md"
 DATABASE_DEPLOYMENT_GUIDE = PROJECT_ROOT / "docs" / "DATABASE_DEPLOYMENT.md"
 FREECAD_GUI_MCP_GUIDE = PROJECT_ROOT / "docs" / "FREECAD_GUI_MCP_INTEGRATION.md"
 WINDOWS_RELEASE_GUIDE = PROJECT_ROOT / "docs" / "WINDOWS_RELEASE_ACCEPTANCE.md"
+DESIGN_JOB_GUIDE = PROJECT_ROOT / "docs" / "DESIGN_JOB_WORKSPACES.md"
 EXAMPLE_FAMILY = (
     PROJECT_ROOT / "examples" / "product_families" / "example-family.json"
 )
@@ -35,7 +36,7 @@ def test_public_identity_and_release_boundary() -> None:
     assert "coding agent" in text.lower()
     assert "does not include an embedded language-model client" in text.lower()
     assert (
-        "standalone llm orchestration is not included in version 0.2.0"
+        "standalone llm orchestration is not included in version 0.3.0"
         in text.lower()
     )
     assert "ai-mechanical-3dcad-design-agent" in text
@@ -71,6 +72,28 @@ def test_design_job_routing_is_public_and_precedes_model_lifecycle() -> None:
     assert "not installed" in normalized(README).casefold()
     assert "design_job_resolve" in skill
     assert "design_job_create" in skill
+
+
+def test_design_job_workspace_guide_covers_routing_storage_and_recovery() -> None:
+    raw = DESIGN_JOB_GUIDE.read_text(encoding="utf-8")
+    text = normalized(DESIGN_JOB_GUIDE)
+    for fragment in (
+        "same design",
+        "independent requirement",
+        "Do not create a Git worktree",
+        "jobs/<job-directory>/",
+        "product_family_onboarding",
+        "originating `mechanical_design` Job",
+        "migrate-legacy --dry-run",
+        "migrate-legacy --apply",
+        "JOB_AMBIGUOUS",
+        "JOB_STALE_REVISION",
+        "macOS",
+        "PowerShell",
+    ):
+        assert fragment in text
+    assert "docs/DESIGN_JOB_WORKSPACES.md" in README.read_text(encoding="utf-8")
+    assert ".git" in raw
 
 
 def test_freecad_gui_mcp_boundary() -> None:

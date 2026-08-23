@@ -6,7 +6,7 @@ AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.2.0.
+0.3.0.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,17 +15,20 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.2.0 is a coding-agent/MCP-server release. It includes deterministic
-workspace bootstrap, product-family configuration, model analysis, engineering
+Version 0.3.0 adds governed Design Job workspaces to the coding-agent/MCP-server
+release. It includes deterministic workspace bootstrap, Job lifecycle and
+legacy migration, product-family onboarding, model analysis, engineering
 knowledge workflows, standard-part provenance, validation resources, and
 package-owned database migrations. It also publishes project-owned agent
 instructions and skills for Design Job routing, standard-part selection, and
 FreeCAD model validation. It does not bundle a language model, a CAD model
-library, generated output, engineering reports, database services, or a FreeCAD
-GUI MCP integration.
+library, generated Job output, engineering reports, database services, or a
+FreeCAD GUI MCP integration.
 
 See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
-[Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md) for the
+[Design Job workspace guide](docs/DESIGN_JOB_WORKSPACES.md) for routing,
+directory, migration, and recovery contracts. The
+[Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md) describes the
 operational knowledge workflow. A supported local and evaluation database path
 is documented in [Database deployment](docs/DATABASE_DEPLOYMENT.md). The public
 [environment template](.env.example) and
@@ -100,8 +103,10 @@ See the [FreeCAD GUI MCP integration boundary](docs/FREECAD_GUI_MCP_INTEGRATION.
 for the exact validated upstream identity, installation boundary, localhost
 security contract, and release acceptance matrix.
 
-The certified Windows boundary is Windows 11 x64, CPython 3.12, FreeCAD 1.1.3
-x64, and the exact external MCP commit recorded above. See the
+The previously recorded Windows integration boundary is Windows 11 x64,
+CPython 3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit recorded
+above. The v0.3 Design Job live workflow requires a new protected-host run
+before release certification. See the
 [Windows release acceptance](docs/WINDOWS_RELEASE_ACCEPTANCE.md) guide for the
 fixed-NTFS, second-volume, wheel-first, protected-host, and portable ZIP
 limitations. No other Windows, Python, FreeCAD, architecture, or MCP version is
@@ -182,6 +187,11 @@ FCStd bytes and hashes, retains the original file, and writes an immutable
 receipt in the new Job. It never guesses that two old designs should be merged.
 Repeated apply is idempotent; a changed source or plan is rejected. `job doctor`
 reports unmigrated, incomplete, and hash-divergent Legacy bindings.
+
+The complete new/resume/independent decision matrix, portable directory
+contract, macOS and PowerShell examples, Product Family and Design Lesson
+provenance rules, compatibility window, and recovery codes are documented in
+[Design Job workspaces](docs/DESIGN_JOB_WORKSPACES.md).
 
 ## Status, diagnostics, and smoke validation
 

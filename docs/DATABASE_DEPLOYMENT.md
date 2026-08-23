@@ -2,7 +2,7 @@
 
 This guide describes the supported Docker Compose path for local development,
 evaluation, and release testing of AI Mechanical 3DCAD Design Agent version
-0.1.0. It is not a production deployment, high-availability design, backup
+0.3.0. It is not a production deployment, high-availability design, backup
 system, remote-access configuration, or managed-service recommendation.
 
 Compose provisions services. The installed Mechanical Design Agent owns schema migration
@@ -117,7 +117,7 @@ mechanical-design database bootstrap `
 ```
 
 The first bootstrap applies package-owned PostgreSQL migrations `001` through
-`009`, verifies `pgcrypto`, `pg_trgm`, and `vector`, and verifies package-owned
+`014`, verifies `pgcrypto`, `pg_trgm`, and `vector`, and verifies package-owned
 Neo4j migrations and constraints. The second bootstrap must report the
 PostgreSQL migrations as already applied and keep the Neo4j state valid. A
 partial migration, digest mismatch, or missing extension is a blocking failure;
@@ -213,7 +213,7 @@ package-owned migration requires a new clean-machine build, first/second
 bootstrap, installed-wheel live integration, cleanup, and public artifact
 equivalence acceptance on every claimed platform.
 
-Version 0.1.0 does not define production secrets management, TLS termination,
+Version 0.3.0 does not define production secrets management, TLS termination,
 remote database exposure, backups, replication, high availability, monitoring,
 resource sizing, disaster recovery, rolling upgrades, or orchestration beyond
 this local and evaluation Compose boundary.

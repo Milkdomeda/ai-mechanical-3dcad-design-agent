@@ -67,7 +67,7 @@ jobs:
             $skipped += [int]$suite.skipped
           }
           # 57 prior public skips + D3 live opt-in; the second-volume gate runs.
-          $expectedSkipped = 58
+          $expectedSkipped = 59
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }

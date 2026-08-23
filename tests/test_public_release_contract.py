@@ -37,7 +37,7 @@ CAD_OR_REPORT_SUFFIXES = {
     ".gif",
     ".pdf",
 }
-PRIVATE_PATH_PARTS = {"output", "knowledge", "vendor", ".env" + ".local"}
+PRIVATE_PATH_PARTS = {"output", "jobs", "knowledge", "vendor", ".env" + ".local"}
 EXPECTED_PUBLIC_CI = (".github/workflows/windows.yml",)
 EXPECTED_PUBLIC_SCRIPTS = (
     "scripts/windows_database_deployment_acceptance.ps1",
@@ -74,6 +74,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "third-party-components.toml" in manifest.root_files
     assert "compose.yaml" in manifest.root_files
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
+    assert "docs/DESIGN_JOB_WORKSPACES.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
     assert ".agents/skills/README.md" in manifest.public_docs
     assert all(
@@ -84,6 +85,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "tests/test_third_party_licensing.py" in manifest.public_tests
     assert "tests/freecad_gui_mcp_live_helpers.py" in manifest.public_tests
     assert "tests/test_freecad_gui_mcp_integration_live.py" in manifest.public_tests
+    assert "tests/test_design_job_freecad_live.py" in manifest.public_tests
     assert "tests/test_agent_skills.py" in manifest.public_tests
     assert manifest.source_trees == (
         *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
@@ -270,7 +272,7 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "pytest -q",
         "--junitxml=windows-public-offline.xml",
         "--junitxml=windows-public-boundary.xml",
-        "$expectedSkipped = 58",
+        "$expectedSkipped = 59",
         "$expectedSkipped = 3",
         "$failed -ne 0 -or $skipped -ne $expectedSkipped",
         "uv build --offline",
