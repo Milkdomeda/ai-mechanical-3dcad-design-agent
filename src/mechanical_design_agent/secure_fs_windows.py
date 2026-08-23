@@ -830,6 +830,7 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                 "managed directory is missing during enumeration",
             )
         held: list[tuple[str, bool, Any, FileIdentity]] = []
+        owned_handles: list[Any] = []
         reparse_flag = getattr(api.win32con, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         directory_flag = getattr(api.win32con, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
         try:
@@ -845,18 +846,15 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                     is_directory = bool(attributes & directory_flag)
                     child = pinned.path / entry.name
                     handle = _open_handle(child, api, directory=is_directory)
+                    owned_handles.append(handle)
                     identity, opened_attributes = _handle_facts(handle, api)
-                    try:
-                        _assert_not_reparse(opened_attributes, api)
-                        if bool(opened_attributes & directory_flag) != is_directory:
-                            raise SecureFilesystemError(
-                                "WINDOWS_PATH_IDENTITY_CHANGED",
-                                "managed directory entry type changed during enumeration",
-                            )
-                        held.append((entry.name, is_directory, handle, identity))
-                    except Exception:
-                        _close_handle(handle)
-                        raise
+                    _assert_not_reparse(opened_attributes, api)
+                    if bool(opened_attributes & directory_flag) != is_directory:
+                        raise SecureFilesystemError(
+                            "WINDOWS_PATH_IDENTITY_CHANGED",
+                            "managed directory entry type changed during enumeration",
+                        )
+                    held.append((entry.name, is_directory, handle, identity))
             result: list[ManagedDirectoryEntry] = []
             for name, is_directory, _, identity in held:
                 current, attributes = _entry_facts(
@@ -884,7 +882,7 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                 )
             return tuple(result)
         finally:
-            for _, _, handle, _ in reversed(held):
+            for handle in reversed(owned_handles):
                 _close_handle(handle)
 
 

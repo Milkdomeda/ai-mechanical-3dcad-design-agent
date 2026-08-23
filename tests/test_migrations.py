@@ -86,7 +86,6 @@ def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
     assert "workspace_id uuid NOT NULL" in sql
     assert "UNIQUE(workspace_id,idempotency_token)" in sql
     assert "UNIQUE(workspace_id,display_id)" in sql
-    assert "display_id ~ '^JOB-[0-9]{8}-[0-9]{3,}$'" in sql
     assert "revision integer NOT NULL DEFAULT 0" in sql
     assert "job_type IN ('mechanical_design','product_family_onboarding')" in sql
     assert "status IN ('active','blocked','completed','cancelled','archived')" in sql
@@ -107,6 +106,34 @@ def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
     assert "CREATE INDEX IF NOT EXISTS design_job_events_job_idx" in sql
     assert "CREATE TRIGGER design_job_events_append_only" in sql
     assert "BEFORE UPDATE OR DELETE ON design_job_events" in sql
+
+
+def test_design_jobs_migration_keeps_the_task2_immutable_digest():
+    migration = _migration_bytes("010_design_jobs.sql")
+
+    assert hashlib.sha256(migration).hexdigest() == (
+        "9e6782549cb7292ec2367541bb51e393db1dffda1193f53fadb71e4bcdf1e154"
+    )
+    assert b"display_id ~" not in migration
+
+
+def test_database_with_task2_010_digest_skips_the_unchanged_migration():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        name = "010_design_jobs.sql"
+        (root / name).write_bytes(_migration_bytes(name))
+        connection = _Connection()
+        connection.migrations[10] = {
+            "filename": name,
+            "sha256": "9e6782549cb7292ec2367541bb51e393db1dffda1193f53fadb71e4bcdf1e154",
+        }
+        repository = PostgresRepository("postgresql://unused")
+        repository.connection = lambda: connection  # type: ignore[method-assign]
+
+        result = repository.apply_migrations(root)
+
+    assert result == {"applied": [], "skipped": [name]}
+    assert connection.executed_sql == []
 
 
 def test_database_with_round2_007_digest_skips_it_and_applies_008():

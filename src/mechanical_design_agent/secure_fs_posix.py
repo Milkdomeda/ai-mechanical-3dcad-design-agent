@@ -308,6 +308,7 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
             "managed directory cannot be pinned for enumeration",
         ) from exc
     children: list[tuple[str, bool, int, os.stat_result]] = []
+    owned_child_descriptors: list[int] = []
     try:
         for name in sorted(os.listdir(descriptors[-1])):
             metadata = os.stat(
@@ -330,11 +331,11 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                 else os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             )
             child_fd = os.open(name, flags, dir_fd=descriptors[-1])
+            owned_child_descriptors.append(child_fd)
             opened_metadata = os.fstat(child_fd)
             if is_directory != stat.S_ISDIR(opened_metadata.st_mode) or (
                 not is_directory and not stat.S_ISREG(opened_metadata.st_mode)
             ):
-                os.close(child_fd)
                 raise SecureFilesystemError(
                     "MANAGED_PATH_IDENTITY_CHANGED",
                     "managed directory entry type changed during enumeration",
@@ -364,7 +365,7 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
             "managed directory cannot be enumerated safely",
         ) from exc
     finally:
-        for _, _, child_fd, _ in reversed(children):
+        for child_fd in reversed(owned_child_descriptors):
             os.close(child_fd)
         for descriptor in reversed(descriptors):
             os.close(descriptor)

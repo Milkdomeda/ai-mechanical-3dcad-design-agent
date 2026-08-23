@@ -683,6 +683,10 @@ class LiveDesignJobAllocationTests(unittest.TestCase):
     def tearDown(self) -> None:
         with self.repositories[0].connection() as connection, connection.transaction():
             connection.execute(
+                "ALTER TABLE design_job_events DISABLE TRIGGER "
+                "design_job_events_append_only"
+            )
+            connection.execute(
                 "DELETE FROM design_job_events WHERE job_id IN "
                 "(SELECT id FROM design_jobs WHERE workspace_id=%s)",
                 (self.workspace_id,),
@@ -698,6 +702,10 @@ class LiveDesignJobAllocationTests(unittest.TestCase):
             connection.execute(
                 "DELETE FROM organizations WHERE id=ANY(%s)",
                 (self.organization_ids,),
+            )
+            connection.execute(
+                "ALTER TABLE design_job_events ENABLE TRIGGER "
+                "design_job_events_append_only"
             )
 
     def test_concurrent_scopes_receive_distinct_workspace_global_display_ids(self) -> None:

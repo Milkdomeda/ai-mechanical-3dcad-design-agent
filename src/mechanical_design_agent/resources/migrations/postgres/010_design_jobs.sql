@@ -29,9 +29,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS design_jobs (
     id uuid PRIMARY KEY,
     workspace_id uuid NOT NULL,
-    display_id text NOT NULL CHECK (
-        display_id ~ '^JOB-[0-9]{8}-[0-9]{3,}$'
-    ),
+    display_id text NOT NULL,
     job_type text NOT NULL CHECK (
         job_type IN ('mechanical_design','product_family_onboarding')
     ),
