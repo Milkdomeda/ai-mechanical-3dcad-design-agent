@@ -1842,16 +1842,58 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         )
         self.assertEqual([name for name, _ in service.design_jobs.calls], ["close"])
 
-    def test_source_files_are_explicitly_rejected_until_snapshots_exist(self) -> None:
+    def test_source_files_return_a_stable_governed_next_action(self) -> None:
         service = self._service()
-        with self.assertRaises(JobFailure) as captured:
-            service.design_job_create(
-                job_type="mechanical_design", title="Pump", organization_id="org-configured",
-                design_group_id="group-configured", family_id=None, idempotency_token="source-001",
-                source_files=["input.FCStd"],
+        response = service.design_job_create(
+            job_type="mechanical_design", title="Pump", organization_id="org-configured",
+            design_group_id="group-configured", family_id=None, idempotency_token="source-001",
+            source_files=["input.FCStd"],
+        )
+        self.assertEqual(response["schema_version"], "MechanicalDesignJobSourceBinding/v1")
+        self.assertEqual(response["status"], "staged")
+        self.assertEqual(response["job"]["job_id"], service.design_jobs.manifest.job_id)
+        self.assertEqual(response["source_file_count"], 1)
+        self.assertEqual(response["next_action"], "design_job_working_copy_create")
+        self.assertNotIn("input.FCStd", str(response))
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["create"])
+
+    def test_v2_working_copy_methods_require_job_revision_and_configured_scope(self) -> None:
+        service = self._service()
+        calls: list[tuple[str, dict[str, object]]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(("existing", kwargs)) or {"ok": True},
+            create_job_new_working_copy=lambda **kwargs: calls.append(("new", kwargs)) or {"ok": True},
+        )
+        job_id = "00000000-0000-4000-8000-000000000401"
+
+        service.design_job_working_copy_create(
+            job_id=job_id,
+            expected_job_revision=4,
+            source_path="source.FCStd",
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id=None,
+            model_revision_id=None,
+        )
+        service.design_job_new_working_copy_create(
+            job_id=job_id,
+            expected_job_revision=4,
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id=None,
+        )
+
+        self.assertEqual([name for name, _ in calls], ["existing", "new"])
+        self.assertEqual(calls[0][1]["job_id"], job_id)
+        self.assertEqual(calls[0][1]["expected_job_revision"], 4)
+        self.assertEqual(calls[0][1]["actor_id"], "configured-actor")
+        with self.assertRaisesRegex(PermissionError, "configured organization"):
+            service.design_job_new_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=4,
+                organization_id="foreign",
+                design_group_id="group-configured",
             )
-        self.assertEqual(captured.exception.code, "JOB_SOURCE_SNAPSHOTS_NOT_READY")
-        self.assertEqual(service.design_jobs.calls, [])
 
     def test_repair_returns_only_the_exact_repair_wrapper(self) -> None:
         service = self._service()

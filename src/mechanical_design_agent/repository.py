@@ -2703,6 +2703,171 @@ class PostgresRepository:
             ).fetchone()
         return dict(row)
 
+    def create_job_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        working_copy_id: str,
+        model_revision_id: str | None,
+        source_sha256: str,
+        source_kind: str,
+        design_origin: str,
+        working_path: str,
+        actor_id: str,
+        source_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Atomically bind verified on-disk CAD bytes to one active Job."""
+        for label, value in (
+            ("job_id", job_id),
+            ("organization_id", organization_id),
+            ("design_group_id", design_group_id),
+            ("working_copy_id", working_copy_id),
+            ("source_sha256", source_sha256),
+            ("working_path", working_path),
+            ("actor_id", actor_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} is required")
+        if type(expected_job_revision) is not int or expected_job_revision < 0:
+            raise ValueError("expected_job_revision must be a non-negative integer")
+        if design_origin not in {"existing_model", "new_design"}:
+            raise ValueError("design_origin must be existing_model or new_design")
+        if design_origin == "existing_model":
+            if not model_revision_id or source_snapshot is None:
+                raise ValueError(
+                    "existing_model working copy requires a source revision and snapshot"
+                )
+        elif model_revision_id is not None or source_snapshot is not None:
+            raise ValueError("new_design working copy must not bind a source snapshot")
+
+        with self.connection() as connection, connection.transaction():
+            job = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+                "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+                "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id) "
+                "FOR UPDATE",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if job is None:
+                raise KeyError("unknown design_job_id or unauthorized")
+            if int(job["revision"]) != expected_job_revision:
+                raise ValueError("stale design job revision")
+            if (
+                job["job_type"] != "mechanical_design"
+                or job["status"] != "active"
+                or job["provisioning_state"] != "ready"
+            ):
+                raise ValueError(
+                    "working-copy creation requires an active ready mechanical_design Job"
+                )
+            if job.get("family_id") is not None and job.get("family_id") != family_id:
+                raise ValueError("working-copy family must match the design Job family")
+            if job.get("active_working_copy_id") is not None:
+                raise ValueError("design Job already has an active working copy")
+
+            if model_revision_id is not None:
+                source_model = connection.execute(
+                    "SELECT m.*,a.sha256 AS artifact_sha256 FROM model_revisions m "
+                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s "
+                    "AND m.organization_id=%s AND m.design_group_id=%s FOR SHARE OF m",
+                    (model_revision_id, organization_id, design_group_id),
+                ).fetchone()
+                if source_model is None:
+                    raise KeyError("unknown source model revision or unauthorized")
+                if source_model["artifact_sha256"] != source_sha256:
+                    raise ValueError(
+                        "working-copy source hash does not match the registered model artifact"
+                    )
+                if source_model.get("family_id") != family_id:
+                    raise ValueError(
+                        "working-copy family must match the confirmed source model family"
+                    )
+
+            snapshot_row = None
+            if source_snapshot is not None:
+                required_snapshot = {
+                    "id",
+                    "source_filename",
+                    "stored_path",
+                    "sha256",
+                    "size_bytes",
+                    "source_kind",
+                    "source_model_revision_id",
+                }
+                if set(source_snapshot) != required_snapshot:
+                    raise ValueError("source_snapshot fields are invalid")
+                if source_snapshot["sha256"] != source_sha256:
+                    raise ValueError("source snapshot hash must match the working-copy source")
+                if source_snapshot["source_model_revision_id"] != model_revision_id:
+                    raise ValueError("source snapshot revision must match the working copy")
+                snapshot_row = connection.execute(
+                    "INSERT INTO design_job_source_snapshots(id,job_id,organization_id,design_group_id,"
+                    "source_model_revision_id,source_filename,stored_path,sha256,size_bytes,source_kind,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                    (
+                        source_snapshot["id"],
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                        model_revision_id,
+                        source_snapshot["source_filename"],
+                        source_snapshot["stored_path"],
+                        source_snapshot["sha256"],
+                        source_snapshot["size_bytes"],
+                        source_snapshot["source_kind"],
+                        actor_id,
+                    ),
+                ).fetchone()
+
+            working = connection.execute(
+                "INSERT INTO design_working_copies(id,job_id,organization_id,design_group_id,family_id,"
+                "source_model_revision_id,source_sha256,source_kind,design_origin,working_path,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                (
+                    working_copy_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    model_revision_id,
+                    source_sha256,
+                    source_kind,
+                    design_origin,
+                    working_path,
+                    actor_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET active_working_copy_id=%s,revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND organization_id=%s AND design_group_id=%s AND revision=%s "
+                "AND active_working_copy_id IS NULL RETURNING *",
+                (
+                    working_copy_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    expected_job_revision,
+                ),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("design Job active working-copy binding changed concurrently")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="working_copy_bound",
+                actor_id=actor_id,
+                reason=f"bound working copy {working_copy_id}",
+            )
+        return {
+            "working_copy": dict(working),
+            "source_snapshot": dict(snapshot_row) if snapshot_row is not None else None,
+            "job": dict(updated_job),
+        }
+
     @staticmethod
     def _authorized_knowledge_ids(
         connection: Any,
@@ -3819,9 +3984,16 @@ class PostgresRepository:
             if status == "blocked"
             else None
         )
+        active_working_copy_update = (
+            ",active_working_copy_id=NULL"
+            if status in {"completed", "cancelled", "archived"}
+            else ""
+        )
         with self.connection() as connection, connection.transaction():
             row = connection.execute(
-                "UPDATE design_jobs SET status=%s,phase=%s,blocked_reason=%s::jsonb,"
+                "UPDATE design_jobs SET status=%s,phase=%s,blocked_reason=%s::jsonb"
+                + active_working_copy_update
+                + ","
                 "revision=revision+1,updated_at=now() WHERE id=%s AND revision=%s "
                 "AND organization_id=%s AND design_group_id=%s AND provisioning_state='ready' "
                 "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
@@ -3868,9 +4040,15 @@ class PostgresRepository:
                 "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s AND design_group_id=%s",
                 (job_id, organization_id, design_group_id),
             ).fetchone()
+            result = (
+                self._design_job_with_bindings(connection, dict(row))
+                if row is not None
+                else None
+            )
         if row is None:
             raise KeyError("unknown design_job_id or unauthorized")
-        return dict(row)
+        assert result is not None
+        return result
 
     def list_design_jobs(
         self,
@@ -3899,7 +4077,10 @@ class PostgresRepository:
                     family_id,
                 ),
             ).fetchall()
-        return [dict(row) for row in rows]
+            results = [
+                self._design_job_with_bindings(connection, dict(row)) for row in rows
+            ]
+        return results
 
     def resolve_design_jobs(
         self,
@@ -3940,7 +4121,40 @@ class PostgresRepository:
                     phrase,
                 ),
             ).fetchall()
-        return [dict(row) for row in rows]
+            results = [
+                self._design_job_with_bindings(connection, dict(row)) for row in rows
+            ]
+        return results
+
+    @staticmethod
+    def _design_job_with_bindings(
+        connection: Any, row: dict[str, Any]
+    ) -> dict[str, Any]:
+        # Pre-011 compatibility rows used by migration tooling and narrow test
+        # doubles do not expose the additive authority column.
+        if "active_working_copy_id" not in row:
+            return row
+        snapshots = connection.execute(
+            "SELECT id AS snapshot_id,stored_path,sha256,source_kind,source_model_revision_id "
+            "FROM design_job_source_snapshots WHERE job_id=%s ORDER BY created_at,id",
+            (row["id"],),
+        ).fetchall()
+        row["source_snapshots"] = [dict(snapshot) for snapshot in snapshots]
+        row["active_working_path"] = None
+        if row.get("active_working_copy_id") is not None:
+            active = connection.execute(
+                "SELECT working_path FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (
+                    row["active_working_copy_id"],
+                    row["id"],
+                    row["organization_id"],
+                    row["design_group_id"],
+                ),
+            ).fetchone()
+            if active is not None:
+                row["active_working_path"] = active["working_path"]
+        return row
 
     @staticmethod
     def _raise_design_job_write_failure(

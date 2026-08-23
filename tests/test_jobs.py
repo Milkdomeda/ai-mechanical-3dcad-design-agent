@@ -237,6 +237,8 @@ class _JobConnection:
             row["status"] = status
             row["phase"] = phase
             row["blocked_reason"] = json.loads(str(blocked_reason)) if blocked_reason else None
+            if "active_working_copy_id=NULL" in normalized:
+                row["active_working_copy_id"] = None
             row["revision"] = int(row["revision"]) + 1
             return _Rows([row])
 
@@ -589,6 +591,35 @@ def test_job_list_reads_return_complete_rows_and_remain_scoped() -> None:
     ) == []
 
 
+def test_terminal_job_transition_atomically_releases_only_the_active_slot() -> None:
+    connection = _JobConnection()
+    repository = _repository(connection)
+    created = _create(repository)
+    ready = _record_directory(repository)
+    connection.jobs_by_id[str(created["id"])]["active_working_copy_id"] = (
+        "50000000-0000-4000-8000-000000000001"
+    )
+
+    closed = repository.transition_design_job(
+        job_id=str(created["id"]),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=int(ready["revision"]),
+        status="completed",
+        phase="completed",
+        actor_id=ACTOR_ID,
+        reason="release the active revision slot",
+    )
+
+    assert closed["active_working_copy_id"] is None
+    transition_query = next(
+        query
+        for query in connection.queries
+        if query.startswith("UPDATE design_jobs SET status=%s,phase=%s")
+    )
+    assert "active_working_copy_id=NULL" in transition_query
+
+
 def test_repository_allocates_display_ids_globally_under_transactional_locks() -> None:
     connection = _JobConnection()
     repository = _repository(connection)
@@ -832,6 +863,8 @@ class _ManagerRepository:
             raise ValueError("stale design job revision")
         persisted["status"] = kwargs["status"]
         persisted["phase"] = kwargs["phase"]
+        if kwargs["status"] in {"completed", "cancelled", "archived"}:
+            persisted["active_working_copy_id"] = None
         persisted["revision"] = int(persisted["revision"]) + 1
         persisted["updated_at"] = NOW
         return copy.deepcopy(persisted)
@@ -1369,6 +1402,117 @@ def test_doctor_reports_hand_edit_and_revision_mismatch_then_repair_republishes(
         organization_id=ORGANIZATION_ID,
         design_group_id=DESIGN_GROUP_ID,
     )["status"] == "ok"
+
+
+def test_authoritative_working_copy_and_snapshot_project_into_get_doctor_and_repair(
+    tmp_path: Path,
+) -> None:
+    manager, repository = _manager(tmp_path)
+    created = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / created.directory_name
+    working_copy_id = "50000000-0000-4000-8000-000000000001"
+    snapshot_id = "30000000-0000-4000-8000-000000000001"
+    model_revision_id = "40000000-0000-4000-8000-000000000001"
+    snapshot_path = root / "inputs/source" / snapshot_id / "source.FCStd"
+    snapshot_path.parent.mkdir()
+    snapshot_path.write_bytes(b"authoritative source snapshot")
+    snapshot_sha256 = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+    working_path = root / "models/working" / working_copy_id / "working.FCStd"
+    working_path.parent.mkdir()
+    working_path.write_bytes(snapshot_path.read_bytes())
+    authoritative = repository.jobs[str(JOB_ID)]
+    authoritative["active_working_copy_id"] = working_copy_id
+    authoritative["active_working_path"] = str(working_path.resolve())
+    authoritative["source_snapshots"] = [
+        {
+            "snapshot_id": snapshot_id,
+            "stored_path": snapshot_path.relative_to(root).as_posix(),
+            "sha256": snapshot_sha256,
+            "source_kind": "existing_model",
+            "source_model_revision_id": model_revision_id,
+        }
+    ]
+    authoritative["revision"] = created.revision + 1
+
+    with locked_job_root(job_root=root) as locked:
+        projected = manager.publish_authoritative_manifest_locked(
+            locked_root=locked,
+            job_id=str(JOB_ID),
+            expected_job_revision=created.revision,
+            working_copy_id=working_copy_id,
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+        )
+
+    assert projected.active_working_copy_id == working_copy_id
+    assert projected.source_snapshots[0]["snapshot_id"] == snapshot_id
+    assert manager.get(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    ) == projected
+    doctor = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    assert doctor["status"] == "ok"
+    assert doctor["verified_snapshots"] == [dict(projected.source_snapshots[0])]
+
+    payload = json.loads((root / "job.json").read_text(encoding="utf-8"))
+    payload["source_snapshots"] = []
+    payload["active_working_copy_id"] = None
+    (root / "job.json").write_text(json.dumps(payload), encoding="utf-8")
+    damaged = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+        expected_revision=projected.revision,
+        doctor_receipt_hash=str(damaged["receipt_sha256"]),
+        reason="restore authoritative Task 6 bindings",
+    )
+    assert repaired.active_working_copy_id == working_copy_id
+    assert repaired.source_snapshots[0]["snapshot_id"] == snapshot_id
+
+    snapshot_bytes = snapshot_path.read_bytes()
+    working_bytes = working_path.read_bytes()
+    closed = manager.close(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=repaired.revision,
+        status="completed",
+        phase="completed",
+        actor_id=ACTOR_ID,
+        reason="release the active working-copy slot",
+    )
+    assert closed.active_working_copy_id is None
+    assert closed.source_snapshots == repaired.source_snapshots
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    assert working_path.read_bytes() == working_bytes
+
+    reopened = manager.reopen(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=closed.revision,
+        phase="design",
+        actor_id=ACTOR_ID,
+        reason="start a new immutable working revision",
+    )
+    assert reopened.active_working_copy_id is None
+    assert reopened.source_snapshots == repaired.source_snapshots
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    assert working_path.read_bytes() == working_bytes
+    historical = repository.jobs[str(JOB_ID)]
+    assert historical["source_snapshots"] == authoritative["source_snapshots"]
+    assert working_path.exists()
 
 
 def test_doctor_fails_closed_before_manifest_reads_when_locked_authority_is_revoked(

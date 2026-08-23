@@ -102,6 +102,7 @@ _RESOURCE_SETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "migrations/postgres/008_drop_legacy_snapshot_constraints.sql",
             "migrations/postgres/009_design_lifecycle_closure.sql",
             "migrations/postgres/010_design_jobs.sql",
+            "migrations/postgres/011_design_job_working_copies.sql",
         ),
         "schemas": ("schemas/design-lesson-package-v1.schema.json",),
         "standard_part_provider_config": (

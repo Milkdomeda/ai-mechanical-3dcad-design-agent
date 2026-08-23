@@ -117,6 +117,38 @@ def test_design_jobs_migration_keeps_the_task2_immutable_digest():
     assert b"display_id ~" not in migration
 
 
+def test_design_job_working_copy_migration_is_additive_scoped_and_authoritative():
+    sql = _migration_text("011_design_job_working_copies.sql")
+    normalized = " ".join(sql.split())
+
+    assert "ALTER TABLE design_working_copies ADD COLUMN IF NOT EXISTS job_id uuid" in normalized
+    assert "ALTER TABLE design_jobs ADD COLUMN IF NOT EXISTS active_working_copy_id uuid" in normalized
+    assert "CREATE TABLE IF NOT EXISTS design_job_source_snapshots" in sql
+    assert "job_id uuid NOT NULL" in sql
+    assert "source_filename text NOT NULL" in sql
+    assert "stored_path text NOT NULL" in sql
+    assert "source_model_revision_id uuid" in sql
+    assert "sha256 char(64) NOT NULL" in sql
+    assert "FOREIGN KEY (job_id,organization_id,design_group_id)" in normalized
+    assert "CONSTRAINT design_working_copies_model_scope_fk" in normalized
+    assert "CONSTRAINT design_working_copies_family_scope_fk" in normalized
+    assert "CONSTRAINT design_working_copies_creator_scope_fk" in normalized
+    assert "FOREIGN KEY (active_working_copy_id,id,organization_id,design_group_id)" in normalized
+    assert "CREATE INDEX IF NOT EXISTS design_working_copies_job_idx" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_job_source_snapshots_job_idx" in sql
+    assert "reject_legacy_null_job_working_copy_insert" in sql
+    assert "design_job_source_snapshots_append_only" in sql
+    assert "BEFORE UPDATE OR DELETE ON design_job_source_snapshots" in normalized
+
+
+def test_design_job_working_copy_migration_has_the_task6_immutable_digest():
+    migration = _migration_bytes("011_design_job_working_copies.sql")
+
+    assert hashlib.sha256(migration).hexdigest() == (
+        "3017f69d5f55efb325ff2b1baca281a072a69f8054708fbb499cd3cc5c19cb52"
+    )
+
+
 def test_database_with_task2_010_digest_skips_the_unchanged_migration():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -283,6 +315,7 @@ class MigrationTests(unittest.TestCase):
                     "008_drop_legacy_snapshot_constraints.sql",
                     "009_design_lifecycle_closure.sql",
                     "010_design_jobs.sql",
+                    "011_design_job_working_copies.sql",
                 ],
             )
 

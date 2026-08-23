@@ -525,6 +525,7 @@ class _LockedDoctorEvidence:
     manifest_raw: Mapping[str, object] | None
     manifest: DesignJobManifest | None
     verified_snapshots: tuple[Mapping[str, object], ...]
+    verified_active_working_copy_id: str | None
 
 
 class _JobRepository(Protocol):
@@ -768,8 +769,8 @@ class DesignJobManager:
             "design_group_id": row.get("design_group_id"),
             "family_id": row.get("family_id"),
             "directory_name": directory,
-            "active_working_copy_id": None,
-            "source_snapshots": [],
+            "active_working_copy_id": row.get("active_working_copy_id"),
+            "source_snapshots": list(row.get("source_snapshots") or []),
             "created_at": row.get("created_at"),
             "created_by": row.get("created_by"),
             "updated_at": row.get("updated_at"),
@@ -1084,7 +1085,7 @@ class DesignJobManager:
         *,
         allowed_mismatches: set[str],
     ) -> None:
-        DesignJobManager._assert_manifest_matches_bindings(actual)
+        DesignJobManager._assert_manifest_matches_bindings(actual, expected)
         actual_payload = actual.as_dict()
         expected_payload = expected.as_dict()
         mismatches = {
@@ -1190,18 +1191,23 @@ class DesignJobManager:
             return self._read_ready_manifest(fresh)
 
     @staticmethod
-    def _assert_manifest_matches_bindings(actual: DesignJobManifest) -> None:
-        if actual.active_working_copy_id is not None or actual.source_snapshots:
+    def _assert_manifest_matches_bindings(
+        actual: DesignJobManifest, expected: DesignJobManifest
+    ) -> None:
+        if (
+            actual.active_working_copy_id != expected.active_working_copy_id
+            or tuple(actual.source_snapshots) != tuple(expected.source_snapshots)
+        ):
             raise JobFailure(
                 "JOB_OPERATIONAL_BINDING_FORGED",
-                "core Job manifest contains disk-only operational bindings",
+                "core Job manifest operational bindings disagree with PostgreSQL",
             )
 
     @staticmethod
     def _assert_manifest_matches(
         actual: DesignJobManifest, expected: DesignJobManifest
     ) -> None:
-        DesignJobManager._assert_manifest_matches_bindings(actual)
+        DesignJobManager._assert_manifest_matches_bindings(actual, expected)
         actual_payload = actual.as_dict()
         expected_payload = expected.as_dict()
         mismatches = [
@@ -1214,6 +1220,102 @@ class DesignJobManager:
                 "JOB_MANIFEST_MISMATCH",
                 "job.json disagrees with PostgreSQL authority",
             )
+
+    @contextmanager
+    def locked_active_mechanical_design_job(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None = None,
+    ) -> Iterator[tuple[Path, dict[str, Any]]]:
+        """Yield one freshly authorized active mechanical-design Job under its lock."""
+        if type(expected_job_revision) is not int or expected_job_revision < 0:
+            raise JobFailure(
+                "JOB_INPUT_INVALID",
+                "expected_job_revision must be a non-negative integer",
+            )
+        row = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        if row.get("revision") != expected_job_revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        root = self._final_path(row)
+        with locked_job_root(job_root=root) as locked:
+            try:
+                fresh = self._fresh_locked_row(
+                    original=row,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    directory_name=str(row["directory_name"]),
+                    allow_unrecorded=False,
+                )
+            except JobFailure:
+                raise
+            except Exception as exc:
+                raise JobFailure(
+                    "JOB_ACCESS_UNAVAILABLE",
+                    "authorized Job state is unavailable; reauthorize and retry",
+                ) from exc
+            if fresh.get("revision") != expected_job_revision:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+            if fresh.get("status") != "active" or fresh.get("job_type") != "mechanical_design":
+                raise JobFailure(
+                    "JOB_NOT_ACTIVE_MECHANICAL_DESIGN",
+                    "working-copy creation requires an active mechanical_design Job",
+                )
+            if fresh.get("provisioning_state") != "ready":
+                raise JobFailure(
+                    "JOB_PROVISIONING_INCOMPLETE", "Job provisioning is incomplete"
+                )
+            if family_id is not None and fresh.get("family_id") != family_id:
+                raise JobFailure(
+                    "JOB_FAMILY_MISMATCH",
+                    "working-copy family does not match the authorized Job",
+                )
+            self._read_ready_manifest(fresh)
+            yield locked, fresh
+
+    def publish_authoritative_manifest_locked(
+        self,
+        *,
+        locked_root: Path,
+        job_id: str,
+        expected_job_revision: int,
+        working_copy_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> DesignJobManifest:
+        """Publish a committed binding projection while the caller holds the Job lock."""
+        fresh = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        if int(fresh.get("revision", -1)) != expected_job_revision + 1:
+            raise JobFailure(
+                "JOB_PROJECTION_INCOMPLETE",
+                "authoritative working-copy binding committed at an unexpected revision",
+            )
+        if str(fresh.get("active_working_copy_id")) != working_copy_id:
+            raise JobFailure(
+                "JOB_PROJECTION_INCOMPLETE",
+                "authoritative active working-copy binding is incomplete",
+            )
+        expected_root = self._final_path(fresh)
+        if expected_root != locked_root:
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "authorized Job directory changed during working-copy publication",
+            )
+        manifest = self._manifest_from_row(fresh)
+        self._replace_projection(locked_root / "job.json", manifest)
+        return manifest
 
     def get(
         self,
@@ -1448,6 +1550,7 @@ class DesignJobManager:
         issues: list[dict[str, str]],
         manifest_sha256: str | None,
         verified_snapshots: Sequence[Mapping[str, object]],
+        verified_active_working_copy_id: str | None,
     ) -> dict[str, object]:
         report: dict[str, object] = {
             "schema_version": JOB_DOCTOR_SCHEMA,
@@ -1459,6 +1562,7 @@ class DesignJobManager:
             ),
             "manifest_sha256": manifest_sha256,
             "verified_snapshots": [dict(snapshot) for snapshot in verified_snapshots],
+            "verified_active_working_copy_id": verified_active_working_copy_id,
             "status": "ok" if not issues else "blocked",
             "issues": issues,
         }
@@ -1476,6 +1580,9 @@ class DesignJobManager:
         report["verified_snapshots"] = [
             dict(snapshot) for snapshot in evidence.verified_snapshots
         ]
+        report["verified_active_working_copy_id"] = (
+            evidence.verified_active_working_copy_id
+        )
         return report
 
     def _locked_doctor_evidence(
@@ -1520,11 +1627,14 @@ class DesignJobManager:
             expected = self._manifest_from_row(row)
             actual_payload = manifest.as_dict()
             expected_payload = expected.as_dict()
-            if manifest.active_working_copy_id is not None or manifest.source_snapshots:
+            if (
+                manifest.active_working_copy_id != expected.active_working_copy_id
+                or tuple(manifest.source_snapshots) != tuple(expected.source_snapshots)
+            ):
                 issues.append(
                     self._issue(
                         "JOB_OPERATIONAL_BINDING_FORGED",
-                        "core Job manifest contains disk-only operational bindings",
+                        "core Job manifest operational bindings disagree with PostgreSQL",
                     )
                 )
             if manifest.revision != expected.revision:
@@ -1547,18 +1657,69 @@ class DesignJobManager:
         except JobFailure as exc:
             issues.append(self._issue(exc.code, exc.message))
 
-        verified_snapshots: tuple[Mapping[str, object], ...] = ()
+        verified: list[Mapping[str, object]] = []
+        for snapshot in self._manifest_from_row(row).source_snapshots:
+            try:
+                snapshot_path = managed_job_path(
+                    job_root=locked,
+                    relative_path=str(snapshot["stored_path"]),
+                    allow_missing_leaf=False,
+                )
+                snapshot_read = read_managed_file(snapshot_path)
+                if snapshot_read.sha256 != snapshot["sha256"]:
+                    issues.append(
+                        self._issue(
+                            "JOB_SOURCE_SNAPSHOT_HASH_MISMATCH",
+                            "an authoritative source snapshot no longer matches its SHA-256",
+                        )
+                    )
+                    continue
+                verified.append(MappingProxyType(dict(snapshot)))
+            except (JobFailure, SecureFilesystemError):
+                issues.append(
+                    self._issue(
+                        "JOB_SOURCE_SNAPSHOT_UNAVAILABLE",
+                        "an authoritative source snapshot is missing or unsafe",
+                    )
+                )
+        verified_snapshots = tuple(verified)
+        verified_active_working_copy_id: str | None = None
+        expected_manifest = self._manifest_from_row(row)
+        if expected_manifest.active_working_copy_id is not None:
+            raw_working_path = row.get("active_working_path")
+            try:
+                if not isinstance(raw_working_path, str) or not raw_working_path:
+                    raise ValueError("active working-copy path is unavailable")
+                working_path = validate_managed_path(
+                    Path(raw_working_path), allow_missing_leaf=False
+                ).path
+                working_path.relative_to(locked)
+                working_read = read_managed_file(working_path)
+                if not working_read.content or working_path.suffix.casefold() != ".fcstd":
+                    raise ValueError("active working-copy file is invalid")
+                verified_active_working_copy_id = (
+                    expected_manifest.active_working_copy_id
+                )
+            except (JobFailure, SecureFilesystemError, ValueError):
+                issues.append(
+                    self._issue(
+                        "JOB_ACTIVE_WORKING_COPY_UNAVAILABLE",
+                        "the authoritative active working copy is missing or unsafe",
+                    )
+                )
         public_report = self._doctor_report(
             row=row,
             issues=issues,
             manifest_sha256=manifest_sha256,
             verified_snapshots=verified_snapshots,
+            verified_active_working_copy_id=verified_active_working_copy_id,
         )
         immutable_report = MappingProxyType(
             {
                 **public_report,
                 "issues": tuple(MappingProxyType(dict(issue)) for issue in issues),
                 "verified_snapshots": verified_snapshots,
+                "verified_active_working_copy_id": verified_active_working_copy_id,
             }
         )
         return _LockedDoctorEvidence(
@@ -1570,6 +1731,7 @@ class DesignJobManager:
             manifest_raw=manifest_raw,
             manifest=manifest,
             verified_snapshots=verified_snapshots,
+            verified_active_working_copy_id=verified_active_working_copy_id,
         )
 
     def doctor(
@@ -1597,6 +1759,7 @@ class DesignJobManager:
                 issues=issues,
                 manifest_sha256=None,
                 verified_snapshots=(),
+                verified_active_working_copy_id=None,
             )
         try:
             root = self._final_path(row)
@@ -1607,6 +1770,7 @@ class DesignJobManager:
                 issues=issues,
                 manifest_sha256=None,
                 verified_snapshots=(),
+                verified_active_working_copy_id=None,
             )
         with locked_job_root(job_root=root) as locked:
             try:
@@ -1718,23 +1882,69 @@ class DesignJobManager:
                         "JOB_REPAIR_UNSAFE",
                         "job.json cannot be validated for deterministic repair",
                     )
-                if existing.active_working_copy_id is not None or existing.source_snapshots:
+                authoritative = self._manifest_from_row(fresh)
+                if (
+                    existing.active_working_copy_id is not None
+                    and existing.active_working_copy_id
+                    != authoritative.active_working_copy_id
+                ) or (
+                    existing.source_snapshots
+                    and tuple(existing.source_snapshots)
+                    != tuple(authoritative.source_snapshots)
+                ):
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
                         "disk-only operational bindings cannot be repaired",
                     )
-                repaired = self._manifest_from_row(fresh)
+                if len(evidence.verified_snapshots) != len(
+                    authoritative.source_snapshots
+                ):
+                    raise JobFailure(
+                        "JOB_REPAIR_UNSAFE",
+                        "authoritative source snapshot bytes cannot be verified",
+                    )
+                if (
+                    authoritative.active_working_copy_id is not None
+                    and evidence.verified_active_working_copy_id
+                    != authoritative.active_working_copy_id
+                ):
+                    raise JobFailure(
+                        "JOB_REPAIR_UNSAFE",
+                        "authoritative active working-copy bytes cannot be verified",
+                    )
+                repaired = authoritative
                 self._replace_projection(manifest_path, repaired)
                 return self._repair_result(repaired, reason, actor_id)
             working_entries = evidence.layout_entries["models/working"]
             source_entries = evidence.layout_entries["inputs/source"]
             assert working_entries is not None and source_entries is not None
-            if working_entries or source_entries:
+            authoritative = self._manifest_from_row(fresh)
+            if (
+                (working_entries or source_entries)
+                and authoritative.active_working_copy_id is None
+                and not authoritative.source_snapshots
+            ):
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",
                     "missing job.json cannot be reconstructed around existing model bytes",
                 )
-            repaired = self._manifest_from_row(fresh)
+            if len(evidence.verified_snapshots) != len(
+                authoritative.source_snapshots
+            ):
+                raise JobFailure(
+                    "JOB_REPAIR_UNSAFE",
+                    "authoritative source snapshot bytes cannot be verified",
+                )
+            if (
+                authoritative.active_working_copy_id is not None
+                and evidence.verified_active_working_copy_id
+                != authoritative.active_working_copy_id
+            ):
+                raise JobFailure(
+                    "JOB_REPAIR_UNSAFE",
+                    "authoritative active working-copy bytes cannot be verified",
+                )
+            repaired = authoritative
             try:
                 atomic_publish_new(manifest_path, _manifest_bytes(repaired))
             except (OSError, SecureFilesystemError) as exc:

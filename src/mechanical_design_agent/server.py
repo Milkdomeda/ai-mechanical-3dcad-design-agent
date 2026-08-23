@@ -226,6 +226,12 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "design_new_working_copy_create": _capability(
             "cad_working_copy", "product_family"
         ),
+        "design_job_working_copy_create": _capability(
+            "design_job_workspace", "cad_working_copy", "product_family"
+        ),
+        "design_job_new_working_copy_create": _capability(
+            "design_job_workspace", "cad_working_copy", "product_family"
+        ),
         "design_change_record": _capability(
             "cad_working_copy", "product_family"
         ),
@@ -1121,6 +1127,29 @@ def create_mcp(
         )
 
     @mcp.tool()
+    def design_job_working_copy_create(
+        job_id: str,
+        expected_job_revision: int,
+        source_path: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str = "",
+        model_revision_id: str = "",
+    ) -> str:
+        """Create a Job-bound immutable source snapshot and FCStd working copy."""
+        return _job_json(lambda:
+            service.design_job_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                source_path=source_path,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                model_revision_id=model_revision_id or None,
+            )
+        )
+
+    @mcp.tool()
     def design_new_working_copy_create(
         organization_id: str,
         design_group_id: str,
@@ -1130,6 +1159,27 @@ def create_mcp(
         """Create a neutral empty FCStd working copy; specialized knowledge is not applied without family authorization."""
         return _json(
             service.design_new_working_copy_create(
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                explicit_family_authorization=explicit_family_authorization,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_new_working_copy_create(
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str = "",
+        explicit_family_authorization: bool = False,
+    ) -> str:
+        """Create one empty FCStd directly inside an active mechanical-design Job."""
+        return _job_json(lambda:
+            service.design_job_new_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
                 family_id=family_id or None,

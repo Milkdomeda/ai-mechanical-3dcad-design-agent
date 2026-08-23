@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 import os
+from threading import Barrier
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -169,6 +171,26 @@ class _EmptyContextBuilder:
 
 
 class DesignLifecycleTests(unittest.TestCase):
+    def test_governed_repository_create_requires_a_job_identity(self) -> None:
+        repository = PostgresRepository("postgresql://unused")
+
+        with self.assertRaisesRegex(ValueError, "job_id is required"):
+            repository.create_job_working_copy(
+                job_id="",
+                expected_job_revision=1,
+                organization_id="org",
+                design_group_id="group",
+                family_id=None,
+                working_copy_id=str(uuid.uuid4()),
+                model_revision_id=None,
+                source_sha256="a" * 64,
+                source_kind="new_design_seed",
+                design_origin="new_design",
+                working_path="/managed/models/working/model.FCStd",
+                actor_id="owner",
+                source_snapshot=None,
+            )
+
     def test_existing_model_sha_unique_match_binds_revision(self) -> None:
         candidate = {
             "id": "revision-1",
@@ -433,6 +455,200 @@ class LiveSourceRevisionResolutionTests(unittest.TestCase):
                 connection.execute(
                     "DELETE FROM product_families WHERE id=%s", (family_id,)
                 )
+                connection.execute(
+                    "DELETE FROM design_groups WHERE id=%s", (design_group_id,)
+                )
+                connection.execute(
+                    "DELETE FROM organizations WHERE id=%s", (organization_id,)
+                )
+
+
+@unittest.skipUnless(
+    os.environ.get("MECH_DESIGN_DATABASE_URL"),
+    "MECH_DESIGN_DATABASE_URL is not configured; live Job binding race skipped",
+)
+class LiveJobWorkingCopyBindingTests(unittest.TestCase):
+    def test_concurrent_creates_publish_exactly_one_active_working_copy(self) -> None:
+        database_url = os.environ["MECH_DESIGN_DATABASE_URL"]
+        repository = PostgresRepository(database_url)
+        with postgres_migrations_directory() as migrations:
+            repository.apply_migrations(migrations)
+        token = uuid.uuid4().hex
+        organization_id = f"org-job-binding-{token}"
+        design_group_id = f"group-job-binding-{token}"
+        actor_id = f"actor-job-binding-{token}"
+        job_id = str(uuid.uuid4())
+        workspace_id = str(uuid.uuid4())
+        working_ids = [str(uuid.uuid4()) for _ in range(4)]
+        barrier = Barrier(2)
+
+        try:
+            with repository.connection() as connection, connection.transaction():
+                connection.execute(
+                    "INSERT INTO organizations(id,name) VALUES (%s,%s)",
+                    (organization_id, "Job binding race organization"),
+                )
+                connection.execute(
+                    "INSERT INTO design_groups(id,organization_id,name) VALUES (%s,%s,%s)",
+                    (design_group_id, organization_id, "Job binding race group"),
+                )
+                connection.execute(
+                    "INSERT INTO actors(id,organization_id,display_name,role) VALUES (%s,%s,%s,%s)",
+                    (actor_id, organization_id, "Job binding race actor", "family_owner"),
+                )
+            created = repository.create_design_job(
+                job_id=job_id,
+                workspace_id=workspace_id,
+                display_date="2026-08-23",
+                job_type="mechanical_design",
+                title="Concurrent Job binding",
+                slug="concurrent-job-binding",
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=None,
+                idempotency_token=f"binding-{token}",
+                actor_id=actor_id,
+            )
+            ready = repository.record_design_job_directory(
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                expected_revision=int(created["revision"]),
+                directory_name=f"{created['display_id']}-{created['slug']}",
+                actor_id=actor_id,
+            )
+
+            def create(index: int) -> tuple[str, object]:
+                contender = PostgresRepository(database_url)
+                barrier.wait(timeout=5)
+                try:
+                    result = contender.create_job_working_copy(
+                        job_id=job_id,
+                        expected_job_revision=int(ready["revision"]),
+                        organization_id=organization_id,
+                        design_group_id=design_group_id,
+                        family_id=None,
+                        working_copy_id=working_ids[index],
+                        model_revision_id=None,
+                        source_sha256=("a" if index == 0 else "b") * 64,
+                        source_kind="new_design_seed",
+                        design_origin="new_design",
+                        working_path=f"models/working/{working_ids[index]}/working.FCStd",
+                        actor_id=actor_id,
+                        source_snapshot=None,
+                    )
+                    return "created", result
+                except ValueError as exc:
+                    return "rejected", str(exc)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = list(executor.map(create, (0, 1)))
+
+            self.assertEqual([status for status, _ in outcomes].count("created"), 1)
+            self.assertEqual([status for status, _ in outcomes].count("rejected"), 1)
+            with repository.connection() as connection:
+                job = connection.execute(
+                    "SELECT active_working_copy_id::text,revision FROM design_jobs WHERE id=%s",
+                    (job_id,),
+                ).fetchone()
+                count = connection.execute(
+                    "SELECT count(*) AS count FROM design_working_copies WHERE job_id=%s",
+                    (job_id,),
+                ).fetchone()
+            self.assertIn(job["active_working_copy_id"], working_ids)
+            self.assertEqual(int(job["revision"]), int(ready["revision"]) + 1)
+            self.assertEqual(int(count["count"]), 1)
+
+            first_working_id = str(job["active_working_copy_id"])
+            first_path = f"models/working/{first_working_id}/working.FCStd"
+            closed = repository.transition_design_job(
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                expected_revision=int(job["revision"]),
+                status="completed",
+                phase="completed",
+                actor_id=actor_id,
+                reason="release active working-copy slot",
+            )
+            self.assertIsNone(closed["active_working_copy_id"])
+            reopened = repository.transition_design_job(
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                expected_revision=int(closed["revision"]),
+                status="active",
+                phase="design",
+                actor_id=actor_id,
+                reason="create a later immutable working revision",
+            )
+            self.assertIsNone(reopened["active_working_copy_id"])
+            later = repository.create_job_working_copy(
+                job_id=job_id,
+                expected_job_revision=int(reopened["revision"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=None,
+                working_copy_id=working_ids[2],
+                model_revision_id=None,
+                source_sha256="c" * 64,
+                source_kind="new_design_seed",
+                design_origin="new_design",
+                working_path=f"models/working/{working_ids[2]}/working.FCStd",
+                actor_id=actor_id,
+                source_snapshot=None,
+            )
+            self.assertEqual(
+                str(later["job"]["active_working_copy_id"]), working_ids[2]
+            )
+            with self.assertRaisesRegex(ValueError, "already has an active"):
+                repository.create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=int(later["job"]["revision"]),
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    family_id=None,
+                    working_copy_id=working_ids[3],
+                    model_revision_id=None,
+                    source_sha256="d" * 64,
+                    source_kind="new_design_seed",
+                    design_origin="new_design",
+                    working_path=f"models/working/{working_ids[3]}/working.FCStd",
+                    actor_id=actor_id,
+                    source_snapshot=None,
+                )
+            with repository.connection() as connection:
+                historical = connection.execute(
+                    "SELECT id::text,working_path FROM design_working_copies "
+                    "WHERE job_id=%s ORDER BY created_at,id",
+                    (job_id,),
+                ).fetchall()
+            self.assertEqual(len(historical), 2)
+            self.assertEqual(
+                {str(row["id"]) for row in historical},
+                {first_working_id, working_ids[2]},
+            )
+            self.assertIn(first_path, {str(row["working_path"]) for row in historical})
+        finally:
+            with repository.connection() as connection, connection.transaction():
+                connection.execute(
+                    "UPDATE design_jobs SET active_working_copy_id=NULL WHERE id=%s",
+                    (job_id,),
+                )
+                connection.execute(
+                    "DELETE FROM design_working_copies WHERE job_id=%s", (job_id,)
+                )
+                connection.execute(
+                    "ALTER TABLE design_job_events DISABLE TRIGGER design_job_events_append_only"
+                )
+                connection.execute(
+                    "DELETE FROM design_job_events WHERE job_id=%s", (job_id,)
+                )
+                connection.execute("DELETE FROM design_jobs WHERE id=%s", (job_id,))
+                connection.execute(
+                    "ALTER TABLE design_job_events ENABLE TRIGGER design_job_events_append_only"
+                )
+                connection.execute("DELETE FROM actors WHERE id=%s", (actor_id,))
                 connection.execute(
                     "DELETE FROM design_groups WHERE id=%s", (design_group_id,)
                 )

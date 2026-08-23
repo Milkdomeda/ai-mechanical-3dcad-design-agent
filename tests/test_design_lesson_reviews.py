@@ -3898,8 +3898,8 @@ def test_live_confirmed_to_retrievable_flow_is_atomic_projected_and_searchable()
                     "WHERE id=%s",
                     (sentinel_lesson_id,),
                 ).fetchone()
-            assert [int(row["version"]) for row in migration_rows] == list(range(1, 11))
-            assert migration_rows[-1]["filename"] == "010_design_jobs.sql"
+            assert [int(row["version"]) for row in migration_rows] == list(range(1, 12))
+            assert migration_rows[-1]["filename"] == "011_design_job_working_copies.sql"
             assert sentinel_before is not None
             sentinel_before = dict(sentinel_before)
 

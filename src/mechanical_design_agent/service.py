@@ -75,7 +75,9 @@ class MechanicalDesignService:
             settings.neo4j_password,
         )
         self.context_builder = DesignContextBuilder(self.repository, self.projection)
-        self.design_workspace = DesignWorkspace(settings, self.repository)
+        self.design_workspace = DesignWorkspace(
+            settings, self.repository, self.design_jobs
+        )
         self._standard_parts: StandardPartRegistry | None = None
         self._standard_parts_lock = Lock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="freecad-ingest")
@@ -238,22 +240,24 @@ class MechanicalDesignService:
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
-        if source_files:
-            raise JobFailure(
-                "JOB_SOURCE_SNAPSHOTS_NOT_READY",
-                "source snapshots require the immutable snapshot workflow",
-            )
-        return self._job_manifest_response(
-            self.design_jobs.create(
-                job_type=job_type,
-                title=title,
-                organization_id=organization,
-                design_group_id=group,
-                family_id=family_id,
-                idempotency_token=idempotency_token,
-                actor_id=self.settings.actor_id,
-            )
+        manifest = self.design_jobs.create(
+            job_type=job_type,
+            title=title,
+            organization_id=organization,
+            design_group_id=group,
+            family_id=family_id,
+            idempotency_token=idempotency_token,
+            actor_id=self.settings.actor_id,
         )
+        if source_files:
+            return {
+                "schema_version": "MechanicalDesignJobSourceBinding/v1",
+                "status": "staged",
+                "job": self._job_manifest_response(manifest),
+                "source_file_count": len(source_files),
+                "next_action": "design_job_working_copy_create",
+            }
+        return self._job_manifest_response(manifest)
 
     def design_job_list(
         self,
@@ -1935,9 +1939,120 @@ class MechanicalDesignService:
                 "design lesson review does not belong to the configured scope"
             )
 
-    def design_working_copy_create(self, **kwargs: Any) -> dict[str, Any]:
+    def design_job_working_copy_create(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        source_path: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None = None,
+        model_revision_id: str | None = None,
+    ) -> dict[str, Any]:
         self._require_database()
-        return self.design_workspace.create_working_copy(actor_id=self.settings.actor_id, **kwargs)
+        organization, group = self._configured_job_scope(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        revision = self._expected_job_revision(expected_job_revision)
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self.design_workspace.create_job_working_copy(
+            job_id=resolved_job_id,
+            expected_job_revision=revision,
+            source_path=source_path,
+            organization_id=organization,
+            design_group_id=group,
+            family_id=family_id,
+            model_revision_id=model_revision_id,
+            actor_id=self.settings.actor_id,
+        )
+
+    def design_job_new_working_copy_create(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None = None,
+        explicit_family_authorization: bool = False,
+    ) -> dict[str, Any]:
+        self._require_database()
+        organization, group = self._configured_job_scope(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        revision = self._expected_job_revision(expected_job_revision)
+        if family_id and not explicit_family_authorization:
+            raise ValueError(
+                "new design family assignment requires explicit_family_authorization"
+            )
+        if family_id:
+            family = self.repository.get_family(family_id)
+            if (
+                family["organization_id"] != organization
+                or family["design_group_id"] != group
+            ):
+                raise ValueError(
+                    "family does not belong to the requested organization/design group"
+                )
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        return self.design_workspace.create_job_new_working_copy(
+            job_id=resolved_job_id,
+            expected_job_revision=revision,
+            organization_id=organization,
+            design_group_id=group,
+            family_id=family_id,
+            actor_id=self.settings.actor_id,
+        )
+
+    def _compatibility_working_copy_job(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+    ) -> DesignJobManifest:
+        organization, group = self._configured_job_scope(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        return self.design_jobs.create(
+            job_type="mechanical_design",
+            title="Deprecated v0.2 CAD working-copy compatibility",
+            organization_id=organization,
+            design_group_id=group,
+            family_id=family_id,
+            idempotency_token="compatibility-v0.2-cad-working-copy",
+            actor_id=self.settings.actor_id,
+        )
+
+    def design_working_copy_create(self, **kwargs: Any) -> dict[str, Any]:
+        """Deprecated v0.2 wrapper; every result is still Job-bound."""
+        self._require_database()
+        manifest = self._compatibility_working_copy_job(
+            organization_id=str(kwargs["organization_id"]),
+            design_group_id=str(kwargs["design_group_id"]),
+            family_id=kwargs.get("family_id"),
+        )
+        return self.design_job_working_copy_create(
+            job_id=str(manifest.job_id),
+            expected_job_revision=manifest.revision,
+            source_path=str(kwargs["source_path"]),
+            organization_id=str(kwargs["organization_id"]),
+            design_group_id=str(kwargs["design_group_id"]),
+            family_id=kwargs.get("family_id"),
+            model_revision_id=kwargs.get("model_revision_id"),
+        )
 
     def design_new_working_copy_create(
         self,
@@ -1947,18 +2062,20 @@ class MechanicalDesignService:
         family_id: str | None = None,
         explicit_family_authorization: bool = False,
     ) -> dict[str, Any]:
+        """Deprecated v0.2 wrapper; every result is still Job-bound."""
         self._require_database()
-        if family_id and not explicit_family_authorization:
-            raise ValueError("new design family assignment requires explicit_family_authorization")
-        if family_id:
-            family = self.repository.get_family(family_id)
-            if family["organization_id"] != organization_id or family["design_group_id"] != design_group_id:
-                raise ValueError("family does not belong to the requested organization/design group")
-        return self.design_workspace.create_new_working_copy(
+        manifest = self._compatibility_working_copy_job(
             organization_id=organization_id,
             design_group_id=design_group_id,
             family_id=family_id,
-            actor_id=self.settings.actor_id,
+        )
+        return self.design_job_new_working_copy_create(
+            job_id=str(manifest.job_id),
+            expected_job_revision=manifest.revision,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            family_id=family_id,
+            explicit_family_authorization=explicit_family_authorization,
         )
 
     def design_change_record(self, **kwargs: Any) -> dict[str, Any]:

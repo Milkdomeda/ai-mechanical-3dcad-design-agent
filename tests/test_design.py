@@ -3,6 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+import json
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -82,7 +85,264 @@ class FakeRepository:
         return dict(self.approval)
 
 
+class FakeJobBindingRepository(FakeRepository):
+    def create_job_working_copy(self, **kwargs):
+        self.created = kwargs
+        snapshot = kwargs.get("source_snapshot")
+        return {
+            "working_copy": {
+                "id": kwargs["working_copy_id"],
+                "job_id": kwargs["job_id"],
+                "working_path": kwargs["working_path"],
+                "source_model_revision_id": kwargs["model_revision_id"],
+            },
+            "source_snapshot": snapshot,
+            "job": {
+                "id": kwargs["job_id"],
+                "revision": kwargs["expected_job_revision"] + 1,
+            },
+        }
+
+
+class FakeJobBindingManager:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls: list[tuple[str, dict]] = []
+
+    @contextmanager
+    def locked_active_mechanical_design_job(self, **kwargs):
+        self.calls.append(("lock", kwargs))
+        yield self.root, {
+            "id": kwargs["job_id"],
+            "revision": kwargs["expected_job_revision"],
+            "status": "active",
+            "job_type": "mechanical_design",
+            "organization_id": kwargs["organization_id"],
+            "design_group_id": kwargs["design_group_id"],
+            "family_id": kwargs.get("family_id"),
+        }
+
+    def publish_authoritative_manifest_locked(self, **kwargs):
+        self.calls.append(("publish", kwargs))
+        return SimpleNamespace(
+            as_dict=lambda: {
+                "schema_version": "MechanicalDesignJob/v1",
+                "job_id": kwargs["job_id"],
+                "revision": kwargs["expected_job_revision"] + 1,
+                "active_working_copy_id": kwargs["working_copy_id"],
+            }
+        )
+
+
+def _job_binding_workspace(root: Path) -> tuple[Settings, FakeJobBindingRepository, FakeJobBindingManager]:
+    package = root / "agent"
+    package.mkdir()
+    job_root = root / "jobs" / "JOB-20260823-001-unicode"
+    (job_root / "inputs" / "source").mkdir(parents=True)
+    (job_root / "models" / "working").mkdir(parents=True)
+    repository = FakeJobBindingRepository()
+    manager = FakeJobBindingManager(job_root)
+    settings = Settings(
+        workspace=root,
+        package_root=package,
+        database_url="unused",
+        neo4j_uri="unused",
+        neo4j_user="unused",
+        neo4j_password="unused",
+        freecadcmd=Path("/bin/false"),
+        actor_id="owner",
+        artifact_root=package / "data",
+        family_config_path=package / "family.json",
+    )
+    return settings, repository, manager
+
+
 class DesignWorkspaceTests(unittest.TestCase):
+    def test_job_existing_model_creates_verified_snapshot_and_working_copy_without_source_path_leak(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "原始 model.FCStd"
+            source.write_bytes(b"immutable-source-bytes")
+
+            result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                job_id="10000000-0000-4000-8000-000000000001",
+                expected_job_revision=4,
+                source_path=str(source),
+                organization_id="org",
+                design_group_id="group",
+                family_id=None,
+                model_revision_id=None,
+                actor_id="owner",
+            )
+
+            snapshot = manager.root / result["source_snapshot"]["stored_path"]
+            working = Path(result["working_path"])
+            self.assertEqual(snapshot.read_bytes(), b"immutable-source-bytes")
+            self.assertEqual(working.read_bytes(), b"immutable-source-bytes")
+            self.assertEqual(result["source_sha256"], file_sha256(source))
+            self.assertNotIn("source_path", result)
+            self.assertNotIn(str(source), str(result))
+            self.assertEqual(repository.created["model_revision_id"], "model-revision-1")
+            self.assertTrue(result["source_snapshot"]["stored_path"].startswith("inputs/source/"))
+            self.assertTrue(
+                Path(result["working_path"]).is_relative_to(
+                    (manager.root / "models" / "working").resolve()
+                )
+            )
+            self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_job_existing_model_rejects_a_source_race_and_cleans_owned_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "source.FCStd"
+            source.write_bytes(b"before")
+            from mechanical_design_agent import design as design_module
+
+            original_read = design_module.read_managed_file
+            first_source_read = True
+
+            def mutate_after_first_source_read(path: Path):
+                nonlocal first_source_read
+                read = original_read(path)
+                if Path(path) == source and first_source_read:
+                    first_source_read = False
+                    source.write_bytes(b"after")
+                return read
+
+            with patch(
+                "mechanical_design_agent.design.read_managed_file",
+                side_effect=mutate_after_first_source_read,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "changed while creating"):
+                    DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                        job_id="10000000-0000-4000-8000-000000000001",
+                        expected_job_revision=4,
+                        source_path=str(source),
+                        organization_id="org",
+                        design_group_id="group",
+                        family_id=None,
+                        model_revision_id=None,
+                        actor_id="owner",
+                    )
+
+            self.assertEqual(list((manager.root / "inputs" / "source").iterdir()), [])
+            self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
+            self.assertIsNone(repository.created)
+
+    @unittest.skipIf(os.name == "nt", "Windows symlink creation requires elevated test privileges")
+    def test_job_existing_model_rejects_a_symlinked_external_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            real_source = root / "real.FCStd"
+            real_source.write_bytes(b"external source")
+            source = root / "linked.FCStd"
+            source.symlink_to(real_source)
+
+            with self.assertRaises(SecureFilesystemError):
+                DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(list((manager.root / "inputs" / "source").iterdir()), [])
+            self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
+            self.assertIsNone(repository.created)
+
+    def test_job_existing_model_retry_recovers_only_receipt_owned_crash_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "source.FCStd"
+            source.write_bytes(b"retry-source")
+            job_id = "10000000-0000-4000-8000-000000000001"
+            namespace = uuid.UUID(job_id)
+            digest = file_sha256(source)
+            snapshot_id = str(
+                uuid.uuid5(namespace, f"source-snapshot:4:{digest}")
+            )
+            working_id = str(
+                uuid.uuid5(namespace, f"working-copy:4:existing_model:{digest}")
+            )
+            attempts = (
+                (
+                    manager.root / "inputs" / "source" / snapshot_id,
+                    "source_snapshot",
+                    snapshot_id,
+                ),
+                (
+                    manager.root / "models" / "working" / working_id,
+                    "working_copy",
+                    working_id,
+                ),
+            )
+            for attempt, kind, artifact_id in attempts:
+                attempt.mkdir()
+                receipt = {
+                    "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                    "job_id": job_id,
+                    "expected_job_revision": 4,
+                    "artifact_kind": kind,
+                    "artifact_id": artifact_id,
+                    "source_sha256": digest,
+                }
+                (attempt / ".binding-attempt.json").write_text(
+                    json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                (attempt / "orphaned-crash-bytes.bin").write_bytes(b"owned incomplete")
+
+            result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                job_id=job_id,
+                expected_job_revision=4,
+                source_path=str(source),
+                organization_id="org",
+                design_group_id="group",
+                family_id=None,
+                model_revision_id=None,
+                actor_id="owner",
+            )
+
+            self.assertEqual(result["id"], working_id)
+            for attempt, _kind, _artifact_id in attempts:
+                self.assertFalse((attempt / "orphaned-crash-bytes.bin").exists())
+
+    def test_job_new_design_is_created_directly_under_models_working(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+
+            def create_empty(_freecadcmd, _script, arguments, timeout_seconds):
+                Path(arguments[0]).write_bytes(b"new-job-design")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("mechanical_design_agent.design.run_freecad_script", side_effect=create_empty):
+                result = DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(Path(result["working_path"]).read_bytes(), b"new-job-design")
+            self.assertTrue(
+                Path(result["working_path"]).is_relative_to(
+                    (manager.root / "models" / "working").resolve()
+                )
+            )
+            self.assertIsNone(result["source_snapshot"])
+            self.assertIsNone(repository.created["model_revision_id"])
+            self.assertEqual(repository.created["design_origin"], "new_design")
     def test_artifact_store_reports_reparse_target_as_an_invalid_stable_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)

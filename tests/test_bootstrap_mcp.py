@@ -100,6 +100,12 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_retrieval_receipt_get": request("design_knowledge", "product_family"),
     "design_working_copy_create": request("cad_working_copy", "product_family"),
     "design_new_working_copy_create": request("cad_working_copy", "product_family"),
+    "design_job_working_copy_create": request(
+        "design_job_workspace", "cad_working_copy", "product_family"
+    ),
+    "design_job_new_working_copy_create": request(
+        "design_job_workspace", "cad_working_copy", "product_family"
+    ),
     "design_change_record": request("cad_working_copy", "product_family"),
     "design_change_review": request("cad_working_copy", "product_family"),
     "design_change_applied": request("cad_working_copy", "product_family"),

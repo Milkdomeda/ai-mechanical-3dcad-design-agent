@@ -19,6 +19,7 @@ from .secure_fs import (
     atomic_replace,
     ensure_managed_directory,
     exclusive_file_lock,
+    read_managed_file,
     remove_owned_tree,
     validate_managed_path,
 )
@@ -94,10 +95,373 @@ def derive_iteration_candidates(
 
 
 class DesignWorkspace:
-    def __init__(self, settings: Settings, repository: Any):
+    def __init__(self, settings: Settings, repository: Any, design_jobs: Any | None = None):
         self.settings = settings
         self.repository = repository
+        self.design_jobs = design_jobs
         self.root = settings.workspace / "output" / "mechanical_design" / "working_copies"
+
+    def _require_job_manager(self) -> Any:
+        if self.design_jobs is None:
+            raise RuntimeError("Job-aware CAD creation requires the Design Job manager")
+        return self.design_jobs
+
+    @staticmethod
+    def _job_attempt_directory(
+        parent: Path, attempt_id: str, receipt: dict[str, object]
+    ) -> Path:
+        attempt = parent / attempt_id
+        receipt_bytes = (
+            json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if attempt.exists() or attempt.is_symlink():
+            try:
+                managed_attempt = validate_managed_path(
+                    attempt, allow_missing_leaf=False
+                ).path
+                existing = read_managed_file(
+                    managed_attempt / ".binding-attempt.json"
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "an incomplete Job binding attempt cannot prove Agent ownership"
+                ) from exc
+            if existing.content != receipt_bytes:
+                raise RuntimeError(
+                    "an incomplete Job binding attempt belongs to a different request"
+                )
+            remove_owned_tree(
+                managed_attempt,
+                expected_parent=parent,
+                label="recoverable Job binding attempt",
+            )
+        created = ensure_managed_directory(
+            attempt,
+            parents=False,
+            exist_ok=False,
+        ).path
+        try:
+            atomic_publish_new(created / ".binding-attempt.json", receipt_bytes)
+        except Exception:
+            remove_owned_tree(
+                created,
+                expected_parent=parent,
+                label="Job binding receipt attempt",
+            )
+            raise
+        return created
+
+    @staticmethod
+    def _cleanup_job_attempt(parent: Path, attempt: Path, label: str) -> None:
+        remove_owned_tree(
+            attempt,
+            expected_parent=parent,
+            label=label,
+        )
+
+    def create_job_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        source_path: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        model_revision_id: str | None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Create a source snapshot and FCStd copy within one authorized Job lock."""
+        source = Path(os.path.abspath(Path(source_path).expanduser()))
+        source_suffix = source.suffix.lower()
+        if source_suffix not in {".step", ".stp", ".fcstd"}:
+            raise ValueError("working-copy source must be a STEP or FCStd file")
+        manager = self._require_job_manager()
+        database_published = False
+        snapshot_attempt: Path | None = None
+        working_attempt: Path | None = None
+
+        with manager.locked_active_mechanical_design_job(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            family_id=family_id,
+        ) as (job_root, _job):
+            job_root = validate_managed_path(
+                job_root, allow_missing_leaf=False
+            ).path
+            source_read = read_managed_file(source)
+            try:
+                job_namespace = uuid.UUID(job_id)
+            except ValueError as exc:
+                raise ValueError("job_id must be a UUID") from exc
+            snapshot_id = str(
+                uuid.uuid5(
+                    job_namespace,
+                    f"source-snapshot:{expected_job_revision}:{source_read.sha256}",
+                )
+            )
+            working_copy_id = str(
+                uuid.uuid5(
+                    job_namespace,
+                    f"working-copy:{expected_job_revision}:existing_model:{source_read.sha256}",
+                )
+            )
+            source_model = self.repository.resolve_source_model_revision(
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                source_sha256=source_read.sha256,
+                requested_model_revision_id=model_revision_id,
+                requested_family_id=family_id,
+            )
+            resolved_model_revision_id = str(source_model["id"])
+            resolved_family_id = (
+                str(source_model["family_id"])
+                if source_model.get("family_id")
+                else None
+            )
+            source_parent = validate_managed_path(
+                job_root / "inputs" / "source", allow_missing_leaf=False
+            ).path
+            working_parent = validate_managed_path(
+                job_root / "models" / "working", allow_missing_leaf=False
+            ).path
+            try:
+                snapshot_attempt = self._job_attempt_directory(
+                    source_parent,
+                    snapshot_id,
+                    {
+                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                        "job_id": job_id,
+                        "expected_job_revision": expected_job_revision,
+                        "artifact_kind": "source_snapshot",
+                        "artifact_id": snapshot_id,
+                        "source_sha256": source_read.sha256,
+                    },
+                )
+                snapshot_name = "source.FCStd" if source_suffix == ".fcstd" else "source.step"
+                snapshot_path = snapshot_attempt / snapshot_name
+                atomic_publish_new(snapshot_path, source_read.content)
+                os.chmod(snapshot_path, 0o444)
+                snapshot_read = read_managed_file(snapshot_path)
+                if (
+                    snapshot_read.sha256 != source_read.sha256
+                    or snapshot_read.content != source_read.content
+                ):
+                    raise RuntimeError("source snapshot verification failed")
+
+                working_attempt = self._job_attempt_directory(
+                    working_parent,
+                    working_copy_id,
+                    {
+                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                        "job_id": job_id,
+                        "expected_job_revision": expected_job_revision,
+                        "artifact_kind": "working_copy",
+                        "artifact_id": working_copy_id,
+                        "source_sha256": source_read.sha256,
+                    },
+                )
+                working_path = working_attempt / "working.FCStd"
+                if source_suffix == ".fcstd":
+                    atomic_publish_new(working_path, snapshot_read.content)
+                else:
+                    with freecad_scripts_directory() as scripts:
+                        completed = run_freecad_script(
+                            self.settings.freecadcmd,
+                            scripts / "normalize_working_copy.py",
+                            [snapshot_path, working_path],
+                            timeout_seconds=900,
+                        )
+                    if completed.returncode != 0:
+                        diagnostic = (completed.stderr + "\n" + completed.stdout)[-4000:]
+                        raise RuntimeError(
+                            f"FreeCAD working-copy normalization failed: {diagnostic}"
+                        )
+                working_read = read_managed_file(working_path)
+                if source_suffix == ".fcstd" and (
+                    working_read.sha256 != source_read.sha256
+                    or working_read.content != source_read.content
+                ):
+                    raise RuntimeError("FCStd working-copy verification failed")
+
+                final_source_read = read_managed_file(source)
+                if (
+                    final_source_read.identity != source_read.identity
+                    or final_source_read.sha256 != source_read.sha256
+                    or final_source_read.content != source_read.content
+                ):
+                    raise RuntimeError("source CAD changed while creating working copy")
+
+                stored_path = snapshot_path.relative_to(job_root).as_posix()
+                source_snapshot = {
+                    "id": snapshot_id,
+                    "source_filename": source.name,
+                    "stored_path": stored_path,
+                    "sha256": source_read.sha256,
+                    "size_bytes": source_read.size_bytes,
+                    "source_kind": "existing_model",
+                    "source_model_revision_id": resolved_model_revision_id,
+                }
+                published = self.repository.create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    family_id=resolved_family_id,
+                    working_copy_id=working_copy_id,
+                    model_revision_id=resolved_model_revision_id,
+                    source_sha256=source_read.sha256,
+                    source_kind="existing_model",
+                    design_origin="existing_model",
+                    working_path=str(working_path),
+                    actor_id=actor_id,
+                    source_snapshot=source_snapshot,
+                )
+                database_published = True
+                manifest = manager.publish_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    working_copy_id=working_copy_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+            except Exception:
+                if not database_published:
+                    if working_attempt is not None:
+                        self._cleanup_job_attempt(
+                            working_parent,
+                            working_attempt,
+                            "Job working-copy attempt",
+                        )
+                    if snapshot_attempt is not None:
+                        self._cleanup_job_attempt(
+                            source_parent,
+                            snapshot_attempt,
+                            "Job source-snapshot attempt",
+                        )
+                raise
+
+        public_snapshot = {
+            "snapshot_id": snapshot_id,
+            "stored_path": stored_path,
+            "sha256": source_read.sha256,
+            "source_kind": "existing_model",
+            "source_model_revision_id": resolved_model_revision_id,
+        }
+        return {
+            **dict(published["working_copy"]),
+            "source_sha256": source_read.sha256,
+            "source_snapshot": public_snapshot,
+            "working_path": str(working_path),
+            "job": manifest.as_dict(),
+        }
+
+    def create_job_new_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Create one empty FCStd directly in a governed Job attempt directory."""
+        manager = self._require_job_manager()
+        try:
+            job_namespace = uuid.UUID(job_id)
+        except ValueError as exc:
+            raise ValueError("job_id must be a UUID") from exc
+        working_copy_id = str(
+            uuid.uuid5(
+                job_namespace,
+                f"working-copy:{expected_job_revision}:new_design",
+            )
+        )
+        database_published = False
+        working_attempt: Path | None = None
+        with manager.locked_active_mechanical_design_job(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            family_id=family_id,
+        ) as (job_root, _job):
+            job_root = validate_managed_path(
+                job_root, allow_missing_leaf=False
+            ).path
+            working_parent = validate_managed_path(
+                job_root / "models" / "working", allow_missing_leaf=False
+            ).path
+            try:
+                working_attempt = self._job_attempt_directory(
+                    working_parent,
+                    working_copy_id,
+                    {
+                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                        "job_id": job_id,
+                        "expected_job_revision": expected_job_revision,
+                        "artifact_kind": "working_copy",
+                        "artifact_id": working_copy_id,
+                        "source_sha256": None,
+                    },
+                )
+                working_path = working_attempt / "working.FCStd"
+                with freecad_scripts_directory() as scripts:
+                    completed = run_freecad_script(
+                        self.settings.freecadcmd,
+                        scripts / "create_empty_working_copy.py",
+                        [working_path],
+                        timeout_seconds=120,
+                    )
+                if completed.returncode != 0:
+                    diagnostic = (completed.stderr + "\n" + completed.stdout)[-4000:]
+                    raise RuntimeError(
+                        f"FreeCAD new working-copy creation failed: {diagnostic}"
+                    )
+                working_read = read_managed_file(working_path)
+                published = self.repository.create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    family_id=family_id,
+                    working_copy_id=working_copy_id,
+                    model_revision_id=None,
+                    source_sha256=working_read.sha256,
+                    source_kind="new_design_seed",
+                    design_origin="new_design",
+                    working_path=str(working_path),
+                    actor_id=actor_id,
+                    source_snapshot=None,
+                )
+                database_published = True
+                manifest = manager.publish_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    working_copy_id=working_copy_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+            except Exception:
+                if not database_published and working_attempt is not None:
+                    self._cleanup_job_attempt(
+                        working_parent,
+                        working_attempt,
+                        "Job new-design working-copy attempt",
+                    )
+                raise
+        return {
+            **dict(published["working_copy"]),
+            "source_sha256": working_read.sha256,
+            "source_snapshot": None,
+            "working_path": str(working_path),
+            "job": manifest.as_dict(),
+        }
 
     def _create_attempt_directory(self, copy_id: str) -> Path:
         root = ensure_managed_directory(
