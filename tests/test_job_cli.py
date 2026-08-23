@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -98,6 +99,24 @@ class _JobCliService:
                 "authoritative_revision": 4,
                 "quarantined_attempts": [],
             },
+        }
+
+    def design_job_migrate_legacy_dry_run(self) -> dict[str, object]:
+        self.calls.append(("migrate-legacy-dry-run", None))
+        return {
+            "schema_version": "MechanicalDesignLegacyMigrationPlan/v1",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "items": [],
+            "receipt_sha256": "b" * 64,
+        }
+
+    def design_job_migrate_legacy_apply(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("migrate-legacy-apply", kwargs))
+        return {
+            "schema_version": "MechanicalDesignLegacyMigrationResult/v1",
+            "plan_receipt_sha256": kwargs["receipt_sha256"],
+            "migrated": [],
         }
 
 
@@ -208,6 +227,45 @@ def test_job_cli_routes_all_operations_through_the_scoped_service(
     ]
     assert ("status", service.job_id) in service.calls
     assert not hasattr(service, "active_job")
+
+
+def test_job_cli_migrates_legacy_inventory_without_using_an_active_job_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    service = _JobCliService()
+    monkeypatch.setattr(cli.BootstrapRuntime, "from_process", lambda **_kwargs: _ReadyRuntime())
+    monkeypatch.setattr(cli, "MechanicalDesignService", lambda _settings: service)
+    monkeypatch.delenv("MECH_DESIGN_JOB_ID", raising=False)
+
+    plan = _run_cli(monkeypatch, capsys, "job", "migrate-legacy", "--dry-run")
+    plan_file = tmp_path / "legacy-plan.json"
+    plan_file.write_text(json.dumps(plan), encoding="utf-8")
+    applied = _run_cli(
+        monkeypatch,
+        capsys,
+        "job",
+        "migrate-legacy",
+        "--apply",
+        "--plan-file",
+        str(plan_file),
+        "--receipt-sha256",
+        str(plan["receipt_sha256"]),
+        "--confirmation",
+        f"迁移旧设计 {plan['receipt_sha256']}",
+    )
+
+    assert plan["schema_version"] == "MechanicalDesignLegacyMigrationPlan/v1"
+    assert applied["schema_version"] == "MechanicalDesignLegacyMigrationResult/v1"
+    assert [name for name, _ in service.calls] == [
+        "migrate-legacy-dry-run",
+        "migrate-legacy-apply",
+    ]
+    apply_call = service.calls[1][1]
+    assert isinstance(apply_call, dict)
+    assert apply_call["plan"] == plan
+    assert apply_call["confirmation"] == f"迁移旧设计 {plan['receipt_sha256']}"
 
 
 def test_job_cli_explicit_job_overrides_process_scoped_binding_without_persisting_it(

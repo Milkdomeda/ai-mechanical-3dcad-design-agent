@@ -152,6 +152,37 @@ mechanical-design family create \
 The checked-in synthetic JSON is documentation only. It is never copied,
 auto-discovered, selected, or loaded as a runtime default.
 
+## Design Job workspaces and Legacy migration
+
+Each independent mechanical-design request belongs to one Design Job directory
+under the configured workspace. Continue the same design in the same Job; create
+a new Job only for an independent requirement. Product design work does not
+create a Git worktree, and governed FCStd files, validation evidence, delivery
+records, and Design Lessons remain together inside their originating Job.
+
+Upgrading a workspace that contains pre-Job working copies is an explicit,
+receipt-bound operation. First save the UTF-8 JSON dry-run output:
+
+```bash
+mechanical-design job migrate-legacy --dry-run --workspace /path/to/mechanical-design-workspace
+```
+
+Review that plan and its `receipt_sha256`, then apply the exact saved plan:
+
+```bash
+mechanical-design job migrate-legacy --apply \
+  --workspace /path/to/mechanical-design-workspace \
+  --plan-file /path/to/legacy-plan.json \
+  --receipt-sha256 <receipt-sha256> \
+  --confirmation "迁移旧设计 <receipt-sha256>"
+```
+
+Migration creates one independent Legacy Job per old working copy, verifies the
+FCStd bytes and hashes, retains the original file, and writes an immutable
+receipt in the new Job. It never guesses that two old designs should be merged.
+Repeated apply is idempotent; a changed source or plan is rejected. `job doctor`
+reports unmigrated, incomplete, and hash-divergent Legacy bindings.
+
 ## Status, diagnostics, and smoke validation
 
 ```bash

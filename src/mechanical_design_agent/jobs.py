@@ -1322,6 +1322,20 @@ class DesignJobManager:
         self._replace_projection(locked_root / "job.json", manifest)
         return manifest
 
+    def read_authoritative_manifest_locked(
+        self,
+        *,
+        locked_root: Path,
+        authoritative_row: Mapping[str, object],
+    ) -> DesignJobManifest:
+        """Read a current authoritative projection while its Job root is locked."""
+        if self._final_path(authoritative_row) != locked_root:
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "authorized Job directory changed while reading its projection",
+            )
+        return self._read_ready_manifest(authoritative_row)
+
     def get(
         self,
         *,

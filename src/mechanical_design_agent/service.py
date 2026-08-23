@@ -27,6 +27,7 @@ from .extractor import FreeCADExtractor
 from .hashing import file_sha256, stable_hash
 from .learning import family_statistics, generate_question_targets, parse_assertion_proposals
 from .jobs import DesignJobManager, DesignJobManifest, JobFailure
+from .job_migration import LegacyJobMigration
 from .library import LibraryScanner, scan_change_dict
 from .lesson_reviews import DesignLessonReviewStore
 from .migrations import postgres_migrations_directory
@@ -452,10 +453,44 @@ class MechanicalDesignService:
             organization_id=organization,
             design_group_id=group,
         )
-        return self.design_jobs.doctor(
+        result = self.design_jobs.doctor(
             job_id=resolved_job_id,
             organization_id=organization,
             design_group_id=group,
+        )
+        result["legacy_migration"] = self._legacy_migration().doctor()
+        return result
+
+    def _legacy_migration(self) -> LegacyJobMigration:
+        organization, group = self._configured_job_scope()
+        design = getattr(self, "design_workspace", None)
+        if design is None:
+            design = DesignWorkspace(self.settings, self.repository, self.design_jobs)
+        return LegacyJobMigration(
+            repository=self.repository,
+            jobs=self.design_jobs,
+            design=design,
+            actor_id=self.settings.actor_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+
+    def design_job_migrate_legacy_dry_run(self) -> dict[str, object]:
+        self._require_database()
+        return self._legacy_migration().dry_run()
+
+    def design_job_migrate_legacy_apply(
+        self,
+        *,
+        plan: dict[str, object],
+        receipt_sha256: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        self._require_database()
+        return self._legacy_migration().apply(
+            plan=plan,
+            receipt_sha256=receipt_sha256,
+            confirmation=confirmation,
         )
 
     def design_job_repair(

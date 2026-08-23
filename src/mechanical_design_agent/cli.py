@@ -238,6 +238,15 @@ def main() -> None:
     job_repair.add_argument("--doctor-receipt-sha256", required=True)
     job_repair.add_argument("--reason", required=True)
     job_repair.add_argument("--confirmation", required=True)
+
+    job_migrate = job_sub.add_parser("migrate-legacy")
+    _add_bootstrap_args(job_migrate)
+    job_migrate_mode = job_migrate.add_mutually_exclusive_group()
+    job_migrate_mode.add_argument("--dry-run", action="store_true")
+    job_migrate_mode.add_argument("--apply", action="store_true")
+    job_migrate.add_argument("--plan-file")
+    job_migrate.add_argument("--receipt-sha256")
+    job_migrate.add_argument("--confirmation")
     args = parser.parse_args()
     if args.command == "smoke-fixture":
         args.source = str(_validate_smoke_source(parser, args.source))
@@ -405,6 +414,36 @@ def main() -> None:
                     idempotency_token=args.idempotency_token,
                     source_files=args.source_files,
                 )
+            elif args.job_command == "migrate-legacy":
+                if not args.apply:
+                    result = service.design_job_migrate_legacy_dry_run()
+                else:
+                    if not all(
+                        isinstance(value, str) and value.strip()
+                        for value in (
+                            args.plan_file,
+                            args.receipt_sha256,
+                            args.confirmation,
+                        )
+                    ):
+                        raise JobFailure(
+                            "JOB_MIGRATION_INPUT_REQUIRED",
+                            "--apply requires --plan-file, --receipt-sha256, and --confirmation",
+                        )
+                    plan = json.loads(
+                        Path(args.plan_file).expanduser().resolve(strict=True).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    if not isinstance(plan, dict):
+                        raise JobFailure(
+                            "JOB_MIGRATION_PLAN_INVALID", "migration plan must be a JSON object"
+                        )
+                    result = service.design_job_migrate_legacy_apply(
+                        plan=plan,
+                        receipt_sha256=args.receipt_sha256,
+                        confirmation=args.confirmation,
+                    )
             elif args.job_command == "list":
                 result = service.design_job_list(
                     status=args.status or None,
@@ -418,7 +457,7 @@ def main() -> None:
                     family_id=args.family_id or None,
                     statuses=tuple(args.job_statuses or ("active", "blocked")),
                 )
-            else:
+            elif args.job_command not in {"migrate-legacy"}:
                 job_id = _job_binding(args)
                 if args.job_command == "status":
                     result = service.design_job_get(job_id=job_id)

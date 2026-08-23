@@ -991,6 +991,167 @@ class DesignWorkspace:
             "job": manifest.as_dict(),
         }
 
+    def migrate_legacy_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        legacy_working_copy_id: str,
+        source_path: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Copy a legacy FCStd into a new governed binding without mutating history."""
+        source = Path(os.path.abspath(Path(source_path).expanduser()))
+        try:
+            source_read = read_managed_file(source)
+            inspect_fcstd_bytes(source_read.content)
+        except (SecureFilesystemError, FcstdSecurityError) as exc:
+            raise JobFailure(
+                "JOB_LEGACY_SOURCE_UNSAFE",
+                "legacy FCStd bytes are missing or outside the supported safe subset",
+            ) from exc
+        manager = self._require_job_manager()
+        with manager.locked_active_mechanical_design_job(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            family_id=family_id,
+        ) as (job_root, job):
+            working_copy_id = str(
+                uuid.uuid5(uuid.UUID(job_id), f"legacy-working-copy:{legacy_working_copy_id}")
+            )
+            relative_path = f"models/working/{working_copy_id}/working.FCStd"
+            target = managed_job_path(
+                job_root=job_root,
+                relative_path=relative_path,
+                allow_missing_leaf=True,
+            )
+            active_working_copy_id = job.get("active_working_copy_id")
+            if active_working_copy_id is not None:
+                if str(active_working_copy_id) != working_copy_id:
+                    raise JobFailure(
+                        "JOB_ACTIVE_WORKING_COPY_EXISTS",
+                        "the Legacy Job is already bound to a different working copy",
+                    )
+                try:
+                    working = self.repository.get_working_copy(working_copy_id)
+                    existing = read_managed_file(target)
+                    inspect_fcstd_bytes(existing.content)
+                except (KeyError, SecureFilesystemError, FcstdSecurityError) as exc:
+                    raise JobFailure(
+                        "JOB_MIGRATION_DIVERGED",
+                        "the existing migrated working copy is missing or unsafe",
+                    ) from exc
+                if (
+                    str(working.get("job_id")) != job_id
+                    or working.get("working_relative_path") != relative_path
+                    or Path(os.path.abspath(str(working.get("working_path")))) != target
+                    or working.get("working_sha256") != source_read.sha256
+                    or working.get("source_sha256") != source_read.sha256
+                    or int(working.get("working_size_bytes") or -1) != source_read.size_bytes
+                    or existing.sha256 != source_read.sha256
+                    or existing.size_bytes != source_read.size_bytes
+                    or existing.content != source_read.content
+                    or existing.link_count != 1
+                ):
+                    raise JobFailure(
+                        "JOB_MIGRATION_DIVERGED",
+                        "the existing migrated binding disagrees with the legacy inventory",
+                    )
+                manifest = manager.read_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    authoritative_row=job,
+                )
+                return {
+                    **dict(working),
+                    "legacy_working_copy_id": legacy_working_copy_id,
+                    "legacy_source_sha256": source_read.sha256,
+                    "legacy_source_retained": str(source),
+                    "job": manifest.as_dict(),
+                }
+
+            working_parent = validate_managed_path(
+                job_root / "models" / "working", allow_missing_leaf=False
+            ).path
+            attempt_receipt = {
+                "schema_version": "MechanicalDesignJobBindingAttempt/v2",
+                "job_id": job_id,
+                "expected_job_revision": expected_job_revision,
+                "artifact_kind": "working_copy",
+                "artifact_id": working_copy_id,
+                "source_sha256": source_read.sha256,
+                "artifacts": [],
+            }
+            attempt = self._job_attempt_directory(
+                working_parent,
+                working_copy_id,
+                attempt_receipt,
+            )
+            target = attempt / "working.FCStd"
+            try:
+                atomic_publish_new(target, source_read.content)
+                migrated_read = read_managed_file(target)
+                inspect_fcstd_bytes(migrated_read.content)
+                if (
+                    migrated_read.sha256 != source_read.sha256
+                    or migrated_read.size_bytes != source_read.size_bytes
+                    or migrated_read.content != source_read.content
+                    or migrated_read.link_count != 1
+                ):
+                    raise JobFailure(
+                        "JOB_MIGRATION_DIVERGED",
+                        "copied FCStd bytes do not match the legacy inventory",
+                    )
+                self._assert_job_attempt_inventory(
+                    attempt,
+                    required_files=frozenset({".binding-attempt.json", "working.FCStd"}),
+                )
+                self._record_job_attempt_inventory(
+                    attempt,
+                    receipt=attempt_receipt,
+                    artifact_names=("working.FCStd",),
+                )
+                publication = self._publish_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    family_id=family_id,
+                    working_copy_id=working_copy_id,
+                    model_revision_id=None,
+                    source_sha256=source_read.sha256,
+                    source_kind="new_design_seed",
+                    design_origin="new_design",
+                    working_path=str(target),
+                    working_sha256=source_read.sha256,
+                    working_size_bytes=source_read.size_bytes,
+                    working_relative_path=relative_path,
+                    actor_id=actor_id,
+                    source_snapshot=None,
+                )
+                manifest = manager.publish_authoritative_manifest_locked(
+                    locked_root=job_root,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                    working_copy_id=working_copy_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                )
+                return {
+                    **dict(publication["working_copy"]),
+                    "legacy_working_copy_id": legacy_working_copy_id,
+                    "legacy_source_sha256": source_read.sha256,
+                    "legacy_source_retained": str(source),
+                    "job": manifest.as_dict(),
+                }
+            except Exception:
+                # Preserve deterministic attempt bytes for doctor/repair.
+                raise
+
     def _create_attempt_directory(self, copy_id: str) -> Path:
         root = ensure_managed_directory(
             self.root,

@@ -3333,6 +3333,53 @@ class PostgresRepository:
             raise KeyError(f"unknown working_copy_id: {working_copy_id}")
         return dict(row)
 
+    def list_legacy_working_copies(
+        self, *, organization_id: str, design_group_id: str
+    ) -> list[dict[str, Any]]:
+        """Inventory pre-Job rows without granting them governed write authority."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_working_copies WHERE job_id IS NULL "
+                "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id",
+                (organization_id, design_group_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_legacy_migration_bindings(
+        self,
+        *,
+        workspace_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return read-only source/target evidence for Legacy migration doctor."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT legacy.id AS legacy_working_copy_id,"
+                "legacy.family_id,legacy.working_path AS legacy_working_path,"
+                "job.id AS migration_job_id,job.status AS migration_job_status,"
+                "job.revision AS migration_job_revision,job.active_working_copy_id,"
+                "migrated.id AS migrated_working_copy_id,migrated.job_id AS migrated_job_id,"
+                "migrated.working_path AS migrated_working_path,"
+                "migrated.working_relative_path AS migrated_working_relative_path,"
+                "migrated.working_sha256 AS migrated_working_sha256,"
+                "migrated.working_size_bytes AS migrated_working_size_bytes "
+                "FROM design_working_copies legacy "
+                "LEFT JOIN design_jobs job ON job.workspace_id=%s "
+                "AND job.organization_id=legacy.organization_id "
+                "AND job.design_group_id=legacy.design_group_id "
+                "AND job.idempotency_token=concat('legacy-working-copy:',legacy.id::text) "
+                "LEFT JOIN design_working_copies migrated "
+                "ON migrated.id=job.active_working_copy_id "
+                "AND migrated.job_id=job.id "
+                "AND migrated.organization_id=job.organization_id "
+                "AND migrated.design_group_id=job.design_group_id "
+                "WHERE legacy.job_id IS NULL AND legacy.organization_id=%s "
+                "AND legacy.design_group_id=%s ORDER BY legacy.created_at,legacy.id",
+                (workspace_id, organization_id, design_group_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_design_lesson_summary(
         self,
         *,
