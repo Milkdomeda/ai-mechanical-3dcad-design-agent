@@ -17,7 +17,11 @@ from mechanical_design_agent.config import Settings
 from mechanical_design_agent.design import DesignWorkspace, derive_iteration_candidates
 from mechanical_design_agent.hashing import file_sha256
 from mechanical_design_agent.jobs import JobFailure
-from mechanical_design_agent.secure_fs import SecureFilesystemError, relative_managed_path
+from mechanical_design_agent.secure_fs import (
+    SecureFilesystemError,
+    read_managed_file,
+    relative_managed_path,
+)
 
 
 class FakeRepository:
@@ -106,6 +110,9 @@ class FakeJobBindingRepository(FakeRepository):
                 "job_id": kwargs["job_id"],
                 "working_path": kwargs["working_path"],
                 "source_model_revision_id": kwargs["model_revision_id"],
+                "working_sha256": kwargs["working_sha256"],
+                "working_size_bytes": kwargs["working_size_bytes"],
+                "working_relative_path": kwargs["working_relative_path"],
             },
             "source_snapshot": snapshot,
             "job": {
@@ -179,6 +186,9 @@ def _job_binding_workspace(root: Path) -> tuple[Settings, FakeJobBindingReposito
     (job_root / "models" / "working").mkdir(parents=True)
     repository = FakeJobBindingRepository()
     manager = FakeJobBindingManager(job_root)
+    freecadcmd = package / "FreeCADCmd 1.1.3"
+    freecadcmd.write_bytes(b"reviewed test executable boundary")
+    freecad_boundary = read_managed_file(freecadcmd)
     settings = Settings(
         workspace=root,
         package_root=package,
@@ -186,10 +196,13 @@ def _job_binding_workspace(root: Path) -> tuple[Settings, FakeJobBindingReposito
         neo4j_uri="unused",
         neo4j_user="unused",
         neo4j_password="unused",
-        freecadcmd=Path("/bin/false"),
+        freecadcmd=freecadcmd,
         actor_id="owner",
         artifact_root=package / "data",
         family_config_path=package / "family.json",
+        freecadcmd_sha256=freecad_boundary.sha256,
+        freecadcmd_identity=freecad_boundary.identity,
+        freecadcmd_version="1.1.3",
     )
     return settings, repository, manager
 
@@ -207,7 +220,7 @@ def _safe_fcstd_bytes(marker: str = "safe") -> bytes:
     return output.getvalue()
 
 
-def _valid_job_freecad_run(_freecadcmd, script, arguments, timeout_seconds):
+def _valid_job_freecad_run(_freecadcmd, script, arguments, timeout_seconds, **_trust):
     del timeout_seconds
     script_name = Path(script).name
     if script_name == "create_empty_working_copy.py":
@@ -534,6 +547,9 @@ class DesignWorkspaceTests(unittest.TestCase):
                     "job_id": job_id,
                     "working_path": str(working_path),
                     "source_model_revision_id": "model-revision-1",
+                    "working_sha256": digest,
+                    "working_size_bytes": len(source_bytes),
+                    "working_relative_path": f"models/working/{working_id}/working.FCStd",
                 },
                 "source_snapshot": {
                     "id": snapshot_id,
@@ -568,6 +584,67 @@ class DesignWorkspaceTests(unittest.TestCase):
             self.assertEqual(working_path.read_bytes(), source_bytes)
             self.assertIsNone(repository.created)
             self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_step_committed_retry_uses_authoritative_normalized_working_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            source = root / "source.step"
+            source.write_bytes(b"ISO-10303-21; normalized output must differ")
+            job_id = "10000000-0000-4000-8000-000000000001"
+            revision = 4
+            source_digest = file_sha256(source)
+            namespace = uuid.UUID(job_id)
+            snapshot_id = str(
+                uuid.uuid5(namespace, f"source-snapshot:{revision}:{source_digest}")
+            )
+            working_id = str(
+                uuid.uuid5(
+                    namespace,
+                    f"working-copy:{revision}:existing_model:{source_digest}",
+                )
+            )
+            snapshot_path = manager.root / "inputs/source" / snapshot_id / "source.step"
+            working_path = manager.root / "models/working" / working_id / "working.FCStd"
+            snapshot_path.parent.mkdir()
+            working_path.parent.mkdir()
+            snapshot_path.write_bytes(source.read_bytes())
+            normalized = _safe_fcstd_bytes("normalized-step")
+            working_path.write_bytes(normalized)
+            working_digest = file_sha256(working_path)
+            repository.reconciliation_responses = [
+                {
+                    "status": "committed",
+                    "publication": {
+                        "working_copy": {
+                            "id": working_id,
+                            "job_id": job_id,
+                            "working_path": str(working_path),
+                            "source_model_revision_id": "model-revision-1",
+                            "source_sha256": source_digest,
+                            "working_sha256": working_digest,
+                            "working_size_bytes": len(normalized),
+                            "working_relative_path": f"models/working/{working_id}/working.FCStd",
+                        },
+                        "source_snapshot": {"id": snapshot_id},
+                        "job": {"id": job_id, "revision": revision + 1},
+                    },
+                }
+            ]
+
+            result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                job_id=job_id,
+                expected_job_revision=revision,
+                source_path=str(source),
+                organization_id="org",
+                design_group_id="group",
+                family_id=None,
+                model_revision_id=None,
+                actor_id="owner",
+            )
+
+            self.assertEqual(result["id"], working_id)
+            self.assertNotEqual(source_digest, working_digest)
 
     def test_job_retry_proven_absent_preserves_a_prior_attempt_for_explicit_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -717,6 +794,9 @@ class DesignWorkspaceTests(unittest.TestCase):
                             "working_path": str(working_path),
                             "source_model_revision_id": None,
                             "source_sha256": digest,
+                            "working_sha256": digest,
+                            "working_size_bytes": working_path.stat().st_size,
+                            "working_relative_path": f"models/working/{working_id}/working.FCStd",
                         },
                         "source_snapshot": None,
                         "job": {"id": job_id, "revision": revision + 1},
@@ -781,7 +861,7 @@ class DesignWorkspaceTests(unittest.TestCase):
                 outside = root / "outside.FCStd"
                 outside.write_bytes(b"outside-owned-by-someone-else")
 
-                def invalid_run(_freecadcmd, script, arguments, timeout_seconds):
+                def invalid_run(_freecadcmd, script, arguments, timeout_seconds, **_trust):
                     del timeout_seconds
                     if Path(script).name == "create_empty_working_copy.py":
                         working = Path(arguments[0])
@@ -845,7 +925,7 @@ class DesignWorkspaceTests(unittest.TestCase):
                 root = Path(temporary)
                 settings, repository, manager = _job_binding_workspace(root)
 
-                def hostile_run(_freecadcmd, script, arguments, timeout_seconds):
+                def hostile_run(_freecadcmd, script, arguments, timeout_seconds, **_trust):
                     del timeout_seconds
                     if Path(script).name == "create_empty_working_copy.py":
                         Path(arguments[0]).write_bytes(_safe_fcstd_bytes("before"))
@@ -1368,7 +1448,9 @@ class DesignWorkspaceTests(unittest.TestCase):
                 family_config_path=package / "family.json",
             )
 
-            def create_empty(_freecadcmd, _script, arguments, timeout_seconds):
+            def create_empty(
+                _freecadcmd, _script, arguments, timeout_seconds, **_trust
+            ):
                 Path(arguments[0]).write_bytes(b"new-design")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 

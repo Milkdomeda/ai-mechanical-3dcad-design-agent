@@ -13,6 +13,7 @@ from mechanical_design_agent.bootstrap_runtime import (
     BootstrapRuntime,
     DoctorProbes,
     ProbeResult,
+    _default_freecadcmd_probe,
 )
 from mechanical_design_agent.server import (
     SERVICE_METHOD_CAPABILITIES,
@@ -21,6 +22,7 @@ from mechanical_design_agent.server import (
 )
 from mechanical_design_agent.config import JobCadSettings, JobSettings
 from mechanical_design_agent.jobs import JobFailure
+from mechanical_design_agent.secure_fs import read_managed_file
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
 
@@ -34,6 +36,7 @@ def clear_bootstrap_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "MECH_DESIGN_NEO4J_USER",
         "MECH_DESIGN_NEO4J_PASSWORD",
         "MECH_DESIGN_FREECADCMD",
+        "MECH_DESIGN_FREECADCMD_SHA256",
         "MECH_DESIGN_ARTIFACT_ROOT",
         "MECH_DESIGN_PRODUCT_FAMILY_ID",
     ):
@@ -249,7 +252,7 @@ def test_selected_family_mcp_constructs_normal_service_once(
         probes=DoctorProbes(
             postgresql=lambda value: ProbeResult(available=True),
             neo4j=lambda uri, user, password: ProbeResult(available=True),
-            freecadcmd=lambda path: ProbeResult(available=True),
+            freecadcmd=lambda path, sha256, identity, controlled: ProbeResult(available=True),
             artifact_root=lambda path: ProbeResult(available=True),
         ),
     )
@@ -673,8 +676,17 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
 ) -> None:
     workspace = tmp_path / "workspace"
     initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    manifest_path = workspace / "config" / "mechanical_design.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["organization_id"] = "org-001"
+    manifest["identity"]["design_group_id"] = "group-001"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     freecadcmd = tmp_path / "FreeCAD Cmd"
     freecadcmd.write_bytes(b"test executable boundary")
+    freecad_binding = read_managed_file(freecadcmd)
     settings = JobCadSettings(
         workspace=workspace,
         package_root=workspace,
@@ -683,6 +695,9 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
         organization_id="org-001",
         design_group_id="group-001",
         freecadcmd=freecadcmd,
+        freecadcmd_sha256=freecad_binding.sha256,
+        freecadcmd_identity=freecad_binding.identity,
+        freecadcmd_version="1.1.3",
     )
     capability_calls: list[CapabilityRequest] = []
 
@@ -794,6 +809,7 @@ def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
     initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
     freecadcmd = tmp_path / "FreeCADCmd 1.1.1"
     freecadcmd.write_bytes(b"local executable probe boundary")
+    pinned = read_managed_file(freecadcmd)
     monkeypatch.setattr(
         "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
         lambda path: __import__("subprocess").CompletedProcess(
@@ -804,10 +820,11 @@ def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
         cwd=workspace,
         environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
         freecad_command=freecadcmd,
+        freecad_sha256=pinned.sha256,
         probes=DoctorProbes(
             postgresql=lambda value: ProbeResult(available=True),
             neo4j=lambda uri, user, password: ProbeResult(available=True),
-            freecadcmd=lambda path: ProbeResult(available=True),
+            freecadcmd=lambda path, sha256, identity, controlled: ProbeResult(available=True),
             artifact_root=lambda path: ProbeResult(available=True),
         ),
     )
@@ -820,4 +837,90 @@ def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
         )
 
     assert captured.value.response["code"] == "FREECADCMD_VERSION_UNVALIDATED"
+
+
+def test_job_cad_requires_exact_reviewed_official_executable_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    manifest_path = workspace / "config" / "mechanical_design.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["organization_id"] = "org-001"
+    manifest["identity"]["design_group_id"] = "group-001"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    freecadcmd = tmp_path / "FreeCADCmd 1.1.3"
+    freecadcmd.write_bytes(b"official executable candidate")
+    pinned = read_managed_file(freecadcmd)
+    version_calls: list[Path] = []
+
+    def version_probe(path: Path):
+        version_calls.append(path)
+        return __import__("subprocess").CompletedProcess(
+            [str(path), "--version"], 0, "FreeCAD 1.1.3\n", ""
+        )
+
+    monkeypatch.setattr(
+        "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
+        version_probe,
+    )
+
+    def runtime(digest: str | None) -> BootstrapRuntime:
+        return BootstrapRuntime.from_process(
+            cwd=workspace,
+            environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+            freecad_command=freecadcmd,
+            freecad_sha256=digest,
+        )
+
+    for digest, code in (
+        (None, "FREECADCMD_SHA256_REQUIRED"),
+        ("0" * 64, "FREECADCMD_SHA256_MISMATCH"),
+    ):
+        with pytest.raises(DiagnosticGateError) as captured:
+            runtime(digest).require_capability(
+                request("design_job_workspace", "freecadcmd"), probe=False
+            )
+        assert captured.value.response["code"] == code
+    assert version_calls == []
+
+    settings = runtime(pinned.sha256).job_cad_operational_settings()
+    assert version_calls and set(version_calls) == {freecadcmd}
+    assert settings.freecadcmd_sha256 == pinned.sha256
+    assert settings.freecadcmd_identity == pinned.identity
+    assert settings.freecadcmd_version == "1.1.3"
     assert "super-secret" not in json.dumps(captured.value.response)
+
+
+def test_default_freecad_probe_rechecks_reviewed_identity_and_scrubs_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "FreeCADCmd"
+    executable.write_bytes(b"reviewed official boundary")
+    controlled = tmp_path / "controlled"
+    controlled.mkdir()
+    pinned = read_managed_file(executable)
+    captured: dict[str, object] = {}
+
+    def substitute(argv, **kwargs):
+        captured.update(kwargs)
+        executable.unlink()
+        executable.write_bytes(b"substituted wrapper")
+        return __import__("subprocess").CompletedProcess(
+            argv, 0, "FreeCAD 1.1.3\n", ""
+        )
+
+    monkeypatch.setenv("MECH_DESIGN_DATABASE_URL", "postgresql://secret")
+    monkeypatch.setattr("mechanical_design_agent.bootstrap_runtime.subprocess.run", substitute)
+
+    result = _default_freecadcmd_probe(
+        executable, pinned.sha256, pinned.identity, controlled
+    )
+
+    assert result.available is False
+    assert result.error_type == "FreeCADExecutableTrustError"
+    assert captured["cwd"] == controlled
+    assert "MECH_DESIGN_DATABASE_URL" not in captured["env"]

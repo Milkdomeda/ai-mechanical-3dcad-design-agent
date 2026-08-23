@@ -91,7 +91,13 @@ class _JobCliService:
         return {
             "schema_version": "MechanicalDesignJobRepair/v1",
             "job": _repair_manifest(kwargs["job_id"]),
-            "audit": {"action": "repair", "reason": kwargs["reason"], "actor_id": "actor", "authoritative_revision": 4},
+            "audit": {
+                "action": "repair",
+                "reason": kwargs["reason"],
+                "actor_id": "actor",
+                "authoritative_revision": 4,
+                "quarantined_attempts": [],
+            },
         }
 
 

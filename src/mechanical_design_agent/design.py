@@ -249,6 +249,7 @@ class DesignWorkspace:
                 script=scripts / "validate_working_copy.py",
                 arguments=[working_path, nonce],
                 controlled_parent=working_attempt.parent,
+                controlled_directory=working_attempt,
                 timeout_seconds=900,
                 failure_code="JOB_FCSTD_INVALID",
                 failure_message="FreeCAD could not reopen, recompute, and validate the FCStd output",
@@ -323,6 +324,7 @@ class DesignWorkspace:
         script: Path,
         arguments: list[str | Path],
         controlled_parent: Path,
+        controlled_directory: Path,
         timeout_seconds: int,
         failure_code: str,
         failure_message: str,
@@ -343,6 +345,9 @@ class DesignWorkspace:
                 script,
                 arguments,
                 timeout_seconds=timeout_seconds,
+                expected_sha256=self.settings.freecadcmd_sha256,
+                expected_identity=self.settings.freecadcmd_identity,
+                controlled_directory=controlled_directory,
             )
         except Exception as exc:
             run_error = exc
@@ -430,6 +435,9 @@ class DesignWorkspace:
                         source_kind=publication["source_kind"],
                         design_origin=publication["design_origin"],
                         working_path=publication["working_path"],
+                        working_sha256=publication.get("working_sha256"),
+                        working_size_bytes=publication.get("working_size_bytes"),
+                        working_relative_path=publication["working_relative_path"],
                         actor_id=publication["actor_id"],
                         source_snapshot=publication.get("source_snapshot"),
                     )
@@ -475,6 +483,9 @@ class DesignWorkspace:
                 source_kind=publication["source_kind"],
                 design_origin=publication["design_origin"],
                 working_path=publication["working_path"],
+                working_sha256=publication.get("working_sha256"),
+                working_size_bytes=publication.get("working_size_bytes"),
+                working_relative_path=publication["working_relative_path"],
                 actor_id=publication["actor_id"],
                 source_snapshot=publication.get("source_snapshot"),
             )
@@ -578,6 +589,7 @@ class DesignWorkspace:
             snapshot_path = source_parent / snapshot_id / snapshot_name
             working_path = working_parent / working_copy_id / "working.FCStd"
             stored_path = snapshot_path.relative_to(job_root).as_posix()
+            working_relative_path = working_path.relative_to(job_root).as_posix()
             source_snapshot = {
                 "id": snapshot_id,
                 "source_filename": source.name,
@@ -599,6 +611,9 @@ class DesignWorkspace:
                 "source_kind": "existing_model",
                 "design_origin": "existing_model",
                 "working_path": str(working_path),
+                "working_sha256": None,
+                "working_size_bytes": None,
+                "working_relative_path": working_relative_path,
                 "actor_id": actor_id,
                 "source_snapshot": source_snapshot,
             }
@@ -617,9 +632,10 @@ class DesignWorkspace:
                     snapshot_read.sha256 != source_read.sha256
                     or snapshot_read.size_bytes != source_read.size_bytes
                     or snapshot_read.content != source_read.content
-                    or working_read.sha256 != source_read.sha256
-                    or working_read.size_bytes != source_read.size_bytes
-                    or working_read.content != source_read.content
+                    or working_read.sha256
+                    != reconciled["working_copy"].get("working_sha256")
+                    or working_read.size_bytes
+                    != reconciled["working_copy"].get("working_size_bytes")
                     or snapshot_read.link_count != 1
                     or working_read.link_count != 1
                 ):
@@ -701,6 +717,7 @@ class DesignWorkspace:
                             script=scripts / "normalize_working_copy.py",
                             arguments=[snapshot_path, working_path],
                             controlled_parent=working_parent,
+                            controlled_directory=working_attempt,
                             timeout_seconds=900,
                             failure_code="JOB_NORMALIZATION_FAILED",
                             failure_message="FreeCAD could not normalize the governed source snapshot",
@@ -722,6 +739,9 @@ class DesignWorkspace:
                         "JOB_FCSTD_INVALID",
                         "FCStd working-copy bytes do not match the governed snapshot",
                     )
+
+                publication_request["working_sha256"] = working_read.sha256
+                publication_request["working_size_bytes"] = working_read.size_bytes
 
                 try:
                     final_source_read = read_managed_file(source)
@@ -815,6 +835,7 @@ class DesignWorkspace:
                 job_root / "models" / "working", allow_missing_leaf=False
             ).path
             working_path = working_parent / working_copy_id / "working.FCStd"
+            working_relative_path = working_path.relative_to(job_root).as_posix()
             publication_request = {
                 "job_id": job_id,
                 "expected_job_revision": expected_job_revision,
@@ -827,6 +848,9 @@ class DesignWorkspace:
                 "source_kind": "new_design_seed",
                 "design_origin": "new_design",
                 "working_path": str(working_path),
+                "working_sha256": None,
+                "working_size_bytes": None,
+                "working_relative_path": working_relative_path,
                 "actor_id": actor_id,
                 "source_snapshot": None,
             }
@@ -840,9 +864,11 @@ class DesignWorkspace:
                         "JOB_DATABASE_COMMIT_UNKNOWN",
                         "Committed working-copy bytes are missing or unsafe and require doctor/repair",
                     ) from exc
-                authoritative_sha = reconciled["working_copy"].get("source_sha256")
+                authoritative_sha = reconciled["working_copy"].get("working_sha256")
+                authoritative_size = reconciled["working_copy"].get("working_size_bytes")
                 if (
                     working_read.sha256 != authoritative_sha
+                    or working_read.size_bytes != authoritative_size
                     or working_read.link_count != 1
                 ):
                     raise JobFailure(
@@ -876,6 +902,7 @@ class DesignWorkspace:
                         script=scripts / "create_empty_working_copy.py",
                         arguments=[working_path],
                         controlled_parent=working_parent,
+                        controlled_directory=working_attempt,
                         timeout_seconds=120,
                         failure_code="JOB_FCSTD_INVALID",
                         failure_message="FreeCAD could not create the governed FCStd working copy",
@@ -890,6 +917,8 @@ class DesignWorkspace:
                     artifact_names=("working.FCStd",),
                 )
                 publication_request["source_sha256"] = working_read.sha256
+                publication_request["working_sha256"] = working_read.sha256
+                publication_request["working_size_bytes"] = working_read.size_bytes
                 published = self._publish_job_working_copy(**publication_request)
                 manifest = manager.publish_authoritative_manifest_locked(
                     locked_root=job_root,
@@ -989,6 +1018,9 @@ class DesignWorkspace:
                     scripts / "normalize_working_copy.py",
                     [source, target],
                     timeout_seconds=900,
+                    expected_sha256=self.settings.freecadcmd_sha256,
+                    expected_identity=self.settings.freecadcmd_identity,
+                    controlled_directory=target_dir,
                 )
             if completed.returncode != 0 or not target.is_file():
                 self._discard_attempt_directory(target_dir)
@@ -1031,6 +1063,9 @@ class DesignWorkspace:
                 scripts / "create_empty_working_copy.py",
                 [target],
                 timeout_seconds=120,
+                expected_sha256=self.settings.freecadcmd_sha256,
+                expected_identity=self.settings.freecadcmd_identity,
+                controlled_directory=target_dir,
             )
         if completed.returncode != 0 or not target.is_file():
             diagnostic = (completed.stderr + "\n" + completed.stdout)[-4000:]

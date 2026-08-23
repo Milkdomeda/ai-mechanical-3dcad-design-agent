@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -9,6 +10,7 @@ from pathlib import Path
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 from typing import Iterator
 
@@ -25,6 +27,40 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
     os, "O_NOFOLLOW", 0
 )
 _RMTREE_AVOIDS_SYMLINK_ATTACKS = shutil.rmtree.avoids_symlink_attacks
+
+
+def _rename_directory_noreplace(
+    source_parent_fd: int,
+    source_name: str,
+    target_parent_fd: int,
+    target_name: str,
+) -> None:
+    """Use the platform's atomic no-replace rename or fail closed."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source_name)
+    target_bytes = os.fsencode(target_name)
+    if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+        rename = libc.renameatx_np
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_fd, source_bytes, target_parent_fd, target_bytes, 0x00000004
+        )
+    elif hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_fd, source_bytes, target_parent_fd, target_bytes, 0x00000001
+        )
+    else:
+        raise SecureFilesystemError(
+            "MANAGED_ATOMIC_MOVE_UNAVAILABLE",
+            "atomic no-replace directory quarantine is unavailable",
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), target_name)
 
 
 def open_directory_chain(root: Path, parts: tuple[str, ...] = ()) -> int:
@@ -584,14 +620,63 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
     source_parent_fd = open_directory_chain(staged.parent)
     target_parent_fd = open_directory_chain(target.parent)
     try:
+        _rename_directory_noreplace(
+            source_parent_fd,
+            staged.name,
+            target_parent_fd,
+            target.name,
+        )
+        os.fsync(target_parent_fd)
+    finally:
+        os.close(target_parent_fd)
+        os.close(source_parent_fd)
+
+
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    staged = _absolute(source)
+    target = _managed_target(destination)
+    source_parent_fd = open_directory_chain(staged.parent)
+    target_parent_fd = open_directory_chain(target.parent)
+    source_fd: int | None = None
+    try:
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(target)
+        source_fd = os.open(
+            staged.name,
+            _DIRECTORY_FLAGS,
+            dir_fd=source_parent_fd,
+        )
+        metadata = os.fstat(source_fd)
+        identity = FileIdentity(metadata.st_dev, metadata.st_ino)
+        if identity != expected_identity or not _entry_matches_fd(
+            source_parent_fd, staged.name, source_fd, directory=True
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "pinned directory changed before quarantine",
+            )
         os.rename(
             staged.name,
             target.name,
             src_dir_fd=source_parent_fd,
             dst_dir_fd=target_parent_fd,
         )
+        moved = os.stat(target.name, dir_fd=target_parent_fd, follow_symlinks=False)
+        if FileIdentity(moved.st_dev, moved.st_ino) != expected_identity:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "quarantined directory identity changed",
+            )
+        os.fsync(source_parent_fd)
         os.fsync(target_parent_fd)
     finally:
+        if source_fd is not None:
+            os.close(source_fd)
         os.close(target_parent_fd)
         os.close(source_parent_fd)
 

@@ -17,6 +17,8 @@ from uuid import UUID, uuid4
 from .secure_fs import (
     ManagedFileRead,
     SecureFilesystemError,
+    FileIdentity,
+    atomic_move_pinned_directory,
     atomic_publish_directory,
     atomic_publish_new,
     atomic_replace,
@@ -495,7 +497,7 @@ class DesignJobRepairResult:
         job = raw.get("job")
         audit = raw.get("audit")
         if not isinstance(audit, Mapping) or set(audit) != {
-            "action", "reason", "actor_id", "authoritative_revision"
+            "action", "reason", "actor_id", "authoritative_revision", "quarantined_attempts"
         }:
             raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair audit fields do not match the v1 schema")
         manifest = DesignJobManifest.from_dict(job)  # type: ignore[arg-type]
@@ -504,7 +506,8 @@ class DesignJobRepairResult:
         reason = audit.get("reason")
         actor_id = audit.get("actor_id")
         revision = audit.get("authoritative_revision")
-        if not isinstance(reason, str) or not reason.strip() or not isinstance(actor_id, str) or not actor_id.strip() or type(revision) is not int or revision != manifest.revision:
+        quarantined = audit.get("quarantined_attempts")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(actor_id, str) or not actor_id.strip() or type(revision) is not int or revision != manifest.revision or not isinstance(quarantined, (list, tuple)):
             raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair audit is invalid")
         return cls(manifest=manifest, audit=MappingProxyType(dict(audit)))
 
@@ -527,6 +530,7 @@ class _LockedDoctorEvidence:
     verified_snapshots: tuple[Mapping[str, object], ...]
     verified_active_working_copy_id: str | None
     verified_active_working_copy: Mapping[str, object] | None
+    verified_attempts: tuple[Mapping[str, object], ...]
 
 
 class _JobRepository(Protocol):
@@ -1553,6 +1557,7 @@ class DesignJobManager:
         verified_snapshots: Sequence[Mapping[str, object]],
         verified_active_working_copy_id: str | None,
         verified_active_working_copy: Mapping[str, object] | None,
+        verified_attempts: Sequence[Mapping[str, object]],
     ) -> dict[str, object]:
         report: dict[str, object] = {
             "schema_version": JOB_DOCTOR_SCHEMA,
@@ -1573,6 +1578,14 @@ class DesignJobManager:
                 if verified_active_working_copy is not None
                 else None
             ),
+            "verified_attempts": [
+                {
+                    **dict(attempt),
+                    "directory_identity": dict(attempt["directory_identity"]),
+                    "artifacts": [dict(item) for item in attempt["artifacts"]],
+                }
+                for attempt in verified_attempts
+            ],
             "status": "ok" if not issues else "blocked",
             "issues": issues,
         }
@@ -1601,6 +1614,14 @@ class DesignJobManager:
             if evidence.verified_active_working_copy is not None
             else None
         )
+        report["verified_attempts"] = [
+            {
+                **dict(attempt),
+                "directory_identity": dict(attempt["directory_identity"]),
+                "artifacts": [dict(item) for item in attempt["artifacts"]],
+            }
+            for attempt in evidence.verified_attempts
+        ]
         return report
 
     def _locked_doctor_evidence(
@@ -1716,6 +1737,15 @@ class DesignJobManager:
                 working_read = read_managed_file(working_path)
                 if not working_read.content or working_path.suffix.casefold() != ".fcstd":
                     raise ValueError("active working-copy file is invalid")
+                authoritative_relative = row.get("active_working_relative_path")
+                authoritative_sha = row.get("active_working_sha256")
+                authoritative_size = row.get("active_working_size_bytes")
+                if (
+                    authoritative_relative != working_path.relative_to(locked).as_posix()
+                    or authoritative_sha != working_read.sha256
+                    or authoritative_size != working_read.size_bytes
+                ):
+                    raise ValueError("active working-copy evidence disagrees with PostgreSQL")
                 verified_active_working_copy_id = (
                     expected_manifest.active_working_copy_id
                 )
@@ -1740,6 +1770,130 @@ class DesignJobManager:
                         "the authoritative active working copy is missing or unsafe",
                     )
                 )
+        verified_attempts_list: list[Mapping[str, object]] = []
+        known_snapshot_ids = {
+            str(snapshot["snapshot_id"])
+            for snapshot in expected_manifest.source_snapshots
+        }
+        raw_working_ids = row.get("working_copy_ids")
+        known_working_ids = (
+            {str(item) for item in raw_working_ids}
+            if isinstance(raw_working_ids, list)
+            else (
+                {expected_manifest.active_working_copy_id}
+                if expected_manifest.active_working_copy_id is not None
+                else set()
+            )
+        )
+        for relative_parent, artifact_kind, known_ids in (
+            ("inputs/source", "source_snapshot", known_snapshot_ids),
+            ("models/working", "working_copy", known_working_ids),
+        ):
+            parent_entries = layout_entries.get(relative_parent)
+            if parent_entries is None:
+                continue
+            for directory_entry in parent_entries:
+                if not directory_entry.is_directory or directory_entry.name in known_ids:
+                    continue
+                attempt_relative = f"{relative_parent}/{directory_entry.name}"
+                try:
+                    attempt_path = managed_job_path(
+                        job_root=locked,
+                        relative_path=attempt_relative,
+                        allow_missing_leaf=False,
+                    )
+                    inventory = tuple(list_managed_directory(attempt_path))
+                    by_name = {entry.name: entry for entry in inventory}
+                    if (
+                        len(by_name) != len(inventory)
+                        or ".binding-attempt.json" not in by_name
+                        or by_name[".binding-attempt.json"].is_directory
+                    ):
+                        raise ValueError("attempt inventory has no regular receipt")
+                    receipt_read = read_managed_file(
+                        attempt_path / ".binding-attempt.json"
+                    )
+                    receipt = json.loads(receipt_read.content.decode("utf-8"))
+                    if not isinstance(receipt, dict) or set(receipt) != {
+                        "schema_version",
+                        "job_id",
+                        "expected_job_revision",
+                        "artifact_kind",
+                        "artifact_id",
+                        "source_sha256",
+                        "artifacts",
+                    }:
+                        raise ValueError("attempt receipt fields are invalid")
+                    artifacts = receipt.get("artifacts")
+                    if (
+                        receipt.get("schema_version")
+                        != "MechanicalDesignJobBindingAttempt/v2"
+                        or receipt.get("job_id") != str(row.get("id"))
+                        or receipt.get("artifact_kind") != artifact_kind
+                        or receipt.get("artifact_id") != directory_entry.name
+                        or type(receipt.get("expected_job_revision")) is not int
+                        or not isinstance(artifacts, list)
+                        or len(artifacts) != 1
+                        or not isinstance(artifacts[0], dict)
+                    ):
+                        raise ValueError("attempt receipt authority is invalid")
+                    artifact = artifacts[0]
+                    if set(artifact) != {
+                        "filename", "sha256", "size_bytes", "identity"
+                    }:
+                        raise ValueError("attempt artifact evidence is invalid")
+                    filename = artifact.get("filename")
+                    if (
+                        not isinstance(filename, str)
+                        or filename not in by_name
+                        or by_name[filename].is_directory
+                        or set(by_name) != {".binding-attempt.json", filename}
+                    ):
+                        raise ValueError("attempt inventory is not exact")
+                    artifact_read = read_managed_file(attempt_path / filename)
+                    identity = artifact.get("identity")
+                    if (
+                        not isinstance(identity, dict)
+                        or set(identity) != {"volume", "file_index"}
+                        or artifact.get("sha256") != artifact_read.sha256
+                        or artifact.get("size_bytes") != artifact_read.size_bytes
+                        or identity.get("volume") != artifact_read.identity.volume
+                        or identity.get("file_index")
+                        != artifact_read.identity.file_index
+                        or artifact_read.link_count != 1
+                    ):
+                        raise ValueError("attempt artifact changed after receipt")
+                    verified_attempts_list.append(
+                        MappingProxyType(
+                            {
+                                "artifact_kind": artifact_kind,
+                                "artifact_id": directory_entry.name,
+                                "relative_path": attempt_relative,
+                                "directory_identity": MappingProxyType(
+                                    {
+                                        "volume": directory_entry.identity.volume,
+                                        "file_index": directory_entry.identity.file_index,
+                                    }
+                                ),
+                                "receipt_sha256": receipt_read.sha256,
+                                "artifacts": (MappingProxyType(dict(artifact)),),
+                            }
+                        )
+                    )
+                    issues.append(
+                        self._issue(
+                            "JOB_PRESERVED_ATTEMPT_FOUND",
+                            "a receipt-verified uncommitted binding attempt requires quarantine",
+                        )
+                    )
+                except (JobFailure, SecureFilesystemError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    issues.append(
+                        self._issue(
+                            "JOB_ATTEMPT_RECEIPT_INVALID",
+                            "an uncommitted binding attempt cannot be safely quarantined",
+                        )
+                    )
+        verified_attempts = tuple(verified_attempts_list)
         public_report = self._doctor_report(
             row=row,
             issues=issues,
@@ -1747,6 +1901,7 @@ class DesignJobManager:
             verified_snapshots=verified_snapshots,
             verified_active_working_copy_id=verified_active_working_copy_id,
             verified_active_working_copy=verified_active_working_copy,
+            verified_attempts=verified_attempts,
         )
         immutable_report = MappingProxyType(
             {
@@ -1755,6 +1910,7 @@ class DesignJobManager:
                 "verified_snapshots": verified_snapshots,
                 "verified_active_working_copy_id": verified_active_working_copy_id,
                 "verified_active_working_copy": verified_active_working_copy,
+                "verified_attempts": verified_attempts,
             }
         )
         return _LockedDoctorEvidence(
@@ -1768,6 +1924,7 @@ class DesignJobManager:
             verified_snapshots=verified_snapshots,
             verified_active_working_copy_id=verified_active_working_copy_id,
             verified_active_working_copy=verified_active_working_copy,
+            verified_attempts=verified_attempts,
         )
 
     def doctor(
@@ -1797,6 +1954,7 @@ class DesignJobManager:
                 verified_snapshots=(),
                 verified_active_working_copy_id=None,
                 verified_active_working_copy=None,
+                verified_attempts=(),
             )
         try:
             root = self._final_path(row)
@@ -1809,6 +1967,7 @@ class DesignJobManager:
                 verified_snapshots=(),
                 verified_active_working_copy_id=None,
                 verified_active_working_copy=None,
+                verified_attempts=(),
             )
         with locked_job_root(job_root=root) as locked:
             try:
@@ -1895,6 +2054,53 @@ class DesignJobManager:
                     "JOB_REPAIR_UNSAFE",
                     "Job directory contract is incomplete or unsafe",
                 )
+            quarantined_attempts: list[Mapping[str, object]] = []
+            if evidence.verified_attempts:
+                quarantine_root = ensure_managed_directory(
+                    locked / "provenance" / "quarantine",
+                    parents=False,
+                    exist_ok=True,
+                ).path
+                for attempt in evidence.verified_attempts:
+                    source = managed_job_path(
+                        job_root=locked,
+                        relative_path=str(attempt["relative_path"]),
+                        allow_missing_leaf=False,
+                    )
+                    identity_raw = attempt["directory_identity"]
+                    assert isinstance(identity_raw, Mapping)
+                    identity = FileIdentity(
+                        int(identity_raw["volume"]), int(identity_raw["file_index"])
+                    )
+                    quarantine_name = (
+                        f"{attempt['artifact_kind']}-{attempt['artifact_id']}-"
+                        f"{str(attempt['receipt_sha256'])[:12]}"
+                    )
+                    destination = quarantine_root / quarantine_name
+                    try:
+                        atomic_move_pinned_directory(
+                            source,
+                            destination,
+                            expected_identity=identity,
+                        )
+                    except (OSError, SecureFilesystemError) as exc:
+                        raise JobFailure(
+                            "JOB_REPAIR_UNSAFE",
+                            "receipt-verified attempt changed before atomic quarantine",
+                        ) from exc
+                    quarantined_attempts.append(
+                        MappingProxyType(
+                            {
+                                "artifact_kind": attempt["artifact_kind"],
+                                "artifact_id": attempt["artifact_id"],
+                                "from_relative_path": attempt["relative_path"],
+                                "quarantine_relative_path": destination.relative_to(
+                                    locked
+                                ).as_posix(),
+                                "receipt_sha256": attempt["receipt_sha256"],
+                            }
+                        )
+                    )
             root_entries = {entry.name for entry in evidence.root_entries}
             manifest_path = locked / "job.json"
             if "job.json" in root_entries:
@@ -1952,7 +2158,9 @@ class DesignJobManager:
                     )
                 repaired = authoritative
                 self._replace_projection(manifest_path, repaired)
-                return self._repair_result(repaired, reason, actor_id)
+                return self._repair_result(
+                    repaired, reason, actor_id, quarantined_attempts
+                )
             working_entries = evidence.layout_entries["models/working"]
             source_entries = evidence.layout_entries["inputs/source"]
             assert working_entries is not None and source_entries is not None
@@ -1990,10 +2198,14 @@ class DesignJobManager:
                     "JOB_PROJECTION_INCOMPLETE",
                     "PostgreSQL is authoritative but job.json publication is incomplete",
                 ) from exc
-            return self._repair_result(repaired, reason, actor_id)
+            return self._repair_result(repaired, reason, actor_id, quarantined_attempts)
 
     def _repair_result(
-        self, manifest: DesignJobManifest, reason: str, actor_id: str
+        self,
+        manifest: DesignJobManifest,
+        reason: str,
+        actor_id: str,
+        quarantined_attempts: Sequence[Mapping[str, object]] = (),
     ) -> DesignJobRepairResult:
         return DesignJobRepairResult(
             manifest=manifest,
@@ -2003,6 +2215,10 @@ class DesignJobManager:
                     "reason": reason.strip(),
                     "actor_id": actor_id,
                     "authoritative_revision": manifest.revision,
+                    "quarantined_attempts": tuple(
+                        MappingProxyType(dict(attempt))
+                        for attempt in quarantined_attempts
+                    ),
                 }
             ),
         )

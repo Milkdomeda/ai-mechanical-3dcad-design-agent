@@ -15,7 +15,7 @@ from mechanical_design_agent.freecad_discovery import (
     run_freecad_version,
     validate_freecadcmd,
 )
-from mechanical_design_agent.secure_fs import FileIdentity, ManagedPath
+from mechanical_design_agent.secure_fs import FileIdentity, ManagedPath, read_managed_file
 
 
 class FakeRegistry:
@@ -179,7 +179,8 @@ def test_explicit_candidate_requires_absolute_x64_pe_and_parses_version(
     executable = tmp_path / "Portable FreeCAD 空间" / "FreeCADCmd.exe"
     executable.parent.mkdir()
     executable.write_bytes(_pe_x64())
-    identity = FileIdentity(volume=5, file_index=11)
+    pinned = read_managed_file(executable)
+    identity = pinned.identity
     monkeypatch.setattr(
         "mechanical_design_agent.freecad_discovery.validate_managed_path",
         lambda path, allow_missing_leaf: ManagedPath(Path(path), identity, tmp_path),
@@ -188,26 +189,31 @@ def test_explicit_candidate_requires_absolute_x64_pe_and_parses_version(
     inspected = validate_freecadcmd(
         executable,
         source="runtime",
+        expected_sha256=pinned.sha256,
         run_version=lambda path: subprocess.CompletedProcess(
             [str(path), "--version"], 0, "FreeCAD 1.1.3\n", ""
         ),
     )
 
-    assert inspected == FreeCADCandidate(executable, "runtime", identity, "1.1.3")
+    assert inspected == FreeCADCandidate(
+        executable, "runtime", identity, "1.1.3", pinned.sha256
+    )
 
     relative = Path("FreeCADCmd.exe")
     with pytest.raises(FreeCADDiscoveryError, match="absolute"):
         validate_freecadcmd(
             relative,
             source="runtime",
+            expected_sha256=pinned.sha256,
             run_version=lambda _path: subprocess.CompletedProcess([], 0, "FreeCAD 1.1.1", ""),
         )
 
     executable.write_bytes(b"not a PE")
-    with pytest.raises(FreeCADDiscoveryError, match="64-bit Windows PE"):
+    with pytest.raises(FreeCADDiscoveryError, match="identity or ownership"):
         validate_freecadcmd(
             executable,
             source="runtime",
+            expected_sha256=pinned.sha256,
             run_version=lambda _path: subprocess.CompletedProcess([], 0, "FreeCAD 1.1.1", ""),
         )
 

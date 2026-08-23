@@ -91,6 +91,11 @@ ZIP/XML structure without executing document objects and rejects encrypted,
 ambiguous, oversized, or path-unsafe archives. Scripted FreeCAD documents,
 including `App::FeaturePython`, Python proxies, and Python-object properties,
 are intentionally unsupported by the governed working-copy boundary.
+Every XML member is parsed as strict UTF-8 without DTDs, entities, or
+namespaces before the pinned official FreeCADCmd 1.1.3 process may reopen the
+archive. Embedded Python or other executable persistence is never executed.
+The executable must match its reviewed configured SHA-256 and file identity
+immediately before and after every isolated, secret-scrubbed invocation.
 
 ## Design-context gate
 

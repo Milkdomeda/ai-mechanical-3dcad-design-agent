@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import hashlib
 from contextlib import contextmanager
 from datetime import date
@@ -2726,6 +2727,9 @@ class PostgresRepository:
         source_kind: str,
         design_origin: str,
         working_path: str,
+        working_sha256: str,
+        working_size_bytes: int,
+        working_relative_path: str,
         actor_id: str,
         source_snapshot: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -2737,12 +2741,22 @@ class PostgresRepository:
             ("working_copy_id", working_copy_id),
             ("source_sha256", source_sha256),
             ("working_path", working_path),
+            ("working_sha256", working_sha256),
+            ("working_relative_path", working_relative_path),
             ("actor_id", actor_id),
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} is required")
         if type(expected_job_revision) is not int or expected_job_revision < 0:
             raise ValueError("expected_job_revision must be a non-negative integer")
+        if not re.fullmatch(r"[0-9a-f]{64}", working_sha256):
+            raise ValueError("working_sha256 must be a lowercase SHA-256")
+        if type(working_size_bytes) is not int or working_size_bytes <= 0:
+            raise ValueError("working_size_bytes must be a positive integer")
+        if not re.fullmatch(
+            r"models/working/[^/]+/[^/]+[.]FCStd", working_relative_path
+        ):
+            raise ValueError("working_relative_path must be a controlled relative FCStd path")
         if design_origin not in {"existing_model", "new_design"}:
             raise ValueError("design_origin must be existing_model or new_design")
         if design_origin == "existing_model":
@@ -2835,8 +2849,8 @@ class PostgresRepository:
             working = connection.execute(
                 "INSERT INTO design_working_copies(id,job_id,organization_id,design_group_id,family_id,"
                 "source_model_revision_id,source_snapshot_id,bound_job_revision,source_sha256,source_kind,"
-                "design_origin,working_path,created_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "design_origin,working_path,working_sha256,working_size_bytes,working_relative_path,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (
                     working_copy_id,
                     job_id,
@@ -2850,6 +2864,9 @@ class PostgresRepository:
                     source_kind,
                     design_origin,
                     working_path,
+                    working_sha256,
+                    working_size_bytes,
+                    working_relative_path,
                     actor_id,
                 ),
             ).fetchone()
@@ -2894,6 +2911,9 @@ class PostgresRepository:
         source_kind: str,
         design_origin: str,
         working_path: str,
+        working_sha256: str | None,
+        working_size_bytes: int | None,
+        working_relative_path: str,
         actor_id: str,
         source_snapshot: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -2971,6 +2991,20 @@ class PostgresRepository:
                 and working.get("source_kind") == source_kind
                 and working.get("design_origin") == design_origin
                 and working.get("working_path") == working_path
+                and (
+                    working.get("working_sha256") == working_sha256
+                    if working_sha256 is not None
+                    else isinstance(working.get("working_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", working["working_sha256"])
+                    is not None
+                )
+                and (
+                    int(working.get("working_size_bytes")) == working_size_bytes
+                    if working_size_bytes is not None
+                    else type(working.get("working_size_bytes")) is int
+                    and working["working_size_bytes"] > 0
+                )
+                and working.get("working_relative_path") == working_relative_path
                 and working.get("created_by") == actor_id
             )
             exact_job = (
@@ -4297,10 +4331,17 @@ class PostgresRepository:
             (row["id"],),
         ).fetchall()
         row["source_snapshots"] = [dict(snapshot) for snapshot in snapshots]
+        governed_working = connection.execute(
+            "SELECT id::text FROM design_working_copies WHERE job_id=%s "
+            "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id",
+            (row["id"], row["organization_id"], row["design_group_id"]),
+        ).fetchall()
+        row["working_copy_ids"] = [str(item["id"]) for item in governed_working]
         row["active_working_path"] = None
         if row.get("active_working_copy_id") is not None:
             active = connection.execute(
-                "SELECT working_path FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "SELECT working_path,working_sha256,working_size_bytes,working_relative_path "
+                "FROM design_working_copies WHERE id=%s AND job_id=%s "
                 "AND organization_id=%s AND design_group_id=%s",
                 (
                     row["active_working_copy_id"],
@@ -4311,6 +4352,9 @@ class PostgresRepository:
             ).fetchone()
             if active is not None:
                 row["active_working_path"] = active["working_path"]
+                row["active_working_sha256"] = active.get("working_sha256")
+                row["active_working_size_bytes"] = active.get("working_size_bytes")
+                row["active_working_relative_path"] = active.get("working_relative_path")
         return row
 
     @staticmethod

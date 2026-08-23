@@ -45,6 +45,9 @@ class FreeCADExtractor:
                     script_path,
                     [source, process_output],
                     timeout_seconds=timeout_seconds,
+                    expected_sha256=self.settings.freecadcmd_sha256,
+                    expected_identity=self.settings.freecadcmd_identity,
+                    controlled_directory=attempt,
                 )
             if completed.returncode != 0:
                 raise RuntimeError(

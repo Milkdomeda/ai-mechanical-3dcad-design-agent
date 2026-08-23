@@ -11,10 +11,59 @@ import pytest
 from mechanical_design_agent.secure_fs import (
     FileIdentity,
     SecureFilesystemError,
+    atomic_move_pinned_directory,
     remove_owned_directory_exact,
     set_managed_file_readonly,
     read_managed_file,
+    validate_managed_path,
 )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX atomic rename contract")
+def test_atomic_quarantine_move_never_replaces_an_existing_target(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "attempt"
+    destination = tmp_path / "quarantine"
+    source.mkdir()
+    destination.mkdir()
+    source_identity = validate_managed_path(source, allow_missing_leaf=False).identity
+    destination_identity = validate_managed_path(
+        destination, allow_missing_leaf=False
+    ).identity
+    assert source_identity is not None and destination_identity is not None
+
+    with pytest.raises(FileExistsError):
+        atomic_move_pinned_directory(
+            source, destination, expected_identity=source_identity
+        )
+
+    assert source.is_dir()
+    assert validate_managed_path(
+        destination, allow_missing_leaf=False
+    ).identity == destination_identity
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX atomic rename contract")
+def test_atomic_quarantine_move_preserves_the_receipt_pinned_identity(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "attempt"
+    destination = tmp_path / "quarantine"
+    source.mkdir()
+    (source / "receipt").write_bytes(b"owned")
+    source_identity = validate_managed_path(source, allow_missing_leaf=False).identity
+    assert source_identity is not None
+
+    atomic_move_pinned_directory(
+        source, destination, expected_identity=source_identity
+    )
+
+    assert not source.exists()
+    assert validate_managed_path(
+        destination, allow_missing_leaf=False
+    ).identity == source_identity
+    assert (destination / "receipt").read_bytes() == b"owned"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX exact cleanup contract")

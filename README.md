@@ -189,8 +189,10 @@ boundaries.
 
 This Compose path is not a production deployment. It does not define remote
 access, production secrets, backups, high availability, monitoring, or a
-managed database service. FreeCADCmd may be configured explicitly or discovered
-within its documented safe boundary.
+managed database service. Job-CAD execution requires the exact official
+FreeCADCmd 1.1.3 executable plus an explicitly reviewed
+`MECH_DESIGN_FREECADCMD_SHA256`; discovery never substitutes version text for
+that pinned executable identity and digest.
 
 ## Design and knowledge lifecycle
 

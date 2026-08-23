@@ -155,6 +155,18 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
     _get_backend().atomic_publish_directory(source, destination)
 
 
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    """Atomically move one directory only while its receipt-pinned identity matches."""
+    _get_backend().atomic_move_pinned_directory(
+        source, destination, expected_identity=expected_identity
+    )
+
+
 def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
     _get_backend().remove_owned_tree(
         path, expected_parent=expected_parent, label=label

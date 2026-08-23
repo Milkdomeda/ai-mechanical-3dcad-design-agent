@@ -102,6 +102,7 @@ class WorkspaceManifest:
     product_families: Path
     default_product_family_id: str | None
     freecad_command: str | None
+    freecad_sha256: str | None
     raw: Mapping[str, object]
     jobs_root: Path = field(init=False)
 
@@ -517,6 +518,10 @@ def read_workspace_manifest(workspace: Path) -> WorkspaceManifest:
             freecad.get("command"),
             "freecad.command",
         ),
+        freecad_sha256=_optional_string(
+            freecad.get("sha256"),
+            "freecad.sha256",
+        ),
         raw=MappingProxyType(raw),
     )
 
@@ -553,7 +558,7 @@ def _manifest_template(
             "product_families": DEFAULT_PRODUCT_FAMILIES,
         },
         "default_product_family_id": None,
-        "freecad": {"command": None},
+        "freecad": {"command": None, "sha256": None},
     }
 
 

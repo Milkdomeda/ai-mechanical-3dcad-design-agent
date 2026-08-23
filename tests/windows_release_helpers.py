@@ -43,6 +43,7 @@ REQUIRED_INSTALLED_RESOURCES = frozenset(
         "migrations/postgres/010_design_jobs.sql",
         "migrations/postgres/011_design_job_working_copies.sql",
         "migrations/postgres/012_design_job_binding_hardening.sql",
+        "migrations/postgres/013_design_job_binding_security.sql",
         "schemas/design-lesson-package-v1.schema.json",
         "validation/step_component.json",
     }

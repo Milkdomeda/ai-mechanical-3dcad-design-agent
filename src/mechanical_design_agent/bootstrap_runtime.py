@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping
@@ -64,10 +65,12 @@ from .workspace_bootstrap import (
     validate_workspace_managed_state,
 )
 from .secure_fs import (
+    FileIdentity,
     SecureFilesystemError,
     atomic_publish_new,
     ensure_managed_directory,
     remove_owned_tree,
+    read_managed_file,
     validate_managed_path,
 )
 
@@ -106,6 +109,7 @@ _RESOURCE_SETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "migrations/postgres/010_design_jobs.sql",
             "migrations/postgres/011_design_job_working_copies.sql",
             "migrations/postgres/012_design_job_binding_hardening.sql",
+            "migrations/postgres/013_design_job_binding_security.sql",
         ),
         "schemas": ("schemas/design-lesson-package-v1.schema.json",),
         "standard_part_provider_config": (
@@ -141,6 +145,7 @@ class _Inspection:
     artifact_root: Path | None = None
     artifact_source: SettingSource | None = None
     freecad_command: Path | None = None
+    freecad_candidate: FreeCADCandidate | None = None
     freecad_source: SettingSource | None = None
     secrets: Mapping[str, _SecretSetting] = MappingProxyType({})
     product_families: ProductFamilyCatalog | None = None
@@ -166,7 +171,7 @@ class ProbeResult:
 class DoctorProbes:
     postgresql: Callable[[str], ProbeResult]
     neo4j: Callable[[str, str, str], ProbeResult]
-    freecadcmd: Callable[[Path], ProbeResult]
+    freecadcmd: Callable[[Path, str, FileIdentity, Path], ProbeResult]
     artifact_root: Callable[[Path], ProbeResult]
     standard_part_catalog: Callable[[Path], ProbeResult] | None = None
 
@@ -326,16 +331,59 @@ def _default_neo4j_probe(uri: str, user: str, password: str) -> ProbeResult:
     return ProbeResult(available=True, details={"connectivity": "verified"})
 
 
-def _default_freecadcmd_probe(command: Path) -> ProbeResult:
-    result = subprocess.run(
-        [str(command), "--version"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=5,
-        check=False,
-    )
+def _default_freecadcmd_probe(
+    command: Path,
+    expected_sha256: str,
+    expected_identity: FileIdentity,
+    controlled_directory: Path,
+) -> ProbeResult:
+    environment = {
+        "HOME": str(controlled_directory),
+        "TMPDIR": str(controlled_directory),
+        "TMP": str(controlled_directory),
+        "TEMP": str(controlled_directory),
+        "USERPROFILE": str(controlled_directory),
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+    for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
+        value = os.environ.get(key)
+        if value:
+            environment[key] = value
+    try:
+        before = read_managed_file(command)
+        if (
+            before.sha256 != expected_sha256
+            or before.identity != expected_identity
+            or before.link_count != 1
+        ):
+            raise RuntimeError("reviewed executable changed")
+        try:
+            result = subprocess.run(
+                [str(command), "--version"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+                check=False,
+                cwd=controlled_directory,
+                env=environment,
+            )
+        finally:
+            after = read_managed_file(command)
+            if (
+                after.sha256 != expected_sha256
+                or after.identity != expected_identity
+                or after.link_count != 1
+            ):
+                raise RuntimeError("reviewed executable changed")
+    except Exception:
+        return ProbeResult(
+            available=False,
+            error_type="FreeCADExecutableTrustError",
+        )
     if result.returncode != 0:
         return ProbeResult(
             available=False,
@@ -416,6 +464,7 @@ class BootstrapRuntime:
         env_file: ParsedEnvFile | None,
         product_family_id: str | None,
         freecad_command: str | Path | None,
+        freecad_sha256: str | None,
         freecad_discovery: Callable[[Mapping[str, str]], FreeCADDiscoveryResult],
         freecad_validator: Callable[[Path, str], FreeCADCandidate] | None,
         bootstrap_failure: BootstrapFailure | None,
@@ -428,6 +477,7 @@ class BootstrapRuntime:
         self.env_file = env_file
         self.runtime_product_family_id = product_family_id
         self.runtime_freecad_command = freecad_command
+        self.runtime_freecad_sha256 = freecad_sha256
         self.freecad_discovery = freecad_discovery
         self.freecad_validator = freecad_validator
         self.bootstrap_failure = bootstrap_failure
@@ -443,6 +493,7 @@ class BootstrapRuntime:
         env_file: str | Path | None = None,
         product_family_id: str | None = None,
         freecad_command: str | Path | None = None,
+        freecad_sha256: str | None = None,
         freecad_discovery: Callable[
             [Mapping[str, str]], FreeCADDiscoveryResult
         ] | None = None,
@@ -464,6 +515,7 @@ class BootstrapRuntime:
             env_file=parsed,
             product_family_id=product_family_id,
             freecad_command=freecad_command,
+            freecad_sha256=freecad_sha256,
             freecad_discovery=(
                 freecad_discovery
                 if freecad_discovery is not None
@@ -800,10 +852,24 @@ class BootstrapRuntime:
             manifest_value=manifest.freecad_command,
             package_default="",
         )
+        freecad_hash_setting = resolve_setting(
+            environment_key="MECH_DESIGN_FREECADCMD_SHA256",
+            runtime_value=self.runtime_freecad_sha256,
+            environ=self.environ,
+            env_file=self.env_file,
+            manifest_value=manifest.freecad_sha256,
+            package_default="",
+        )
         freecad_command: Path | None = None
+        freecad_candidate: FreeCADCandidate | None = None
         freecad_source = freecad_setting.source
         if not freecad_setting.value.strip():
-            discovery = self.freecad_discovery(self.environ)
+            discovery_environment = dict(self.environ)
+            if freecad_hash_setting.value.strip():
+                discovery_environment["MECH_DESIGN_FREECADCMD_SHA256"] = (
+                    freecad_hash_setting.value.strip()
+                )
+            discovery = self.freecad_discovery(discovery_environment)
             if discovery.conflict:
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
@@ -828,6 +894,7 @@ class BootstrapRuntime:
                 )
             else:
                 selected = discovery.selected
+                freecad_candidate = selected
                 freecad_command = selected.path
                 freecad_source = SettingSource(
                     kind="platform_discovery",
@@ -859,54 +926,124 @@ class BootstrapRuntime:
             requested = Path(freecad_setting.value).expanduser()
             if os.name != "nt" and not requested.is_absolute():
                 requested = manifest.workspace / requested
-            try:
-                selected = (
-                    self.freecad_validator(
-                        requested,
-                        freecad_setting.source.kind,
-                    )
-                    if self.freecad_validator is not None
-                    else (
-                        validate_freecadcmd
-                        if os.name == "nt"
-                        else validate_local_freecadcmd
-                    )(
-                        requested,
-                        source=freecad_setting.source.kind,
-                        run_version=run_freecad_version,
-                    )
+            expected_digest = freecad_hash_setting.value.strip().lower()
+            trust_failure: tuple[str, str] | None = None
+            if not expected_digest:
+                trust_failure = (
+                    "FREECADCMD_SHA256_REQUIRED",
+                    "configure the reviewed official FreeCAD 1.1.3 executable SHA-256",
                 )
-            except FreeCADDiscoveryError as exc:
+            elif re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+                trust_failure = (
+                    "FREECADCMD_SHA256_INVALID",
+                    "configured FreeCADCmd SHA-256 is invalid",
+                )
+            else:
+                try:
+                    executable_pin = read_managed_file(requested)
+                except (OSError, SecureFilesystemError):
+                    trust_failure = (
+                        "FREECADCMD_EXECUTABLE_INVALID",
+                        "FreeCADCmd cannot be pinned before its version probe",
+                    )
+                else:
+                    if (
+                        executable_pin.sha256 != expected_digest
+                        or executable_pin.link_count != 1
+                    ):
+                        trust_failure = (
+                            "FREECADCMD_SHA256_MISMATCH",
+                            "FreeCADCmd does not match the reviewed executable SHA-256",
+                        )
+            if trust_failure is not None:
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
                     "blocked",
-                    exc.code,
-                    exc.message,
-                    {"source": _source_dict(freecad_setting.source)},
+                    trust_failure[0],
+                    trust_failure[1],
+                    {"source": _source_dict(freecad_hash_setting.source)},
                 )
             else:
-                freecad_command = selected.path
-                certified = selected.version in CERTIFIED_FREECADCMD_VERSIONS
+                try:
+                    selected = (
+                        self.freecad_validator(
+                            requested,
+                            freecad_setting.source.kind,
+                        )
+                        if self.freecad_validator is not None
+                        else (
+                            validate_freecadcmd
+                            if os.name == "nt"
+                            else validate_local_freecadcmd
+                        )(
+                            requested,
+                            source=freecad_setting.source.kind,
+                            run_version=run_freecad_version,
+                            expected_sha256=expected_digest,
+                        )
+                    )
+                except FreeCADDiscoveryError as exc:
+                    components["freecadcmd"] = _diagnostic(
+                        "freecadcmd",
+                        "blocked",
+                        exc.code,
+                        exc.message,
+                        {"source": _source_dict(freecad_setting.source)},
+                    )
+                else:
+                    freecad_candidate = selected
+                    freecad_command = selected.path
+                    certified = selected.version in CERTIFIED_FREECADCMD_VERSIONS
+                    components["freecadcmd"] = _diagnostic(
+                        "freecadcmd",
+                        "ok" if certified else "blocked",
+                        (
+                            "FREECADCMD_CONFIGURED"
+                            if certified
+                            else "FREECADCMD_VERSION_UNVALIDATED"
+                        ),
+                        (
+                            f"FreeCADCmd {selected.version} path is configured"
+                            if certified
+                            else (
+                                f"FreeCADCmd {selected.version} is not "
+                                "release-validated"
+                            )
+                        ),
+                        {
+                            "source": _source_dict(freecad_source),
+                            "version": selected.version,
+                        },
+                    )
+
+        if (
+            freecad_candidate is not None
+            and freecad_candidate.version in CERTIFIED_FREECADCMD_VERSIONS
+        ):
+            expected_digest = freecad_hash_setting.value.strip().lower()
+            if not expected_digest:
                 components["freecadcmd"] = _diagnostic(
                     "freecadcmd",
-                    "ok" if certified else "blocked",
-                    (
-                        "FREECADCMD_CONFIGURED"
-                        if certified
-                        else "FREECADCMD_VERSION_UNVALIDATED"
-                    ),
-                    (
-                        f"FreeCADCmd {selected.version} path is configured"
-                        if certified
-                        else (
-                            f"FreeCADCmd {selected.version} is not "
-                            "release-validated"
-                        )
-                    ),
-                    {
-                        "source": _source_dict(freecad_source),
-                        "version": selected.version,
-                    },
+                    "blocked",
+                    "FREECADCMD_SHA256_REQUIRED",
+                    "configure the reviewed official FreeCAD 1.1.3 executable SHA-256",
+                    {"source": _source_dict(freecad_hash_setting.source)},
+                )
+            elif re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+                components["freecadcmd"] = _diagnostic(
+                    "freecadcmd",
+                    "blocked",
+                    "FREECADCMD_SHA256_INVALID",
+                    "configured FreeCADCmd SHA-256 is invalid",
+                    {"source": _source_dict(freecad_hash_setting.source)},
+                )
+            elif freecad_candidate.sha256 != expected_digest:
+                components["freecadcmd"] = _diagnostic(
+                    "freecadcmd",
+                    "blocked",
+                    "FREECADCMD_SHA256_MISMATCH",
+                    "FreeCADCmd does not match the reviewed executable SHA-256",
+                    {"source": _source_dict(freecad_hash_setting.source)},
                 )
 
         return _Inspection(
@@ -917,6 +1054,7 @@ class BootstrapRuntime:
             artifact_root=artifact_root,
             artifact_source=artifact_setting.source,
             freecad_command=freecad_command,
+            freecad_candidate=freecad_candidate,
             freecad_source=freecad_source,
             secrets=secrets,
             product_families=product_families,
@@ -1017,8 +1155,16 @@ class BootstrapRuntime:
             "freecadcmd" in participating
             and freecad.status == "ok"
             and inspection.freecad_command is not None
+            and inspection.freecad_candidate is not None
+            and inspection.artifact_root is not None
         ):
-            result = _run_probe(self.probes.freecadcmd, inspection.freecad_command)
+            result = _run_probe(
+                self.probes.freecadcmd,
+                inspection.freecad_command,
+                inspection.freecad_candidate.sha256,
+                inspection.freecad_candidate.identity,
+                inspection.artifact_root,
+            )
             components["freecadcmd"] = _diagnostic(
                 "freecadcmd",
                 "ok" if result.available else "warning",
@@ -1364,6 +1510,7 @@ class BootstrapRuntime:
             env_file=self.env_file,
             product_family_id=product_family_id,
             freecad_command=self.runtime_freecad_command,
+            freecad_sha256=self.runtime_freecad_sha256,
             freecad_discovery=self.freecad_discovery,
             freecad_validator=self.freecad_validator,
             bootstrap_failure=self.bootstrap_failure,
@@ -1493,6 +1640,21 @@ class BootstrapRuntime:
             actor_id=inspection.actor.value,
             artifact_root=inspection.artifact_root,
             family_config_path=inspection.selected_product_family.config.path,
+            freecadcmd_sha256=(
+                inspection.freecad_candidate.sha256
+                if inspection.freecad_candidate is not None
+                else ""
+            ),
+            freecadcmd_identity=(
+                inspection.freecad_candidate.identity
+                if inspection.freecad_candidate is not None
+                else None
+            ),
+            freecadcmd_version=(
+                inspection.freecad_candidate.version
+                if inspection.freecad_candidate is not None
+                else ""
+            ),
         )
 
     def job_operational_settings(self) -> JobSettings:
@@ -1534,8 +1696,9 @@ class BootstrapRuntime:
         )
         job = self.job_operational_settings()
         inspection = self._inspect()
-        if inspection.freecad_command is None:
+        if inspection.freecad_command is None or inspection.freecad_candidate is None:
             raise RuntimeError("configured FreeCADCmd is required for Job CAD")
+        candidate = inspection.freecad_candidate
         return JobCadSettings(
             workspace=job.workspace,
             package_root=job.package_root,
@@ -1544,6 +1707,9 @@ class BootstrapRuntime:
             organization_id=job.organization_id,
             design_group_id=job.design_group_id,
             freecadcmd=inspection.freecad_command,
+            freecadcmd_sha256=candidate.sha256,
+            freecadcmd_identity=candidate.identity,
+            freecadcmd_version=candidate.version,
         )
 
     def config_show(self) -> dict[str, object]:

@@ -942,6 +942,7 @@ def _workspace(tmp_path: Path) -> WorkspaceManifest:
         product_families=workspace / "config/product_families",
         default_product_family_id=None,
         freecad_command=None,
+        freecad_sha256=None,
         raw={"paths": {"jobs_root": "jobs"}},
     )
 
@@ -1423,6 +1424,11 @@ def test_authoritative_working_copy_and_snapshot_project_into_get_doctor_and_rep
     authoritative = repository.jobs[str(JOB_ID)]
     authoritative["active_working_copy_id"] = working_copy_id
     authoritative["active_working_path"] = str(working_path.resolve())
+    authoritative["active_working_sha256"] = hashlib.sha256(
+        working_path.read_bytes()
+    ).hexdigest()
+    authoritative["active_working_size_bytes"] = working_path.stat().st_size
+    authoritative["active_working_relative_path"] = working_path.relative_to(root).as_posix()
     authoritative["source_snapshots"] = [
         {
             "snapshot_id": snapshot_id,
@@ -1537,6 +1543,11 @@ def test_repair_rejects_active_working_copy_changed_after_doctor_receipt(
     authoritative = repository.jobs[str(JOB_ID)]
     authoritative["active_working_copy_id"] = working_copy_id
     authoritative["active_working_path"] = str(working_path.resolve())
+    authoritative["active_working_sha256"] = hashlib.sha256(
+        working_path.read_bytes()
+    ).hexdigest()
+    authoritative["active_working_size_bytes"] = working_path.stat().st_size
+    authoritative["active_working_relative_path"] = working_path.relative_to(root).as_posix()
     authoritative["revision"] = created.revision + 1
     with locked_job_root(job_root=root) as locked:
         projected = manager.publish_authoritative_manifest_locked(
@@ -1709,12 +1720,126 @@ def test_repair_result_has_an_exact_recursive_v1_schema(tmp_path: Path) -> None:
     assert set(payload) == {"schema_version", "job", "audit"}
     assert payload["schema_version"] == "MechanicalDesignJobRepair/v1"
     assert set(payload["audit"]) == {
-        "action", "reason", "actor_id", "authoritative_revision"
+        "action", "reason", "actor_id", "authoritative_revision",
+        "quarantined_attempts",
     }
+    assert payload["audit"]["quarantined_attempts"] == ()
     parsed = DesignJobRepairResult.from_dict(payload)
     assert parsed.manifest.as_dict() == payload["job"]
     with pytest.raises(JobFailure):
         DesignJobRepairResult.from_dict({**payload, "repair_audit": {}})
+
+
+def test_doctor_repair_quarantines_exact_receipt_attempt_and_frees_retry_path(
+    tmp_path: Path,
+) -> None:
+    manager, _repository = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    attempt_id = "60000000-0000-4000-8000-000000000001"
+    attempt = root / "models" / "working" / attempt_id
+    attempt.mkdir()
+    artifact = attempt / "working.FCStd"
+    artifact.write_bytes(b"preserved governed attempt")
+    pinned = jobs_module.read_managed_file(artifact)
+    receipt = {
+        "schema_version": "MechanicalDesignJobBindingAttempt/v2",
+        "job_id": str(JOB_ID),
+        "expected_job_revision": manifest.revision,
+        "artifact_kind": "working_copy",
+        "artifact_id": attempt_id,
+        "source_sha256": None,
+        "artifacts": [
+            {
+                "filename": artifact.name,
+                "sha256": pinned.sha256,
+                "size_bytes": pinned.size_bytes,
+                "identity": {
+                    "volume": pinned.identity.volume,
+                    "file_index": pinned.identity.file_index,
+                },
+            }
+        ],
+    }
+    (attempt / ".binding-attempt.json").write_text(
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    doctor = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    assert doctor["status"] == "blocked"
+    assert doctor["verified_attempts"][0]["artifact_id"] == attempt_id
+
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+        expected_revision=manifest.revision,
+        doctor_receipt_hash=str(doctor["receipt_sha256"]),
+        reason="quarantine exact commit-unknown attempt",
+    )
+
+    assert not attempt.exists()
+    quarantine_relative = repaired.audit["quarantined_attempts"][0][
+        "quarantine_relative_path"
+    ]
+    quarantined = root / str(quarantine_relative)
+    assert (quarantined / "working.FCStd").read_bytes() == b"preserved governed attempt"
+    attempt.mkdir()
+    assert attempt.is_dir(), "the deterministic retry path is free after quarantine"
+
+
+def test_repair_leaves_mismatched_attempt_bytes_untouched(tmp_path: Path) -> None:
+    manager, _repository = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / manifest.directory_name
+    attempt_id = "60000000-0000-4000-8000-000000000002"
+    attempt = root / "models" / "working" / attempt_id
+    attempt.mkdir()
+    (attempt / "working.FCStd").write_bytes(b"unowned or changed bytes")
+    (attempt / ".binding-attempt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "MechanicalDesignJobBindingAttempt/v2",
+                "job_id": str(JOB_ID),
+                "expected_job_revision": manifest.revision,
+                "artifact_kind": "working_copy",
+                "artifact_id": attempt_id,
+                "source_sha256": None,
+                "artifacts": [],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    assert report["verified_attempts"] == []
+    assert any(
+        issue["code"] == "JOB_ATTEMPT_RECEIPT_INVALID"
+        for issue in report["issues"]
+    )
+
+    repaired = manager.repair(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+        expected_revision=manifest.revision,
+        doctor_receipt_hash=str(report["receipt_sha256"]),
+        reason="do not touch mismatched inventory",
+    )
+    assert repaired.audit["quarantined_attempts"] == ()
+    assert (attempt / "working.FCStd").read_bytes() == b"unowned or changed bytes"
 
 
 def test_get_doctor_and_repair_reject_forged_operational_bindings(

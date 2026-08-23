@@ -166,10 +166,45 @@ def test_design_job_binding_hardening_migration_binds_exact_snapshot_and_revisio
     assert "design_origin = 'existing_model' AND source_snapshot_id IS NOT NULL" in normalized
     assert "design_origin = 'new_design' AND source_snapshot_id IS NULL" in normalized
     assert "reject_governed_working_copy_job_rebinding" in sql
-    assert "mechanical_design.allow_legacy_working_copy_binding" not in sql
-    assert "legacy working-copy Job binding is immutable" in sql
+    assert "mechanical_design.allow_legacy_working_copy_binding" in sql
     assert "OLD.job_id IS DISTINCT FROM NEW.job_id" in normalized
     assert "conrelid = 'public.design_working_copies'::regclass" in normalized
+    assert hashlib.sha256(sql.encode("utf-8")).hexdigest() == (
+        "be0c9bf1f13568c9f30ae1ef49d7813e59660e4189c736a98aa83581a0d02bb0"
+    )
+
+
+def test_design_job_binding_security_migration_persists_working_evidence_and_immutability():
+    sql = _migration_text("013_design_job_binding_security.sql")
+    normalized = " ".join(sql.split())
+
+    for column in (
+        "working_sha256 char(64)",
+        "working_size_bytes bigint",
+        "working_relative_path text",
+    ):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in normalized
+    assert "mechanical_design.allow_legacy_working_copy_binding" not in sql
+    assert "legacy working-copy Job binding is immutable" in sql
+    for field in (
+        "id",
+        "organization_id",
+        "design_group_id",
+        "family_id",
+        "source_kind",
+        "design_origin",
+        "working_path",
+        "created_by",
+        "working_sha256",
+        "working_size_bytes",
+        "working_relative_path",
+        "created_at",
+        "source_snapshot_id",
+        "bound_job_revision",
+    ):
+        assert f"OLD.{field} IS DISTINCT FROM NEW.{field}" in normalized
+    assert "VALIDATE CONSTRAINT design_working_copies_job_scope_fk_v2" in normalized
+    assert "VALIDATE CONSTRAINT design_working_copies_model_scope_fk_v2" in normalized
     for constraint in (
         "design_working_copies_job_scope_fk_v2",
         "design_working_copies_model_scope_fk_v2",
@@ -178,13 +213,16 @@ def test_design_job_binding_hardening_migration_binds_exact_snapshot_and_revisio
         "design_jobs_active_working_copy_scope_fk_v2",
     ):
         assert constraint in sql
+    assert hashlib.sha256(sql.encode("utf-8")).hexdigest() == (
+        "13ec0b965d0ec7f8c372edebc1c54194a9523d7fb42a4c2ade602f5289e33eba"
+    )
 
 
-def test_design_job_binding_hardening_migration_has_the_task6_fix_digest():
+def test_design_job_binding_hardening_migration_has_the_committed_task6_digest():
     migration = _migration_bytes("012_design_job_binding_hardening.sql")
 
     assert hashlib.sha256(migration).hexdigest() == (
-        "9ad7a78e538a651240d84dbc018fc02c00cadecb04e63b829522a6b668407c2d"
+        "be0c9bf1f13568c9f30ae1ef49d7813e59660e4189c736a98aa83581a0d02bb0"
     )
 
 
@@ -356,6 +394,7 @@ class MigrationTests(unittest.TestCase):
                     "010_design_jobs.sql",
                     "011_design_job_working_copies.sql",
                     "012_design_job_binding_hardening.sql",
+                    "013_design_job_binding_security.sql",
                 ],
             )
 
@@ -612,9 +651,9 @@ class MigrationTests(unittest.TestCase):
 class LiveMigrationConcurrencyTests(unittest.TestCase):
     @unittest.skipUnless(
         os.environ.get("MECH_DESIGN_DATABASE_URL"),
-        "MECH_DESIGN_DATABASE_URL is not configured; live 010-012 upgrade skipped",
+        "MECH_DESIGN_DATABASE_URL is not configured; live 010-013 upgrade skipped",
     )
-    def test_upgrade_010_legacy_rows_through_011_012_preserves_and_hardens_bindings(self) -> None:
+    def test_upgrade_010_legacy_rows_through_011_012_013_preserves_and_hardens_bindings(self) -> None:
         import psycopg
         from psycopg import sql
         from psycopg.conninfo import conninfo_to_dict, make_conninfo
@@ -631,14 +670,14 @@ class LiveMigrationConcurrencyTests(unittest.TestCase):
             repository = PostgresRepository(database_dsn)
             with tempfile.TemporaryDirectory() as temporary:
                 first = Path(temporary) / "through-010"
-                later = Path(temporary) / "011-012"
+                later = Path(temporary) / "011-013"
                 first.mkdir()
                 later.mkdir()
                 with postgres_migrations_directory() as migrations:
                     paths = discover_postgres_migrations(migrations)
                     for path in paths[:10]:
                         shutil.copy2(path, first / path.name)
-                    for path in paths[10:12]:
+                    for path in paths[10:13]:
                         shutil.copy2(path, later / path.name)
                 repository.apply_migrations(first)
 
@@ -737,6 +776,9 @@ class LiveMigrationConcurrencyTests(unittest.TestCase):
                     source_kind="new_design_seed",
                     design_origin="new_design",
                     working_path=f"models/working/{working_id}/working.FCStd",
+                    working_sha256="d" * 64,
+                    working_size_bytes=101,
+                    working_relative_path=f"models/working/{working_id}/working.FCStd",
                     actor_id="upgrade-owner",
                     source_snapshot=None,
                 )
@@ -751,7 +793,7 @@ class LiveMigrationConcurrencyTests(unittest.TestCase):
                             "UPDATE design_working_copies SET job_id=%s WHERE id=%s",
                             (job_ids[1], working_id),
                         )
-                self.assertIn("binding are immutable", str(rebound.exception))
+                self.assertIn("provenance is immutable", str(rebound.exception))
         finally:
             with psycopg.connect(admin_dsn, autocommit=True) as connection:
                 connection.execute(

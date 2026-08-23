@@ -1640,6 +1640,7 @@ class _JobRepairForService:
                 "reason": self.reason,
                 "actor_id": "configured-actor",
                 "authoritative_revision": 4,
+                "quarantined_attempts": [],
             },
         }
 

@@ -189,6 +189,9 @@ class DesignLifecycleTests(unittest.TestCase):
                 source_kind="new_design_seed",
                 design_origin="new_design",
                 working_path="/managed/models/working/model.FCStd",
+                working_sha256="b" * 64,
+                working_size_bytes=1,
+                working_relative_path="models/working/test/working.FCStd",
                 actor_id="owner",
                 source_snapshot=None,
             )
@@ -567,6 +570,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                         source_kind="new_design_seed",
                         design_origin="new_design",
                         working_path=f"models/working/{working_ids[index]}/working.FCStd",
+                        working_sha256=("a" if index == 0 else "b") * 64,
+                        working_size_bytes=1,
+                        working_relative_path=f"models/working/{working_ids[index]}/working.FCStd",
                         actor_id=actor_id,
                         source_snapshot=None,
                     )
@@ -629,6 +635,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 source_kind="new_design_seed",
                 design_origin="new_design",
                 working_path=f"models/working/{proven_absent_id}/working.FCStd",
+                working_sha256=None,
+                working_size_bytes=None,
+                working_relative_path=f"models/working/{proven_absent_id}/working.FCStd",
                 actor_id=actor_id,
                 source_snapshot=None,
             )
@@ -645,6 +654,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 source_kind="new_design_seed",
                 design_origin="new_design",
                 working_path=f"models/working/{working_ids[2]}/working.FCStd",
+                working_sha256="c" * 64,
+                working_size_bytes=1,
+                working_relative_path=f"models/working/{working_ids[2]}/working.FCStd",
                 actor_id=actor_id,
                 source_snapshot=None,
             )
@@ -663,6 +675,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 source_kind="new_design_seed",
                 design_origin="new_design",
                 working_path=f"models/working/{working_ids[2]}/working.FCStd",
+                working_sha256="c" * 64,
+                working_size_bytes=1,
+                working_relative_path=f"models/working/{working_ids[2]}/working.FCStd",
                 actor_id=actor_id,
                 source_snapshot=None,
             )
@@ -683,6 +698,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                 source_kind="new_design_seed",
                 design_origin="new_design",
                 working_path="models/working/absent/working.FCStd",
+                working_sha256="e" * 64,
+                working_size_bytes=1,
+                working_relative_path="models/working/absent/working.FCStd",
                 actor_id=actor_id,
                 source_snapshot=None,
             )
@@ -700,6 +718,9 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
                     source_kind="new_design_seed",
                     design_origin="new_design",
                     working_path=f"models/working/{working_ids[3]}/working.FCStd",
+                    working_sha256="d" * 64,
+                    working_size_bytes=1,
+                    working_relative_path=f"models/working/{working_ids[3]}/working.FCStd",
                     actor_id=actor_id,
                     source_snapshot=None,
                 )

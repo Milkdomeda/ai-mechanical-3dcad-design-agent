@@ -27,9 +27,12 @@ reparse rejection are exercised on distinct volumes. Network, mapped, and
 reparse-point roots are rejected. Public CI cannot substitute for this
 dedicated protected host procedure.
 
-FreeCADCmd is selected by explicit configuration or bounded local discovery.
-The installed package does not search arbitrary drives or accept ambiguous
-candidates.
+FreeCADCmd is selected by explicit configuration or bounded local discovery,
+and Job-CAD remains blocked until the selected official 1.1.3 x64 executable
+matches the reviewed `MECH_DESIGN_FREECADCMD_SHA256`. The installed package
+does not search arbitrary drives, accept ambiguous candidates, or trust version
+output without the pinned file identity and digest. Native signature/digest
+acceptance on the protected Windows host remains mandatory.
 
 ## External capabilities
 

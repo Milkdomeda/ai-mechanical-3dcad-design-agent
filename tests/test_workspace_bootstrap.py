@@ -709,7 +709,7 @@ def test_init_creates_exact_portable_workspace_tree(tmp_path: Path) -> None:
     assert manifest["identity"]["actor_id"].startswith("actor-")
     assert uuid.UUID(manifest["identity"]["actor_id"].removeprefix("actor-")).version == 4
     assert manifest["default_product_family_id"] is None
-    assert manifest["freecad"] == {"command": None}
+    assert manifest["freecad"] == {"command": None, "sha256": None}
     assert manifest["paths"] == {
         "artifact_root": "data/artifacts",
         "jobs_root": "jobs",

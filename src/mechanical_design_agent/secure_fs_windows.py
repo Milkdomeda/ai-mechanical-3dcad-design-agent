@@ -629,6 +629,37 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
         _move(staged, target, replace=False, api=api)
 
 
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    api = load_win32_api()
+    source_lexical = _absolute(source)
+    target_lexical = _absolute(destination)
+    with _pinned_path(
+        source_lexical.parent, allow_missing_leaf=False
+    ) as source_parent, _pinned_path(
+        target_lexical.parent, allow_missing_leaf=False
+    ) as target_parent:
+        staged = source_parent.path / source_lexical.name
+        target = target_parent.path / target_lexical.name
+        if target.exists():
+            raise FileExistsError(target)
+        if _identity(staged, api, directory=True) != expected_identity:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "pinned directory changed before quarantine",
+            )
+        _move(staged, target, replace=False, api=api)
+        if _identity(target, api, directory=True) != expected_identity:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "quarantined directory identity changed",
+            )
+
+
 def _clear_readonly(path: Path, api: Win32Api) -> None:
     attributes = int(api.win32file.GetFileAttributes(str(path)))
     readonly = getattr(api.win32con, "FILE_ATTRIBUTE_READONLY", 0x1)
