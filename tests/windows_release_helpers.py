@@ -40,6 +40,7 @@ REQUIRED_INSTALLED_RESOURCES = frozenset(
         "migrations/postgres/007_review_immutable_snapshots.sql",
         "migrations/postgres/008_drop_legacy_snapshot_constraints.sql",
         "migrations/postgres/009_design_lifecycle_closure.sql",
+        "migrations/postgres/010_design_jobs.sql",
         "schemas/design-lesson-package-v1.schema.json",
         "validation/step_component.json",
     }

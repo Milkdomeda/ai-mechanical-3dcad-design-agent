@@ -3619,6 +3619,224 @@ class PostgresRepository:
             if updated is None:
                 raise RuntimeError("outbox event is not leased by this worker")
 
+    def create_design_job(
+        self,
+        *,
+        job_id: str,
+        workspace_id: str,
+        display_id: str,
+        job_type: str,
+        title: str,
+        slug: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        idempotency_token: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        initial_phases = {
+            "mechanical_design": "requirements",
+            "product_family_onboarding": "intake",
+        }
+        if job_type not in initial_phases:
+            raise ValueError("invalid design job type")
+        for field, value in (
+            ("job_id", job_id),
+            ("workspace_id", workspace_id),
+            ("display_id", display_id),
+            ("title", title),
+            ("slug", slug),
+            ("organization_id", organization_id),
+            ("design_group_id", design_group_id),
+            ("idempotency_token", idempotency_token),
+            ("actor_id", actor_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} is required")
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "INSERT INTO design_jobs(id,workspace_id,display_id,job_type,title,slug,status,phase,"
+                "organization_id,design_group_id,family_id,idempotency_token,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT(workspace_id,idempotency_token) DO NOTHING RETURNING *",
+                (
+                    job_id,
+                    workspace_id,
+                    display_id,
+                    job_type,
+                    title.strip(),
+                    slug.strip(),
+                    "active",
+                    initial_phases[job_type],
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    idempotency_token,
+                    actor_id,
+                ),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s",
+                    (workspace_id, idempotency_token),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("design job idempotency lookup failed")
+            else:
+                self._record_design_job_event(
+                    connection,
+                    job=dict(row),
+                    event_type="created",
+                    actor_id=actor_id,
+                )
+        return dict(row)
+
+    def record_design_job_directory(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        directory_name: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        if not isinstance(directory_name, str) or not directory_name.strip():
+            raise ValueError("directory_name is required")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError("actor_id is required")
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "UPDATE design_jobs SET directory_name=%s,provisioning_state='ready',"
+                "revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s AND provisioning_state='provisioning' "
+                "AND directory_name IS NULL RETURNING *",
+                (directory_name.strip(), job_id, expected_revision),
+            ).fetchone()
+            if row is None:
+                raise ValueError("stale design job revision or directory is already recorded")
+            self._record_design_job_event(
+                connection,
+                job=dict(row),
+                event_type="directory_recorded",
+                actor_id=actor_id,
+            )
+        return dict(row)
+
+    def transition_design_job(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        status: str,
+        phase: str,
+        actor_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        if status not in {"active", "blocked", "completed", "cancelled", "archived"}:
+            raise ValueError("invalid design job status")
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("phase is required")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError("actor_id is required")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("design job transition reason is required")
+        reason_text = reason.strip()
+        blocked_reason = (
+            json.dumps({"reason": reason_text}, ensure_ascii=False)
+            if status == "blocked"
+            else None
+        )
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "UPDATE design_jobs SET status=%s,phase=%s,blocked_reason=%s::jsonb,"
+                "revision=revision+1,updated_at=now() WHERE id=%s AND revision=%s "
+                "AND provisioning_state='ready' RETURNING *",
+                (status, phase.strip(), blocked_reason, job_id, expected_revision),
+            ).fetchone()
+            if row is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(row),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason=reason_text,
+            )
+        return dict(row)
+
+    def get_design_job(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown design_job_id: {job_id}")
+        return dict(row)
+
+    def list_design_jobs(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        status: str | None,
+        job_type: str | None,
+        family_id: str | None,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_jobs WHERE organization_id=%s AND design_group_id=%s "
+                "AND (%s::text IS NULL OR status=%s) "
+                "AND (%s::text IS NULL OR job_type=%s) "
+                "AND (%s::text IS NULL OR family_id=%s) "
+                "ORDER BY updated_at DESC,id",
+                (
+                    organization_id,
+                    design_group_id,
+                    status,
+                    status,
+                    job_type,
+                    job_type,
+                    family_id,
+                    family_id,
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _record_design_job_event(
+        connection: Any,
+        *,
+        job: dict[str, Any],
+        event_type: str,
+        actor_id: str,
+        reason: str | None = None,
+    ) -> None:
+        blocked_reason = job.get("blocked_reason")
+        connection.execute(
+            "INSERT INTO design_job_events(job_id,revision,event_type,status,phase,provisioning_state,"
+            "directory_name,blocked_reason,actor_id,reason) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)",
+            (
+                job["id"],
+                job["revision"],
+                event_type,
+                job["status"],
+                job["phase"],
+                job["provisioning_state"],
+                job.get("directory_name"),
+                (
+                    json.dumps(blocked_reason, ensure_ascii=False)
+                    if blocked_reason is not None
+                    else None
+                ),
+                actor_id,
+                reason,
+            ),
+        )
+
     @staticmethod
     def _enqueue(connection: Any, aggregate_type: str, aggregate_id: str, event_type: str, payload: dict[str, Any]) -> None:
         connection.execute(

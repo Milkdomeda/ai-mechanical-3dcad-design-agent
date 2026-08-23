@@ -32,6 +32,7 @@ EXPECTED_MIGRATIONS = [
     "007_review_immutable_snapshots.sql",
     "008_drop_legacy_snapshot_constraints.sql",
     "009_design_lifecycle_closure.sql",
+    "010_design_jobs.sql",
 ]
 EXPECTED_NEO4J_MIGRATIONS = [
     "001_constraints.cypher",

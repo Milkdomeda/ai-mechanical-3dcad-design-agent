@@ -77,6 +77,29 @@ def test_snapshot_compatibility_migration_drops_round2_constraints():
     assert "DROP CONSTRAINT IF EXISTS design_lesson_reviews_approved_artifact_check" in sql
 
 
+def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
+    sql = _migration_text("010_design_jobs.sql")
+    normalized = " ".join(sql.split())
+
+    assert "CREATE TABLE IF NOT EXISTS design_jobs" in sql
+    assert "id uuid PRIMARY KEY" in sql
+    assert "workspace_id uuid NOT NULL" in sql
+    assert "UNIQUE(workspace_id,idempotency_token)" in sql
+    assert "revision integer NOT NULL DEFAULT 0" in sql
+    assert "job_type IN ('mechanical_design','product_family_onboarding')" in sql
+    assert "status IN ('active','blocked','completed','cancelled','archived')" in sql
+    assert "phase IN ( 'requirements','design','validation','delivery','lesson_capture','completed' )" in normalized
+    assert "phase IN ( 'intake','analysis','knowledge_review','database_publication','completed' )" in normalized
+    assert "provisioning_state text NOT NULL DEFAULT 'provisioning'" in sql
+    assert "provisioning_state IN ('provisioning','ready')" in sql
+    assert "directory_name IS NOT NULL OR provisioning_state = 'provisioning'" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_jobs_scope_idx" in sql
+    assert "CREATE TABLE IF NOT EXISTS design_job_events" in sql
+    assert "job_id uuid NOT NULL REFERENCES design_jobs(id)" in sql
+    assert "UNIQUE(job_id,revision)" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_job_events_job_idx" in sql
+
+
 def test_database_with_round2_007_digest_skips_it_and_applies_008():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -223,6 +246,7 @@ class MigrationTests(unittest.TestCase):
                     "007_review_immutable_snapshots.sql",
                     "008_drop_legacy_snapshot_constraints.sql",
                     "009_design_lifecycle_closure.sql",
+                    "010_design_jobs.sql",
                 ],
             )
 
