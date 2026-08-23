@@ -32,6 +32,7 @@ from .workspace_bootstrap import WorkspaceManifest
 
 JOB_MANIFEST_SCHEMA = "MechanicalDesignJob/v1"
 JOB_DOCTOR_SCHEMA = "MechanicalDesignJobDoctor/v1"
+JOB_REPAIR_SCHEMA = "MechanicalDesignJobRepair/v1"
 PROVISIONING_IDENTITY_SCHEMA = "MechanicalDesignJobProvisioning/v1"
 
 _DISPLAY_ID = re.compile(r"JOB-(\d{8})-(\d{3,})\Z")
@@ -480,14 +481,50 @@ class DesignJobRepairResult:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": "MechanicalDesignJobRepair/v1",
+            "schema_version": JOB_REPAIR_SCHEMA,
             "job": self.manifest.as_dict(),
             "audit": dict(self.audit),
         }
 
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, object]) -> "DesignJobRepairResult":
+        if not isinstance(raw, Mapping) or set(raw) != {"schema_version", "job", "audit"}:
+            raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair result fields do not match the v1 schema")
+        if raw.get("schema_version") != JOB_REPAIR_SCHEMA:
+            raise JobFailure("JOB_REPAIR_RESULT_INVALID", "unsupported repair result schema_version")
+        job = raw.get("job")
+        audit = raw.get("audit")
+        if not isinstance(audit, Mapping) or set(audit) != {
+            "action", "reason", "actor_id", "authoritative_revision"
+        }:
+            raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair audit fields do not match the v1 schema")
+        manifest = DesignJobManifest.from_dict(job)  # type: ignore[arg-type]
+        if audit.get("action") != "repair":
+            raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair audit action is invalid")
+        reason = audit.get("reason")
+        actor_id = audit.get("actor_id")
+        revision = audit.get("authoritative_revision")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(actor_id, str) or not actor_id.strip() or type(revision) is not int or revision != manifest.revision:
+            raise JobFailure("JOB_REPAIR_RESULT_INVALID", "repair audit is invalid")
+        return cls(manifest=manifest, audit=MappingProxyType(dict(audit)))
+
     def __getattr__(self, name: str) -> object:
         # Retain the manifest-shaped manager result for existing internal callers.
         return getattr(self.manifest, name)
+
+
+@dataclass(frozen=True)
+class _LockedDoctorEvidence:
+    """Pinned filesystem facts used to calculate one doctor receipt."""
+
+    report: Mapping[str, object]
+    layout_entries: Mapping[str, tuple[object, ...] | None]
+    root_entries: tuple[object, ...]
+    manifest_bytes: bytes | None
+    manifest_sha256: str | None
+    manifest_raw: Mapping[str, object] | None
+    manifest: DesignJobManifest | None
+    verified_snapshots: tuple[Mapping[str, object], ...]
 
 
 class _JobRepository(Protocol):
@@ -1431,24 +1468,109 @@ class DesignJobManager:
         report["receipt_sha256"] = hashlib.sha256(receipt_payload).hexdigest()
         return report
 
-    def _directory_contract_issues(self, root: Path) -> list[dict[str, str]]:
+    @staticmethod
+    def _public_doctor_report(evidence: _LockedDoctorEvidence) -> dict[str, object]:
+        """Copy immutable internal receipt facts into the public doctor shape."""
+        report = dict(evidence.report)
+        report["issues"] = [dict(issue) for issue in evidence.report["issues"]]  # type: ignore[index]
+        report["verified_snapshots"] = [
+            dict(snapshot) for snapshot in evidence.verified_snapshots
+        ]
+        return report
+
+    def _locked_doctor_evidence(
+        self, *, locked: Path, row: Mapping[str, object]
+    ) -> _LockedDoctorEvidence:
+        """Read all receipt facts once from pinned objects while holding the lock."""
         issues: list[dict[str, str]] = []
+        layout_entries: dict[str, tuple[object, ...] | None] = {}
         for relative in _DIRECTORY_CONTRACT:
             try:
                 candidate = managed_job_path(
-                    job_root=root,
+                    job_root=locked,
                     relative_path=relative,
                     allow_missing_leaf=False,
                 )
-                list_managed_directory(candidate)
+                layout_entries[relative] = tuple(list_managed_directory(candidate))
             except (JobFailure, SecureFilesystemError) as exc:
+                layout_entries[relative] = None
                 issues.append(
                     self._issue(
                         exc.code,
                         f"required managed directory is missing or unsafe: {relative}",
                     )
                 )
-        return issues
+        try:
+            root_entries = tuple(list_managed_directory(locked))
+        except SecureFilesystemError as exc:
+            raise JobFailure(
+                "JOB_REPAIR_UNSAFE", "Job root cannot be enumerated safely"
+            ) from exc
+
+        manifest_bytes: bytes | None = None
+        manifest_sha256: str | None = None
+        manifest_raw: Mapping[str, object] | None = None
+        manifest: DesignJobManifest | None = None
+        try:
+            raw, manifest_read = _read_json_with_evidence(locked / "job.json")
+            manifest_bytes = manifest_read.content
+            manifest_sha256 = manifest_read.sha256
+            manifest_raw = MappingProxyType(dict(raw))
+            manifest = DesignJobManifest.from_dict(manifest_raw)
+            expected = self._manifest_from_row(row)
+            actual_payload = manifest.as_dict()
+            expected_payload = expected.as_dict()
+            if manifest.active_working_copy_id is not None or manifest.source_snapshots:
+                issues.append(
+                    self._issue(
+                        "JOB_OPERATIONAL_BINDING_FORGED",
+                        "core Job manifest contains disk-only operational bindings",
+                    )
+                )
+            if manifest.revision != expected.revision:
+                issues.append(
+                    self._issue(
+                        "JOB_REVISION_MISMATCH",
+                        "job.json revision disagrees with PostgreSQL",
+                    )
+                )
+            if any(
+                field != "revision" and actual_payload[field] != expected_payload[field]
+                for field in _AUTHORITATIVE_MANIFEST_FIELDS
+            ):
+                issues.append(
+                    self._issue(
+                        "JOB_MANIFEST_MISMATCH",
+                        "job.json authoritative fields disagree with PostgreSQL",
+                    )
+                )
+        except JobFailure as exc:
+            issues.append(self._issue(exc.code, exc.message))
+
+        verified_snapshots: tuple[Mapping[str, object], ...] = ()
+        public_report = self._doctor_report(
+            row=row,
+            issues=issues,
+            manifest_sha256=manifest_sha256,
+            verified_snapshots=verified_snapshots,
+        )
+        immutable_report = MappingProxyType(
+            {
+                **public_report,
+                "issues": tuple(MappingProxyType(dict(issue)) for issue in issues),
+                "verified_snapshots": verified_snapshots,
+            }
+        )
+        return _LockedDoctorEvidence(
+            report=immutable_report,
+            layout_entries=MappingProxyType(dict(layout_entries)),
+            root_entries=root_entries,
+            manifest_bytes=manifest_bytes,
+            manifest_sha256=manifest_sha256,
+            manifest_raw=manifest_raw,
+            manifest=manifest,
+            verified_snapshots=verified_snapshots,
+        )
 
     def doctor(
         self,
@@ -1486,7 +1608,6 @@ class DesignJobManager:
                 manifest_sha256=None,
                 verified_snapshots=(),
             )
-        manifest_sha256: str | None = None
         with locked_job_root(job_root=root) as locked:
             try:
                 fresh = self._fresh_locked_row(
@@ -1505,50 +1626,8 @@ class DesignJobManager:
                     "JOB_ACCESS_UNAVAILABLE",
                     "authorized Job state is unavailable; reauthorize and retry",
                 ) from exc
-            issues.extend(self._directory_contract_issues(locked))
-            try:
-                raw, manifest_read = _read_json_with_evidence(locked / "job.json")
-                manifest_sha256 = manifest_read.sha256
-                actual = DesignJobManifest.from_dict(raw)
-            except JobFailure as exc:
-                issues.append(self._issue(exc.code, exc.message))
-            else:
-                expected = self._manifest_from_row(fresh)
-                actual_payload = actual.as_dict()
-                expected_payload = expected.as_dict()
-                if actual.active_working_copy_id is not None or actual.source_snapshots:
-                    issues.append(
-                        self._issue(
-                            "JOB_OPERATIONAL_BINDING_FORGED",
-                            "core Job manifest contains disk-only operational bindings",
-                        )
-                    )
-                if actual.revision != expected.revision:
-                    issues.append(
-                        self._issue(
-                            "JOB_REVISION_MISMATCH",
-                            "job.json revision disagrees with PostgreSQL",
-                        )
-                    )
-                mismatched = [
-                    field
-                    for field in _AUTHORITATIVE_MANIFEST_FIELDS
-                    if field != "revision"
-                    and actual_payload[field] != expected_payload[field]
-                ]
-                if mismatched:
-                    issues.append(
-                        self._issue(
-                            "JOB_MANIFEST_MISMATCH",
-                            "job.json authoritative fields disagree with PostgreSQL",
-                        )
-                    )
-        return self._doctor_report(
-            row=fresh,
-            issues=issues,
-            manifest_sha256=manifest_sha256,
-            verified_snapshots=(),
-        )
+            evidence = self._locked_doctor_evidence(locked=locked, row=fresh)
+        return self._public_doctor_report(evidence)
 
     def repair(
         self,
@@ -1602,34 +1681,27 @@ class DesignJobManager:
             # Recompute the receipt under this same lock.  This makes the
             # caller's doctor evidence a precondition of the write, rather
             # than a check made by a separate service-level operation.
-            doctor = self._doctor_report_for_locked_row(locked=locked, row=fresh)
-            if doctor["receipt_sha256"] != doctor_receipt_hash:
+            evidence = self._locked_doctor_evidence(locked=locked, row=fresh)
+            if evidence.report["receipt_sha256"] != doctor_receipt_hash:
                 raise JobFailure(
                     "JOB_DOCTOR_RECEIPT_MISMATCH",
                     "doctor receipt does not match the authorized Job state",
                 )
-            if self._directory_contract_issues(locked):
+            self._checkpoint("after_repair_receipt_comparison")
+            if any(entries is None for entries in evidence.layout_entries.values()):
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",
                     "Job directory contract is incomplete or unsafe",
                 )
-            try:
-                root_entries = {
-                    entry.name: entry for entry in list_managed_directory(locked)
-                }
-            except SecureFilesystemError as exc:
-                raise JobFailure(
-                    "JOB_REPAIR_UNSAFE", "Job root cannot be enumerated safely"
-                ) from exc
+            root_entries = {entry.name for entry in evidence.root_entries}
             manifest_path = locked / "job.json"
             if "job.json" in root_entries:
-                try:
-                    payload = _read_json(manifest_path)
-                except JobFailure as exc:
+                payload = evidence.manifest_raw
+                if payload is None or evidence.manifest_bytes is None:
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
                         "existing job.json cannot prove the Job identity",
-                    ) from exc
+                    )
                 identity = {
                     "job_id": str(fresh.get("id")),
                     "workspace_id": str(fresh.get("workspace_id")),
@@ -1640,13 +1712,12 @@ class DesignJobManager:
                         "JOB_REPAIR_UNSAFE",
                         "job.json identity does not match the authoritative Job",
                     )
-                try:
-                    existing = DesignJobManifest.from_dict(payload)
-                except JobFailure as exc:
+                existing = evidence.manifest
+                if existing is None:
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
                         "job.json cannot be validated for deterministic repair",
-                    ) from exc
+                    )
                 if existing.active_working_copy_id is not None or existing.source_snapshots:
                     raise JobFailure(
                         "JOB_REPAIR_UNSAFE",
@@ -1655,14 +1726,9 @@ class DesignJobManager:
                 repaired = self._manifest_from_row(fresh)
                 self._replace_projection(manifest_path, repaired)
                 return self._repair_result(repaired, reason, actor_id)
-            try:
-                working_entries = list_managed_directory(locked / "models/working")
-                source_entries = list_managed_directory(locked / "inputs/source")
-            except SecureFilesystemError as exc:
-                raise JobFailure(
-                    "JOB_REPAIR_UNSAFE",
-                    "model directories cannot be enumerated safely",
-                ) from exc
+            working_entries = evidence.layout_entries["models/working"]
+            source_entries = evidence.layout_entries["inputs/source"]
+            assert working_entries is not None and source_entries is not None
             if working_entries or source_entries:
                 raise JobFailure(
                     "JOB_REPAIR_UNSAFE",
@@ -1693,43 +1759,12 @@ class DesignJobManager:
             ),
         )
 
-    def _doctor_report_for_locked_row(
-        self, *, locked: Path, row: Mapping[str, object]
-    ) -> dict[str, object]:
-        """Compute a doctor receipt from pinned bytes while the Job lock is held."""
-        issues = self._directory_contract_issues(locked)
-        manifest_sha256: str | None = None
-        try:
-            raw, manifest_read = _read_json_with_evidence(locked / "job.json")
-            manifest_sha256 = manifest_read.sha256
-            actual = DesignJobManifest.from_dict(raw)
-            expected = self._manifest_from_row(row)
-            actual_payload = actual.as_dict()
-            expected_payload = expected.as_dict()
-            if actual.active_working_copy_id is not None or actual.source_snapshots:
-                issues.append(self._issue("JOB_OPERATIONAL_BINDING_FORGED", "core Job manifest contains disk-only operational bindings"))
-            if actual.revision != expected.revision:
-                issues.append(self._issue("JOB_REVISION_MISMATCH", "job.json revision disagrees with PostgreSQL"))
-            if any(
-                field != "revision" and actual_payload[field] != expected_payload[field]
-                for field in _AUTHORITATIVE_MANIFEST_FIELDS
-            ):
-                issues.append(self._issue("JOB_MANIFEST_MISMATCH", "job.json authoritative fields disagree with PostgreSQL"))
-        except JobFailure as exc:
-            issues.append(self._issue(exc.code, exc.message))
-        return self._doctor_report(
-            row=row,
-            issues=issues,
-            manifest_sha256=manifest_sha256,
-            verified_snapshots=(),
-        )
-
-
 __all__ = [
     "DesignJobManager",
     "DesignJobManifest",
     "DesignJobRepairResult",
     "JOB_MANIFEST_SCHEMA",
+    "JOB_REPAIR_SCHEMA",
     "JobFailure",
     "locked_job_root",
     "managed_job_path",

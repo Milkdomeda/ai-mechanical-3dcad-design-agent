@@ -63,7 +63,11 @@ class _JobCliService:
 
     def design_job_repair(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(("repair", kwargs))
-        return {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"], "revision": 4}
+        return {
+            "schema_version": "MechanicalDesignJobRepair/v1",
+            "job": {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"], "revision": 4},
+            "audit": {"action": "repair", "reason": kwargs["reason"], "actor_id": "actor", "authoritative_revision": 4},
+        }
 
 
 def _run_cli(
@@ -157,7 +161,9 @@ def test_job_cli_routes_all_operations_through_the_scoped_service(
     assert closed["revision"] == 5
     assert reopened["revision"] == 6
     assert doctor["receipt_sha256"] == "a" * 64
-    assert repaired["schema_version"] == "MechanicalDesignJob/v1"
+    assert set(repaired) == {"schema_version", "job", "audit"}
+    assert repaired["schema_version"] == "MechanicalDesignJobRepair/v1"
+    assert repaired["job"]["schema_version"] == "MechanicalDesignJob/v1"
     assert [name for name, _ in service.calls] == [
         "create",
         "list",

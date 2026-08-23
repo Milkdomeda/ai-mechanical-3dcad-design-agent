@@ -1605,6 +1605,24 @@ class _JobManifestForService:
         }
 
 
+class _JobRepairForService:
+    def __init__(self, manifest: _JobManifestForService, reason: str) -> None:
+        self.manifest = manifest
+        self.reason = reason
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "MechanicalDesignJobRepair/v1",
+            "job": self.manifest.as_dict(),
+            "audit": {
+                "action": "repair",
+                "reason": self.reason,
+                "actor_id": "configured-actor",
+                "authoritative_revision": 4,
+            },
+        }
+
+
 class _JobManagerForService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -1645,9 +1663,9 @@ class _JobManagerForService:
             "issues": [],
         }
 
-    def repair(self, **kwargs: object) -> _JobManifestForService:
+    def repair(self, **kwargs: object) -> _JobRepairForService:
         self.calls.append(("repair", kwargs))
-        return self.manifest
+        return _JobRepairForService(self.manifest, str(kwargs["reason"]))
 
 
 class ServiceDesignJobFacadeTests(unittest.TestCase):
@@ -1771,7 +1789,7 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
 
         self.assertEqual(closed["schema_version"], "MechanicalDesignJob/v1")
         self.assertEqual(reopened["schema_version"], "MechanicalDesignJob/v1")
-        self.assertEqual(repaired["schema_version"], "MechanicalDesignJob/v1")
+        self.assertEqual(repaired["schema_version"], "MechanicalDesignJobRepair/v1")
         repair = [item for item in service.design_jobs.calls if item[0] == "repair"]
         self.assertEqual(repair[0][1]["expected_revision"], 4)
         self.assertEqual([name for name, _ in service.design_jobs.calls], [
@@ -1817,6 +1835,19 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
             )
         self.assertEqual(captured.exception.code, "JOB_SOURCE_SNAPSHOTS_NOT_READY")
         self.assertEqual(service.design_jobs.calls, [])
+
+    def test_repair_returns_only_the_exact_repair_wrapper(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        response = service.design_job_repair(
+            job_id=job_id, expected_revision=4, doctor_receipt_sha256="a" * 64,
+            reason="exact service wrapper", confirmation=f"修复 {job_id}",
+        )
+
+        self.assertEqual(set(response), {"schema_version", "job", "audit"})
+        self.assertEqual(response["schema_version"], "MechanicalDesignJobRepair/v1")
+        self.assertEqual(response["job"]["schema_version"], "MechanicalDesignJob/v1")
+        self.assertNotIn("repair_audit", response["job"])
 
 
 if __name__ == "__main__":

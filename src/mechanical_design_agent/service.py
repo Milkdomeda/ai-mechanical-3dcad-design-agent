@@ -448,12 +448,7 @@ class MechanicalDesignService:
             doctor_receipt_hash=doctor_receipt_sha256,
             reason=repair_reason,
         )
-        repaired_manifest = getattr(repaired, "manifest", repaired)
-        response = self._job_manifest_response(repaired_manifest)
-        response["repair_audit"] = dict(
-            getattr(repaired, "audit", {"action": "repair", "reason": repair_reason})
-        )
-        return response
+        return repaired.as_dict()
 
     def system_status(self) -> dict[str, Any]:
         try:

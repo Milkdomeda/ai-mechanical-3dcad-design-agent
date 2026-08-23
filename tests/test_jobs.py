@@ -19,6 +19,7 @@ from mechanical_design_agent import jobs as jobs_module
 from mechanical_design_agent.jobs import (
     DesignJobManager,
     DesignJobManifest,
+    DesignJobRepairResult,
     JobFailure,
     locked_job_root,
     managed_job_path,
@@ -1387,7 +1388,7 @@ def test_doctor_fails_closed_before_manifest_reads_when_locked_authority_is_revo
     repository.fail_after = len(repository.calls)
     monkeypatch.setattr(
         manager,
-        "_directory_contract_issues",
+        "_locked_doctor_evidence",
         lambda _root: pytest.fail("doctor read the managed Job after authorization failed"),
     )
 
@@ -1442,6 +1443,69 @@ def test_repair_recomputes_the_doctor_receipt_under_its_job_lock(tmp_path: Path)
         )
 
     assert captured.value.code == "JOB_DOCTOR_RECEIPT_MISMATCH"
+
+
+def test_repair_uses_only_the_pinned_receipt_evidence_after_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    report = manager.doctor(
+        job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    manifest_path = manager.workspace.jobs_root / manifest.directory_name / "job.json"
+
+    def mutate_after_receipt(name: str) -> None:
+        if name == "after_repair_receipt_comparison":
+            manifest_path.write_text(
+                json.dumps({"job_id": "forged-second-read"}), encoding="utf-8"
+            )
+
+    monkeypatch.setattr(manager, "_checkpoint", mutate_after_receipt)
+    monkeypatch.setattr(
+        jobs_module,
+        "_read_json",
+        lambda _path: pytest.fail("repair must not re-read job.json after receipt comparison"),
+    )
+    repaired = manager.repair(
+        job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID, actor_id=ACTOR_ID,
+        expected_revision=manifest.revision,
+        doctor_receipt_hash=str(report["receipt_sha256"]),
+        reason="pinned evidence regression",
+    )
+
+    assert isinstance(repaired, DesignJobRepairResult)
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["job_id"] == str(JOB_ID)
+    assert repaired.audit["reason"] == "pinned evidence regression"
+
+
+def test_repair_result_has_an_exact_recursive_v1_schema(tmp_path: Path) -> None:
+    manager, _ = _manager(tmp_path)
+    manifest = _create_managed_job(manager)
+    report = manager.doctor(
+        job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    result = manager.repair(
+        job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID, actor_id=ACTOR_ID,
+        expected_revision=manifest.revision,
+        doctor_receipt_hash=str(report["receipt_sha256"]),
+        reason="exact response schema",
+    )
+    payload = result.as_dict()
+
+    assert set(payload) == {"schema_version", "job", "audit"}
+    assert payload["schema_version"] == "MechanicalDesignJobRepair/v1"
+    assert set(payload["audit"]) == {
+        "action", "reason", "actor_id", "authoritative_revision"
+    }
+    parsed = DesignJobRepairResult.from_dict(payload)
+    assert parsed.manifest.as_dict() == payload["job"]
+    with pytest.raises(JobFailure):
+        DesignJobRepairResult.from_dict({**payload, "repair_audit": {}})
 
 
 def test_get_doctor_and_repair_reject_forged_operational_bindings(
