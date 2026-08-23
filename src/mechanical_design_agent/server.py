@@ -1365,6 +1365,7 @@ def create_mcp(
         metadata_json: str = "{}",
         approval_reference: str = "",
         validation_report_path: str = "",
+        working_copy_id: str = "",
     ) -> str:
         """Register a downloaded catalog part with exact provider, source URL, and checksum."""
         return _json(service.standard_part_download_register(
@@ -1377,6 +1378,7 @@ def create_mcp(
             metadata=_object(metadata_json, "metadata_json"),
             approval_reference=approval_reference,
             validation_report_path=validation_report_path,
+            working_copy_id=working_copy_id,
         ))
 
     @mcp.tool()

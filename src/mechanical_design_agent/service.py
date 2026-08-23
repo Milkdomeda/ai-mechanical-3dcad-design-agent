@@ -2365,7 +2365,22 @@ class MechanicalDesignService:
 
     def standard_part_download_register(self, **kwargs: Any) -> dict[str, Any]:
         self._require_database()
-        return self.standard_parts.register_download(**kwargs)
+        working_copy_id = str(kwargs.pop("working_copy_id", "") or "").strip()
+        registered = self.standard_parts.register_download(**kwargs)
+        if not working_copy_id:
+            return registered
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            _,
+            _,
+            _,
+        ):
+            used_copy = self.standard_parts.copy_into_job(
+                registered=registered,
+                job_root=job_root,
+                working_copy_id=working_copy_id,
+            )
+        return {**registered, "job_used_copy": used_copy}
 
     def design_delivery_approve(self, working_copy_id: str, confirmation: str) -> dict[str, Any]:
         self._require_database()

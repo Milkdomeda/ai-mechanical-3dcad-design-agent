@@ -13,6 +13,7 @@ from .standard_part_configuration import (
     load_standard_part_sources,
 )
 from .workspace_bootstrap import BootstrapFailure, read_workspace_manifest
+from .secure_fs import atomic_publish_new, ensure_managed_directory, read_managed_file
 
 
 class StandardPartRegistry:
@@ -142,3 +143,49 @@ class StandardPartRegistry:
             validation_report_path=str(report_path),
         )
         return {**record, "manifest": manifest}
+
+    def copy_into_job(
+        self,
+        *,
+        registered: dict[str, Any],
+        job_root: Path,
+        working_copy_id: str,
+    ) -> dict[str, Any]:
+        """Retain one actually selected catalog part and provenance inside its Job."""
+        source_value = registered.get("local_path") or registered.get("manifest", {}).get("local_path")
+        if not isinstance(source_value, str) or not source_value:
+            raise ValueError("registered standard part has no controlled catalog path")
+        source = Path(source_value)
+        evidence = read_managed_file(source)
+        manifest = dict(registered.get("manifest") or {})
+        expected = manifest.get("sha256") or registered.get("sha256")
+        if expected != evidence.sha256:
+            raise RuntimeError("registered standard-part checksum changed before Job copy")
+        part_id = self._part_key(str(manifest.get("part_number") or registered.get("part_number") or evidence.sha256))
+        target_dir = ensure_managed_directory(
+            job_root / "components" / "standard-parts" / part_id / evidence.sha256,
+            parents=True,
+            exist_ok=True,
+        ).path
+        target = target_dir / source.name
+        provenance = target_dir / "manifest.json"
+        if not target.exists():
+            atomic_publish_new(target, evidence.content)
+        provenance_payload = {
+            **manifest,
+            "schema_version": "JobStandardPartProvenance/v1",
+            "working_copy_id": working_copy_id,
+            "job_relative_path": target.relative_to(job_root).as_posix(),
+        }
+        encoded = (
+            json.dumps(provenance_payload, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        ).encode("utf-8")
+        if not provenance.exists():
+            atomic_publish_new(provenance, encoded)
+        return {
+            "path": str(target),
+            "relative_path": target.relative_to(job_root).as_posix(),
+            "sha256": evidence.sha256,
+            "provenance_path": str(provenance),
+        }

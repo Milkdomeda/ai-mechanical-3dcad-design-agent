@@ -28,7 +28,7 @@ from .secure_fs import (
     set_managed_file_readonly,
     validate_managed_path,
 )
-from .jobs import JobFailure
+from .jobs import JobFailure, managed_job_path
 
 
 def derive_iteration_candidates(
@@ -111,6 +111,57 @@ class DesignWorkspace:
         if self.design_jobs is None:
             raise RuntimeError("Job-aware CAD creation requires the Design Job manager")
         return self.design_jobs
+
+    @contextmanager
+    def locked_job_working_copy(
+        self, working_copy_id: str
+    ) -> Iterator[tuple[Path, Path, dict[str, Any], dict[str, Any]]]:
+        """Bind one operational filesystem boundary to its active Job authority."""
+        working = self.repository.get_working_copy(working_copy_id)
+        job_id = working.get("job_id")
+        if not job_id:
+            raise JobFailure(
+                "JOB_MIGRATION_REQUIRED",
+                "the working copy is not bound to a Design Job",
+            )
+        organization_id = str(working["organization_id"])
+        design_group_id = str(working["design_group_id"])
+        job = self.repository.get_design_job(
+            job_id=str(job_id),
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        manager = self._require_job_manager()
+        with manager.locked_active_mechanical_design_job(
+            job_id=str(job_id),
+            expected_job_revision=int(job["revision"]),
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            family_id=(str(working["family_id"]) if working.get("family_id") else None),
+        ) as (job_root, fresh):
+            if str(fresh.get("active_working_copy_id")) != working_copy_id:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_NOT_ACTIVE",
+                    "the working copy is not the active copy for its Design Job",
+                )
+            relative = working.get("working_relative_path")
+            if not isinstance(relative, str) or not relative:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_PATH_INVALID",
+                    "the governed working-copy path is incomplete",
+                )
+            path = managed_job_path(
+                job_root=job_root,
+                relative_path=relative,
+                allow_missing_leaf=False,
+            )
+            authoritative = Path(os.path.abspath(str(working["working_path"])))
+            if path != authoritative or path.suffix.casefold() != ".fcstd":
+                raise JobFailure(
+                    "JOB_WORKING_COPY_PATH_INVALID",
+                    "the governed working-copy path disagrees with authority",
+                )
+            yield job_root, path, working, fresh
 
     @staticmethod
     def _job_attempt_allowed_files(receipt: dict[str, object]) -> frozenset[str]:
@@ -963,6 +1014,10 @@ class DesignWorkspace:
     def locked_working_copy_path(self, working_copy_id: str) -> Iterator[Path]:
         """Serialize every Agent read/write boundary for one published FCStd path."""
         working = self.repository.get_working_copy(working_copy_id)
+        if working.get("job_id"):
+            with self.locked_job_working_copy(working_copy_id) as (_, path, _, _):
+                yield path
+            return
         raw_path = Path(os.path.abspath(str(working["working_path"])))
         workspace = validate_managed_path(
             self.settings.workspace, allow_missing_leaf=False
@@ -1118,10 +1173,18 @@ class DesignWorkspace:
             working_copy_id,
             expected_used_knowledge_ids=list(change.get("knowledge_used") or []),
         )
-        with self.locked_working_copy_path(working_copy_id) as path:
-            return self.repository.mark_change_set_applied(
-                change_set_id, file_sha256(path)
-            )
+        with self.locked_job_working_copy(working_copy_id) as (job_root, path, _, _):
+            digest = file_sha256(path)
+            revision_dir = ensure_managed_directory(
+                job_root / "models" / "revisions" / working_copy_id,
+                parents=True,
+                exist_ok=True,
+            ).path
+            revision_path = revision_dir / f"{digest}.FCStd"
+            if not revision_path.exists():
+                atomic_publish_new(revision_path, read_managed_file(path).content)
+            result = self.repository.mark_change_set_applied(change_set_id, digest)
+            return {**result, "job_revision_path": str(revision_path)}
 
     def record_validation(
         self,
@@ -1167,9 +1230,19 @@ class DesignWorkspace:
                 ).path
             ):
                 raise ValueError("validation report must be a file inside the workspace")
-            resolved_report = str(report)
-            report_sha256 = file_sha256(report)
-        with self.locked_working_copy_path(working_copy_id) as working_path:
+        with self.locked_job_working_copy(working_copy_id) as (job_root, working_path, _, _):
+            if report_path:
+                report_read = read_managed_file(report)
+                report_sha256 = report_read.sha256
+                report_dir = ensure_managed_directory(
+                    job_root / "validation" / "reports" / working_copy_id,
+                    parents=True,
+                    exist_ok=True,
+                ).path
+                controlled_report = report_dir / f"{report_sha256}{report.suffix.casefold()}"
+                if not controlled_report.exists():
+                    atomic_publish_new(controlled_report, report_read.content)
+                resolved_report = str(controlled_report)
             return self.repository.record_validation(
                 working_copy_id,
                 change_set_id,
@@ -1209,12 +1282,12 @@ class DesignWorkspace:
                     ).path
                 ):
                     raise ValueError("assembly-interface validation evidence must be a report inside the workspace")
-        with self.locked_working_copy_path(working_copy_id) as working_path:
+        with self.locked_job_working_copy(working_copy_id) as (job_root, working_path, _, _):
             working_sha256 = file_sha256(working_path)
             if manifest.get("working_sha256") != working_sha256:
                 raise ValueError("assembly manifest working_sha256 mismatch")
             result = validate_assembly_completeness(manifest)
-            report_dir = self.settings.workspace / "output" / "mechanical_design" / "assembly_validation" / working_copy_id
+            report_dir = job_root / "validation" / "assembly" / working_copy_id
             report_dir = ensure_managed_directory(
                 report_dir,
                 parents=True,
@@ -1277,7 +1350,21 @@ class DesignWorkspace:
         organization_id: str,
         design_group_id: str,
     ) -> dict[str, Any]:
-        with self.locked_current_snapshot(working_copy_id, artifact_store) as snapshot:
+        with self.locked_job_working_copy(working_copy_id) as (job_root, working_path, _, _):
+            working_read = read_managed_file(working_path)
+            delivery_dir = ensure_managed_directory(
+                job_root / "delivery" / working_copy_id,
+                parents=True,
+                exist_ok=True,
+            ).path
+            delivery_path = delivery_dir / f"{working_read.sha256}.FCStd"
+            if not delivery_path.exists():
+                atomic_publish_new(delivery_path, working_read.content)
+            snapshot = {
+                "sha256": working_read.sha256,
+                "size_bytes": working_read.size_bytes,
+                "storage_path": str(delivery_path),
+            }
             return self.repository.approve_delivery(
                 working_copy_id,
                 actor_id,
