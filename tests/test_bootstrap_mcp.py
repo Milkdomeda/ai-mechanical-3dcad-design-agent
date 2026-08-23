@@ -7,6 +7,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 import pytest
 
 from mechanical_design_agent import server
+from mechanical_design_agent import service as service_module
 from mechanical_design_agent.bootstrap_diagnostics import CapabilityRequest
 from mechanical_design_agent.bootstrap_runtime import (
     BootstrapRuntime,
@@ -18,6 +19,8 @@ from mechanical_design_agent.server import (
     _LazyServiceProxy,
     create_mcp,
 )
+from mechanical_design_agent.config import JobSettings
+from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
 
@@ -101,10 +104,10 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_working_copy_create": request("cad_working_copy", "product_family"),
     "design_new_working_copy_create": request("cad_working_copy", "product_family"),
     "design_job_working_copy_create": request(
-        "design_job_workspace", "cad_working_copy", "product_family"
+        "design_job_workspace", "cad_working_copy"
     ),
     "design_job_new_working_copy_create": request(
-        "design_job_workspace", "cad_working_copy", "product_family"
+        "design_job_workspace", "cad_working_copy"
     ),
     "design_change_record": request("cad_working_copy", "product_family"),
     "design_change_review": request("cad_working_copy", "product_family"),
@@ -520,6 +523,52 @@ def test_design_job_mcp_uses_the_shared_redacted_error_contract(tmp_path: Path) 
     assert "private" not in json.dumps(response)
 
 
+@pytest.mark.parametrize(
+    "code,method",
+    (
+        ("JOB_SOURCE_CHANGED", "existing"),
+        ("JOB_SOURCE_UNSAFE", "existing"),
+        ("JOB_REVISION_STALE", "new"),
+        ("JOB_ACTIVE_WORKING_COPY_EXISTS", "new"),
+        ("JOB_FCSTD_INVALID", "new"),
+        ("JOB_NORMALIZATION_FAILED", "existing"),
+        ("JOB_DATABASE_COMMIT_UNKNOWN", "new"),
+    ),
+)
+def test_job_cad_mcp_exposes_code_specific_redacted_recovery(
+    tmp_path: Path,
+    code: str,
+    method: str,
+) -> None:
+    class FailingCadService:
+        def design_job_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure(code, "private source identity customer-model.FCStd")
+
+        def design_job_new_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure(code, "private source identity customer-model.FCStd")
+
+    mcp = create_mcp(
+        service=FailingCadService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    job_id = "10000000-0000-4000-8000-000000000001"
+    with pytest.raises(ToolError) as captured:
+        if method == "existing":
+            tool(mcp, "design_job_working_copy_create")(
+                job_id, 3, "source.FCStd", "org-001", "group-001", "", ""
+            )
+        else:
+            tool(mcp, "design_job_new_working_copy_create")(
+                job_id, 3, "org-001", "group-001", "", False
+            )
+
+    response = json.loads(str(captured.value))
+    assert response["code"] == code
+    assert response["next_action"]
+    assert response["next_action"] != "Verify the Job reference and authorized scope, then retry."
+    assert "customer" not in json.dumps(response)
+
+
 def test_unmapped_proxy_member_is_blocked_without_constructing_service(
     tmp_path: Path,
 ) -> None:
@@ -572,3 +621,99 @@ def test_job_proxy_uses_family_independent_job_operational_settings() -> None:
     )
     assert proxy.design_job_list()["jobs"] == []
     assert constructed == [job_settings]
+
+
+def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    freecadcmd = tmp_path / "FreeCAD Cmd"
+    freecadcmd.write_bytes(b"test executable boundary")
+    settings = JobSettings(
+        workspace=workspace,
+        package_root=workspace,
+        database_url="postgresql://unused",
+        actor_id="actor-001",
+        organization_id="org-001",
+        design_group_id="group-001",
+        freecadcmd=freecadcmd,
+    )
+    capability_calls: list[CapabilityRequest] = []
+
+    class JobCadRuntime:
+        def require_initialized(self, capability: str) -> None:
+            assert capability == "design_job_workspace"
+
+        def require_capability(self, request: CapabilityRequest, *, probe: bool) -> None:
+            capability_calls.append(request)
+            assert probe is True
+
+        def job_operational_settings(self) -> JobSettings:
+            return settings
+
+        def operational_settings(self) -> object:
+            pytest.fail("Job CAD must not select a Product Family configuration")
+
+        def blocked_response(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+        def status(self) -> dict[str, object]:
+            return {}
+
+    workspace_calls: list[tuple[str, dict[str, object], Path]] = []
+    monkeypatch.setattr(
+        service_module.MechanicalDesignService,
+        "_require_database",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        service_module.DesignWorkspace,
+        "create_job_working_copy",
+        lambda self, **kwargs: workspace_calls.append(
+            ("existing", kwargs, self.settings.freecadcmd)
+        )
+        or {"kind": "existing"},
+    )
+    monkeypatch.setattr(
+        service_module.DesignWorkspace,
+        "create_job_new_working_copy",
+        lambda self, **kwargs: workspace_calls.append(
+            ("new", kwargs, self.settings.freecadcmd)
+        )
+        or {"kind": "new"},
+    )
+    mcp = create_mcp(runtime=JobCadRuntime())
+    job_id = "10000000-0000-4000-8000-000000000001"
+
+    existing = json.loads(
+        tool(mcp, "design_job_working_copy_create")(
+            job_id,
+            3,
+            str(tmp_path / "source.FCStd"),
+            "org-001",
+            "group-001",
+            "",
+            "",
+        )
+    )
+    new = json.loads(
+        tool(mcp, "design_job_new_working_copy_create")(
+            job_id,
+            3,
+            "org-001",
+            "group-001",
+            "",
+            False,
+        )
+    )
+
+    assert existing == {"kind": "existing"}
+    assert new == {"kind": "new"}
+    assert [call[0] for call in workspace_calls] == ["existing", "new"]
+    assert {call[2] for call in workspace_calls} == {freecadcmd}
+    assert capability_calls == [
+        request("design_job_workspace", "cad_working_copy"),
+        request("design_job_workspace", "cad_working_copy"),
+    ]

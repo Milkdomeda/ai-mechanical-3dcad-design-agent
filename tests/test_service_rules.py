@@ -1592,8 +1592,15 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
         )
 
 class _JobManifestForService:
-    def __init__(self, job_id: str = "00000000-0000-4000-8000-000000000401") -> None:
+    def __init__(
+        self,
+        job_id: str = "00000000-0000-4000-8000-000000000401",
+        *,
+        active_working_copy_id: str | None = None,
+    ) -> None:
         self.job_id = job_id
+        self.revision = 4
+        self.active_working_copy_id = active_working_copy_id
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -1611,7 +1618,7 @@ class _JobManifestForService:
             "design_group_id": "group-configured",
             "family_id": None,
             "directory_name": "JOB-20260823-401-authorized-pump",
-            "active_working_copy_id": None,
+            "active_working_copy_id": self.active_working_copy_id,
             "source_snapshots": [],
             "created_at": "2026-08-23T08:15:30.000000Z",
             "created_by": "configured-actor",
@@ -1854,8 +1861,43 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         self.assertEqual(response["job"]["job_id"], service.design_jobs.manifest.job_id)
         self.assertEqual(response["source_file_count"], 1)
         self.assertEqual(response["next_action"], "design_job_working_copy_create")
+        self.assertEqual(
+            response["next_action_arguments"],
+            {
+                "job_id": service.design_jobs.manifest.job_id,
+                "expected_job_revision": 4,
+                "organization_id": "org-configured",
+                "design_group_id": "group-configured",
+                "family_id": None,
+                "model_revision_id": None,
+            },
+        )
+        self.assertEqual(response["required_arguments"], ["source_path"])
         self.assertNotIn("input.FCStd", str(response))
         self.assertEqual([name for name, _ in service.design_jobs.calls], ["create"])
+
+    def test_source_files_reject_unsupported_job_type_count_and_shape_before_create(self) -> None:
+        cases = (
+            ("product_family_onboarding", ["input.FCStd"], "JOB_SOURCE_FILES_UNSUPPORTED_JOB_TYPE"),
+            ("mechanical_design", ["one.FCStd", "two.step"], "JOB_SOURCE_FILES_COUNT_INVALID"),
+            ("mechanical_design", [""], "JOB_SOURCE_FILE_INVALID"),
+            ("mechanical_design", ["not-cad.txt"], "JOB_SOURCE_FILE_INVALID"),
+        )
+        for job_type, source_files, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                service = self._service()
+                with self.assertRaises(JobFailure) as captured:
+                    service.design_job_create(
+                        job_type=job_type,
+                        title="Source validation",
+                        organization_id="org-configured",
+                        design_group_id="group-configured",
+                        family_id=None,
+                        idempotency_token=f"source-{expected_code}",
+                        source_files=source_files,
+                    )
+                self.assertEqual(captured.exception.code, expected_code)
+                self.assertEqual(service.design_jobs.calls, [])
 
     def test_v2_working_copy_methods_require_job_revision_and_configured_scope(self) -> None:
         service = self._service()
@@ -1894,6 +1936,117 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
                 organization_id="foreign",
                 design_group_id="group-configured",
             )
+
+    def test_v02_compatibility_job_identity_is_scoped_request_bound_and_not_global(self) -> None:
+        manager = _JobManagerForService()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(kwargs) or {"ok": True}
+        )
+        common = {
+            "source_path": "models/Unicode pump.FCStd",
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "family_id": "family-a",
+            "model_revision_id": "revision-a",
+        }
+        service.design_working_copy_create(**common, compatibility_request_id="request-a")
+        token_a = manager.calls[-1][1]["idempotency_token"]
+        service.design_working_copy_create(**common, compatibility_request_id="request-b")
+        token_b = manager.calls[-1][1]["idempotency_token"]
+        service.design_working_copy_create(
+            **{**common, "family_id": "family-b"},
+            compatibility_request_id="request-a",
+        )
+        token_family = manager.calls[-1][1]["idempotency_token"]
+
+        self.assertNotEqual(token_a, token_b)
+        self.assertNotEqual(token_a, token_family)
+        self.assertNotIn(str(common["source_path"]), str(token_a))
+        self.assertEqual(len(calls), 3)
+
+        foreign_manager = _JobManagerForService()
+        foreign = self._service(foreign_manager)
+        foreign.bootstrap_config = {
+            "organization_id": "org-other",
+            "design_group_id": "group-other",
+        }
+        foreign.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: {"ok": True}
+        )
+        foreign.design_working_copy_create(
+            source_path=str(common["source_path"]),
+            organization_id="org-other",
+            design_group_id="group-other",
+            family_id="family-a",
+            model_revision_id="revision-a",
+            compatibility_request_id="request-a",
+        )
+        self.assertNotEqual(
+            token_a,
+            foreign_manager.calls[-1][1]["idempotency_token"],
+        )
+
+    def test_v02_new_design_uses_distinct_jobs_unless_explicit_retry_identity_matches(self) -> None:
+        manager = _JobManagerForService()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_new_working_copy=lambda **kwargs: calls.append(kwargs) or {"ok": True}
+        )
+        common = {
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+        }
+        service.design_new_working_copy_create(**common)
+        first = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(**common)
+        second = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(
+            **common, compatibility_request_id="safe-retry"
+        )
+        retry_one = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(
+            **common, compatibility_request_id="safe-retry"
+        )
+        retry_two = manager.calls[-1][1]["idempotency_token"]
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(retry_one, retry_two)
+        self.assertEqual(len(calls), 4)
+
+    def test_v02_retry_returns_the_scoped_existing_binding_without_rebinding(self) -> None:
+        working_id = "50000000-0000-4000-8000-000000000001"
+
+        class RetryManager(_JobManagerForService):
+            def create(self, **kwargs: object) -> _JobManifestForService:
+                self.calls.append(("create", kwargs))
+                if len(self.calls) == 1:
+                    return _JobManifestForService()
+                return _JobManifestForService(
+                    active_working_copy_id=working_id
+                )
+
+        manager = RetryManager()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(kwargs) or {"id": working_id}
+        )
+        kwargs = {
+            "source_path": "source.FCStd",
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "model_revision_id": "revision-a",
+            "compatibility_request_id": "retry-a",
+        }
+        service.design_working_copy_create(**kwargs)
+        retried = service.design_working_copy_create(**kwargs)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(retried["id"], working_id)
+        self.assertEqual(retried["status"], "already_bound")
 
     def test_repair_returns_only_the_exact_repair_wrapper(self) -> None:
         service = self._service()

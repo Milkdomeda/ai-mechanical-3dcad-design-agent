@@ -264,6 +264,7 @@ class JobSettings:
     actor_id: str
     organization_id: str
     design_group_id: str
+    freecadcmd: Path
 
 
 def resolve_workspace_output(settings: Settings, requested: str | Path) -> Path:

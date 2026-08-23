@@ -30,6 +30,7 @@ EXPECTED_SCRIPTS = {
     "validate_external_step.py": "f069b4c32b82c3a9016ba95e6dc59ceee4749c0b0501087c2992410d717ec7cd",
     "validate_fastener_interfaces.py": "1defe089214c6ac9a6b89893c05cfcfe6e2576a7b36ee7e737d98e0ababe099b",
     "validate_mechanical_interfaces.py": "a92fbc4f759d98ba5ad75ea721c6a9a52884eef56c9a3c36fce81ad771c247bf",
+    "validate_working_copy.py": "d18d53814b92e0d5f848f2c3477c4c3d5bc837332953d50e8f2d20eaed65a314",
 }
 
 
@@ -148,6 +149,8 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                 "normalized = workspace / 'normalized 模型.FCStd'\n"
                 "source_manifest = workspace / 'source manifest.json'\n"
                 "normalized_manifest = workspace / 'normalized manifest.json'\n"
+                "source_validation = workspace / 'source validation.json'\n"
+                "normalized_validation = workspace / 'normalized validation.json'\n"
                 "loader = workspace / 'load installed resource.py'\n"
                 "loader.write_text(\"import runpy, sys\\nrunpy.run_path(sys.argv[1], "
                 "run_name='installed_validation_resource')\\n\", encoding='utf-8')\n"
@@ -166,6 +169,8 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                 "source_after = hashlib.sha256(source.read_bytes()).hexdigest()\n"
                 "execute('extract_model_manifest.py', [source, source_manifest], 900)\n"
                 "execute('extract_model_manifest.py', [normalized, normalized_manifest], 900)\n"
+                "execute('validate_working_copy.py', [source, source_validation], 900)\n"
+                "execute('validate_working_copy.py', [normalized, normalized_validation], 900)\n"
                 "loaded = []\n"
                 "for name in ['validate_external_step.py', 'validate_fastener_interfaces.py', "
                 "'validate_mechanical_interfaces.py']:\n"
@@ -183,6 +188,8 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                 "'source_unchanged': source_before == source_after, "
                 "'source_manifest': json.loads(source_manifest.read_text(encoding='utf-8'))['schema_version'], "
                 "'normalized_manifest': json.loads(normalized_manifest.read_text(encoding='utf-8'))['schema_version'], "
+                "'source_validation': json.loads(source_validation.read_text(encoding='utf-8'))['schema_version'], "
+                "'normalized_validation': json.loads(normalized_validation.read_text(encoding='utf-8'))['schema_version'], "
                 "'hashes_before': hashes_before, 'hashes_after': hashes_after, "
                 "'loaded': loaded}))\n"
             )
@@ -208,6 +215,8 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                     "source_unchanged": True,
                     "source_manifest": "ModelManifest/v2",
                     "normalized_manifest": "ModelManifest/v2",
+                    "source_validation": "MechanicalDesignWorkingCopyValidation/v1",
+                    "normalized_validation": "MechanicalDesignWorkingCopyValidation/v1",
                     "loaded": [
                         "validate_external_step.py",
                         "validate_fastener_interfaces.py",

@@ -34,6 +34,7 @@ EXPECTED_MIGRATIONS = [
     "009_design_lifecycle_closure.sql",
     "010_design_jobs.sql",
     "011_design_job_working_copies.sql",
+    "012_design_job_binding_hardening.sql",
 ]
 EXPECTED_NEO4J_MIGRATIONS = [
     "001_constraints.cypher",
@@ -150,14 +151,27 @@ class InstalledWheelMigrationTests(unittest.TestCase):
                     "MECH_DESIGN_DATABASE_URL": database_url,
                 }
                 migrate_environment.pop("MECH_DESIGN_ENV_FILE", None)
-                result = subprocess.run(
-                    [str(cli), "migrate"],
+                workspace = root / "workspace"
+                initialized = subprocess.run(
+                    [str(cli), "init", "--workspace", str(workspace)],
                     cwd=root,
                     env=migrate_environment,
                     capture_output=True,
                     text=True,
                 )
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    initialized.returncode,
+                    0,
+                    initialized.stderr + initialized.stdout,
+                )
+                result = subprocess.run(
+                    [str(cli), "migrate", "--workspace", str(workspace)],
+                    cwd=root,
+                    env=migrate_environment,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 self.assertEqual(
                     json.loads(result.stdout),
                     {"applied": EXPECTED_MIGRATIONS, "skipped": []},

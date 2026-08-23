@@ -8,7 +8,111 @@ from types import SimpleNamespace
 
 import pytest
 
-from mechanical_design_agent.secure_fs import FileIdentity, SecureFilesystemError
+from mechanical_design_agent.secure_fs import (
+    FileIdentity,
+    SecureFilesystemError,
+    remove_owned_directory_exact,
+    set_managed_file_readonly,
+    read_managed_file,
+)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX exact cleanup contract")
+def test_exact_owned_cleanup_rejects_unknown_or_linked_descendants(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "attempts"
+    parent.mkdir()
+    attempt = parent / "owned"
+    attempt.mkdir()
+    receipt = attempt / ".binding-attempt.json"
+    receipt.write_bytes(b"receipt")
+    unknown = attempt / "unexpected.bin"
+    unknown.write_bytes(b"unowned")
+
+    with pytest.raises(SecureFilesystemError, match="unexpected inventory"):
+        remove_owned_directory_exact(
+            attempt,
+            expected_parent=parent,
+            allowed_files={".binding-attempt.json", "working.FCStd"},
+            label="binding attempt",
+        )
+    assert receipt.read_bytes() == b"receipt"
+    assert unknown.read_bytes() == b"unowned"
+
+    unknown.unlink()
+    outside = tmp_path / "outside.FCStd"
+    outside.write_bytes(b"outside")
+    (attempt / "working.FCStd").symlink_to(outside)
+    with pytest.raises(SecureFilesystemError):
+        remove_owned_directory_exact(
+            attempt,
+            expected_parent=parent,
+            allowed_files={".binding-attempt.json", "working.FCStd"},
+            label="binding attempt",
+        )
+    assert outside.read_bytes() == b"outside"
+    assert attempt.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX no-follow chmod contract")
+def test_readonly_mutation_is_pinned_no_follow_and_closes_on_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = importlib.import_module("mechanical_design_agent.secure_fs_posix")
+    target = tmp_path / "snapshot.FCStd"
+    target.write_bytes(b"snapshot")
+    set_managed_file_readonly(target)
+    assert target.stat().st_mode & 0o222 == 0
+
+    outside = tmp_path / "outside.FCStd"
+    outside.write_bytes(b"outside")
+    linked = tmp_path / "linked.FCStd"
+    linked.symlink_to(outside)
+    with pytest.raises(SecureFilesystemError):
+        set_managed_file_readonly(linked)
+    assert outside.stat().st_mode & 0o200
+
+    target.chmod(0o600)
+    real_open = backend.os.open
+    real_close = backend.os.close
+    leaf_descriptors: list[int] = []
+    closed: list[int] = []
+
+    def tracked_open(path, *args, **kwargs):
+        descriptor = real_open(path, *args, **kwargs)
+        if path == target.name:
+            leaf_descriptors.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(backend.os, "open", tracked_open)
+    monkeypatch.setattr(backend.os, "close", tracked_close)
+    monkeypatch.setattr(
+        backend.os,
+        "fchmod",
+        lambda *_args: (_ for _ in ()).throw(OSError("injected chmod failure")),
+    )
+    with pytest.raises(SecureFilesystemError, match="read-only"):
+        set_managed_file_readonly(target)
+    assert leaf_descriptors
+    assert set(leaf_descriptors) <= set(closed)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX hardlink evidence contract")
+def test_pinned_read_reports_link_count_for_exclusive_output_proof(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "outside.FCStd"
+    original.write_bytes(b"linked bytes")
+    linked = tmp_path / "working.FCStd"
+    os.link(original, linked)
+
+    assert read_managed_file(linked).link_count == 2
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor cleanup contract")

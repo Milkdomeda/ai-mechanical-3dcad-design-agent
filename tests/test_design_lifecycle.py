@@ -28,8 +28,10 @@ class _SourceConnection:
     def __init__(self, candidates):
         self.candidates = candidates
         self.parameters = None
+        self.query = ""
 
     def execute(self, query, parameters=()):
+        self.query = " ".join(query.split())
         self.parameters = parameters
         return _Rows(self.candidates)
 
@@ -238,6 +240,37 @@ class DesignLifecycleTests(unittest.TestCase):
                 design_group_id="group",
                 source_sha256="a" * 64,
             )
+
+    def test_explicit_source_revision_is_scoped_and_hashed_in_the_sql_predicate(self) -> None:
+        candidate = {
+            "id": "revision-1",
+            "organization_id": "org",
+            "design_group_id": "group",
+            "family_id": "family",
+            "artifact_sha256": "a" * 64,
+        }
+        connection = _SourceConnection([candidate])
+        repository = PostgresRepository("postgresql://unused")
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        repository.connection = fake_connection
+        repository.resolve_source_model_revision(
+            organization_id="org",
+            design_group_id="group",
+            source_sha256="a" * 64,
+            requested_model_revision_id="revision-1",
+            requested_family_id="family",
+        )
+
+        self.assertIn("m.id=%s AND m.organization_id=%s", connection.query)
+        self.assertIn("m.design_group_id=%s AND a.sha256=%s", connection.query)
+        self.assertEqual(
+            connection.parameters,
+            ("revision-1", "org", "group", "a" * 64, "family", "family"),
+        )
 
     def test_retrieval_not_executed_blocks_change_creation(self) -> None:
         connection = _ChangeRecordConnection("not_executed")
@@ -601,6 +634,42 @@ class LiveJobWorkingCopyBindingTests(unittest.TestCase):
             self.assertEqual(
                 str(later["job"]["active_working_copy_id"]), working_ids[2]
             )
+            reconciled = repository.reconcile_job_working_copy_publication(
+                job_id=job_id,
+                expected_job_revision=int(reopened["revision"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=None,
+                working_copy_id=working_ids[2],
+                model_revision_id=None,
+                source_sha256="c" * 64,
+                source_kind="new_design_seed",
+                design_origin="new_design",
+                working_path=f"models/working/{working_ids[2]}/working.FCStd",
+                actor_id=actor_id,
+                source_snapshot_id=None,
+            )
+            self.assertEqual(reconciled["status"], "committed")
+            self.assertEqual(
+                str(reconciled["publication"]["working_copy"]["id"]),
+                working_ids[2],
+            )
+            absent = repository.reconcile_job_working_copy_publication(
+                job_id=job_id,
+                expected_job_revision=int(reopened["revision"]),
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=None,
+                working_copy_id=str(uuid.uuid4()),
+                model_revision_id=None,
+                source_sha256="e" * 64,
+                source_kind="new_design_seed",
+                design_origin="new_design",
+                working_path="models/working/absent/working.FCStd",
+                actor_id=actor_id,
+                source_snapshot_id=None,
+            )
+            self.assertEqual(absent, {"status": "not_committed"})
             with self.assertRaisesRegex(ValueError, "already has an active"):
                 repository.create_job_working_copy(
                     job_id=job_id,

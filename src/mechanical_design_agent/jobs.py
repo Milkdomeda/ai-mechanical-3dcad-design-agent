@@ -526,6 +526,7 @@ class _LockedDoctorEvidence:
     manifest: DesignJobManifest | None
     verified_snapshots: tuple[Mapping[str, object], ...]
     verified_active_working_copy_id: str | None
+    verified_active_working_copy: Mapping[str, object] | None
 
 
 class _JobRepository(Protocol):
@@ -1551,6 +1552,7 @@ class DesignJobManager:
         manifest_sha256: str | None,
         verified_snapshots: Sequence[Mapping[str, object]],
         verified_active_working_copy_id: str | None,
+        verified_active_working_copy: Mapping[str, object] | None,
     ) -> dict[str, object]:
         report: dict[str, object] = {
             "schema_version": JOB_DOCTOR_SCHEMA,
@@ -1563,6 +1565,14 @@ class DesignJobManager:
             "manifest_sha256": manifest_sha256,
             "verified_snapshots": [dict(snapshot) for snapshot in verified_snapshots],
             "verified_active_working_copy_id": verified_active_working_copy_id,
+            "verified_active_working_copy": (
+                {
+                    **dict(verified_active_working_copy),
+                    "identity": dict(verified_active_working_copy["identity"]),
+                }
+                if verified_active_working_copy is not None
+                else None
+            ),
             "status": "ok" if not issues else "blocked",
             "issues": issues,
         }
@@ -1582,6 +1592,14 @@ class DesignJobManager:
         ]
         report["verified_active_working_copy_id"] = (
             evidence.verified_active_working_copy_id
+        )
+        report["verified_active_working_copy"] = (
+            {
+                **dict(evidence.verified_active_working_copy),
+                "identity": dict(evidence.verified_active_working_copy["identity"]),
+            }
+            if evidence.verified_active_working_copy is not None
+            else None
         )
         return report
 
@@ -1684,6 +1702,7 @@ class DesignJobManager:
                 )
         verified_snapshots = tuple(verified)
         verified_active_working_copy_id: str | None = None
+        verified_active_working_copy: Mapping[str, object] | None = None
         expected_manifest = self._manifest_from_row(row)
         if expected_manifest.active_working_copy_id is not None:
             raw_working_path = row.get("active_working_path")
@@ -1700,6 +1719,20 @@ class DesignJobManager:
                 verified_active_working_copy_id = (
                     expected_manifest.active_working_copy_id
                 )
+                verified_active_working_copy = MappingProxyType(
+                    {
+                        "working_copy_id": expected_manifest.active_working_copy_id,
+                        "relative_path": working_path.relative_to(locked).as_posix(),
+                        "identity": MappingProxyType(
+                            {
+                                "volume": working_read.identity.volume,
+                                "file_index": working_read.identity.file_index,
+                            }
+                        ),
+                        "sha256": working_read.sha256,
+                        "size_bytes": working_read.size_bytes,
+                    }
+                )
             except (JobFailure, SecureFilesystemError, ValueError):
                 issues.append(
                     self._issue(
@@ -1713,6 +1746,7 @@ class DesignJobManager:
             manifest_sha256=manifest_sha256,
             verified_snapshots=verified_snapshots,
             verified_active_working_copy_id=verified_active_working_copy_id,
+            verified_active_working_copy=verified_active_working_copy,
         )
         immutable_report = MappingProxyType(
             {
@@ -1720,6 +1754,7 @@ class DesignJobManager:
                 "issues": tuple(MappingProxyType(dict(issue)) for issue in issues),
                 "verified_snapshots": verified_snapshots,
                 "verified_active_working_copy_id": verified_active_working_copy_id,
+                "verified_active_working_copy": verified_active_working_copy,
             }
         )
         return _LockedDoctorEvidence(
@@ -1732,6 +1767,7 @@ class DesignJobManager:
             manifest=manifest,
             verified_snapshots=verified_snapshots,
             verified_active_working_copy_id=verified_active_working_copy_id,
+            verified_active_working_copy=verified_active_working_copy,
         )
 
     def doctor(
@@ -1760,6 +1796,7 @@ class DesignJobManager:
                 manifest_sha256=None,
                 verified_snapshots=(),
                 verified_active_working_copy_id=None,
+                verified_active_working_copy=None,
             )
         try:
             root = self._final_path(row)
@@ -1771,6 +1808,7 @@ class DesignJobManager:
                 manifest_sha256=None,
                 verified_snapshots=(),
                 verified_active_working_copy_id=None,
+                verified_active_working_copy=None,
             )
         with locked_job_root(job_root=root) as locked:
             try:

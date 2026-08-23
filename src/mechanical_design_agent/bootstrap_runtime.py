@@ -85,6 +85,7 @@ _RESOURCE_SETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "freecad/validate_external_step.py",
             "freecad/validate_fastener_interfaces.py",
             "freecad/validate_mechanical_interfaces.py",
+            "freecad/validate_working_copy.py",
         ),
         "neo4j_migrations": (
             "migrations/neo4j/001_constraints.cypher",
@@ -103,6 +104,7 @@ _RESOURCE_SETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "migrations/postgres/009_design_lifecycle_closure.sql",
             "migrations/postgres/010_design_jobs.sql",
             "migrations/postgres/011_design_job_working_copies.sql",
+            "migrations/postgres/012_design_job_binding_hardening.sql",
         ),
         "schemas": ("schemas/design-lesson-package-v1.schema.json",),
         "standard_part_provider_config": (
@@ -1515,12 +1517,20 @@ class BootstrapRuntime:
         """Resolve the Job authority without selecting a product family."""
         from .config import JobSettings
 
-        self.require_capability(CapabilityRequest("design_job_workspace"), probe=False)
+        self.require_capability(
+            CapabilityRequest(
+                "design_job_workspace",
+                additional_components=("cad_working_copy",),
+            ),
+            probe=False,
+        )
         inspection = self._inspect()
         assert inspection.manifest is not None
         assert inspection.actor is not None
         database_url = inspection.secrets["postgresql"].value
         assert database_url is not None
+        if inspection.freecad_command is None:
+            raise RuntimeError("configured FreeCADCmd is required for Job CAD")
         identity = inspection.manifest.raw.get("identity")
         if not isinstance(identity, Mapping):
             raise RuntimeError("configured Job scope is unavailable")
@@ -1535,6 +1545,7 @@ class BootstrapRuntime:
             actor_id=inspection.actor.value,
             organization_id=organization_id.strip(),
             design_group_id=design_group_id.strip(),
+            freecadcmd=inspection.freecad_command,
         )
 
     def config_show(self) -> dict[str, object]:

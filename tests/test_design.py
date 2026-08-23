@@ -14,6 +14,7 @@ from mechanical_design_agent.artifacts import ArtifactStore
 from mechanical_design_agent.config import Settings
 from mechanical_design_agent.design import DesignWorkspace, derive_iteration_candidates
 from mechanical_design_agent.hashing import file_sha256
+from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.secure_fs import SecureFilesystemError, relative_managed_path
 
 
@@ -86,10 +87,17 @@ class FakeRepository:
 
 
 class FakeJobBindingRepository(FakeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.publication_error: Exception | None = None
+        self.reconciliation_error: Exception | None = None
+        self.committed_publication: dict | None = None
+        self.reconciliations: list[dict] = []
+
     def create_job_working_copy(self, **kwargs):
         self.created = kwargs
         snapshot = kwargs.get("source_snapshot")
-        return {
+        publication = {
             "working_copy": {
                 "id": kwargs["working_copy_id"],
                 "job_id": kwargs["job_id"],
@@ -102,6 +110,27 @@ class FakeJobBindingRepository(FakeRepository):
                 "revision": kwargs["expected_job_revision"] + 1,
             },
         }
+        if self.publication_error is not None:
+            if isinstance(self.publication_error, LostCommitAcknowledgement):
+                self.committed_publication = publication
+            raise self.publication_error
+        self.committed_publication = publication
+        return publication
+
+    def reconcile_job_working_copy_publication(self, **kwargs):
+        self.reconciliations.append(kwargs)
+        if self.reconciliation_error is not None:
+            raise self.reconciliation_error
+        if self.committed_publication is None:
+            return {"status": "not_committed"}
+        return {
+            "status": "committed",
+            "publication": self.committed_publication,
+        }
+
+
+class LostCommitAcknowledgement(ConnectionError):
+    pass
 
 
 class FakeJobBindingManager:
@@ -157,6 +186,37 @@ def _job_binding_workspace(root: Path) -> tuple[Settings, FakeJobBindingReposito
     return settings, repository, manager
 
 
+def _valid_job_freecad_run(_freecadcmd, script, arguments, timeout_seconds):
+    del timeout_seconds
+    script_name = Path(script).name
+    if script_name == "create_empty_working_copy.py":
+        Path(arguments[0]).write_bytes(b"valid-new-job-fcstd")
+    elif script_name == "normalize_working_copy.py":
+        Path(arguments[1]).write_bytes(b"valid-normalized-job-fcstd")
+    elif script_name == "validate_working_copy.py":
+        working = Path(arguments[0])
+        receipt = Path(arguments[1])
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": "MechanicalDesignWorkingCopyValidation/v1",
+                    "status": "valid",
+                    "sha256": file_sha256(working),
+                    "size_bytes": working.stat().st_size,
+                    "document_name": "MechanicalDesignWorkingCopy",
+                    "object_count": 1,
+                    "recomputed": True,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        raise AssertionError(f"unexpected FreeCAD script: {script_name}")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
 class DesignWorkspaceTests(unittest.TestCase):
     def test_job_existing_model_creates_verified_snapshot_and_working_copy_without_source_path_leak(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -165,16 +225,20 @@ class DesignWorkspaceTests(unittest.TestCase):
             source = root / "原始 model.FCStd"
             source.write_bytes(b"immutable-source-bytes")
 
-            result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
-                job_id="10000000-0000-4000-8000-000000000001",
-                expected_job_revision=4,
-                source_path=str(source),
-                organization_id="org",
-                design_group_id="group",
-                family_id=None,
-                model_revision_id=None,
-                actor_id="owner",
-            )
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
+            ):
+                result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
 
             snapshot = manager.root / result["source_snapshot"]["stored_path"]
             working = Path(result["working_path"])
@@ -214,8 +278,11 @@ class DesignWorkspaceTests(unittest.TestCase):
             with patch(
                 "mechanical_design_agent.design.read_managed_file",
                 side_effect=mutate_after_first_source_read,
+            ), patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
             ):
-                with self.assertRaisesRegex(RuntimeError, "changed while creating"):
+                with self.assertRaises(JobFailure) as captured:
                     DesignWorkspace(settings, repository, manager).create_job_working_copy(
                         job_id="10000000-0000-4000-8000-000000000001",
                         expected_job_revision=4,
@@ -226,6 +293,8 @@ class DesignWorkspaceTests(unittest.TestCase):
                         model_revision_id=None,
                         actor_id="owner",
                     )
+
+            self.assertEqual(captured.exception.code, "JOB_SOURCE_CHANGED")
 
             self.assertEqual(list((manager.root / "inputs" / "source").iterdir()), [])
             self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
@@ -241,7 +310,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             source = root / "linked.FCStd"
             source.symlink_to(real_source)
 
-            with self.assertRaises(SecureFilesystemError):
+            with self.assertRaises(JobFailure) as captured:
                 DesignWorkspace(settings, repository, manager).create_job_working_copy(
                     job_id="10000000-0000-4000-8000-000000000001",
                     expected_job_revision=4,
@@ -252,12 +321,13 @@ class DesignWorkspaceTests(unittest.TestCase):
                     model_revision_id=None,
                     actor_id="owner",
                 )
+            self.assertEqual(captured.exception.code, "JOB_SOURCE_UNSAFE")
 
             self.assertEqual(list((manager.root / "inputs" / "source").iterdir()), [])
             self.assertEqual(list((manager.root / "models" / "working").iterdir()), [])
             self.assertIsNone(repository.created)
 
-    def test_job_existing_model_retry_recovers_only_receipt_owned_crash_attempts(self) -> None:
+    def test_job_existing_model_retry_preserves_an_attempt_with_unknown_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
@@ -300,31 +370,34 @@ class DesignWorkspaceTests(unittest.TestCase):
                 )
                 (attempt / "orphaned-crash-bytes.bin").write_bytes(b"owned incomplete")
 
-            result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
-                job_id=job_id,
-                expected_job_revision=4,
-                source_path=str(source),
-                organization_id="org",
-                design_group_id="group",
-                family_id=None,
-                model_revision_id=None,
-                actor_id="owner",
-            )
+            with self.assertRaises(JobFailure) as captured:
+                DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id=job_id,
+                    expected_job_revision=4,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
 
-            self.assertEqual(result["id"], working_id)
+            self.assertEqual(captured.exception.code, "JOB_ATTEMPT_INVENTORY_UNSAFE")
             for attempt, _kind, _artifact_id in attempts:
-                self.assertFalse((attempt / "orphaned-crash-bytes.bin").exists())
+                self.assertEqual(
+                    (attempt / "orphaned-crash-bytes.bin").read_bytes(),
+                    b"owned incomplete",
+                )
 
     def test_job_new_design_is_created_directly_under_models_working(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
 
-            def create_empty(_freecadcmd, _script, arguments, timeout_seconds):
-                Path(arguments[0]).write_bytes(b"new-job-design")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            with patch("mechanical_design_agent.design.run_freecad_script", side_effect=create_empty):
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
+            ):
                 result = DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
                     job_id="10000000-0000-4000-8000-000000000001",
                     expected_job_revision=4,
@@ -334,7 +407,9 @@ class DesignWorkspaceTests(unittest.TestCase):
                     actor_id="owner",
                 )
 
-            self.assertEqual(Path(result["working_path"]).read_bytes(), b"new-job-design")
+            self.assertEqual(
+                Path(result["working_path"]).read_bytes(), b"valid-new-job-fcstd"
+            )
             self.assertTrue(
                 Path(result["working_path"]).is_relative_to(
                     (manager.root / "models" / "working").resolve()
@@ -343,6 +418,154 @@ class DesignWorkspaceTests(unittest.TestCase):
             self.assertIsNone(result["source_snapshot"])
             self.assertIsNone(repository.created["model_revision_id"])
             self.assertEqual(repository.created["design_origin"], "new_design")
+
+    def test_job_existing_model_reconciles_a_lost_commit_ack_without_deleting_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            repository.publication_error = LostCommitAcknowledgement("lost COMMIT ack")
+            source = root / "source.FCStd"
+            source.write_bytes(b"committed-existing-fcstd")
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
+            ):
+                result = DesignWorkspace(settings, repository, manager).create_job_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    source_path=str(source),
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    model_revision_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(len(repository.reconciliations), 1)
+            self.assertEqual(Path(result["working_path"]).read_bytes(), source.read_bytes())
+            snapshot = manager.root / result["source_snapshot"]["stored_path"]
+            self.assertEqual(snapshot.read_bytes(), source.read_bytes())
+            self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_job_new_design_reconciles_a_lost_commit_ack_without_duplicate_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            repository.publication_error = LostCommitAcknowledgement("lost COMMIT ack")
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
+            ):
+                result = DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(len(repository.reconciliations), 1)
+            self.assertEqual(
+                Path(result["working_path"]).read_bytes(), b"valid-new-job-fcstd"
+            )
+            self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
+
+    def test_job_publication_unknown_preserves_owned_bytes_for_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings, repository, manager = _job_binding_workspace(root)
+            repository.publication_error = ConnectionError("publication failed")
+            repository.reconciliation_error = ConnectionError("authority unavailable")
+
+            with patch(
+                "mechanical_design_agent.design.run_freecad_script",
+                side_effect=_valid_job_freecad_run,
+            ), self.assertRaises(JobFailure) as captured:
+                DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                    job_id="10000000-0000-4000-8000-000000000001",
+                    expected_job_revision=4,
+                    organization_id="org",
+                    design_group_id="group",
+                    family_id=None,
+                    actor_id="owner",
+                )
+
+            self.assertEqual(captured.exception.code, "JOB_DATABASE_COMMIT_UNKNOWN")
+            attempts = list((manager.root / "models" / "working").iterdir())
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(
+                (attempts[0] / "working.FCStd").read_bytes(), b"valid-new-job-fcstd"
+            )
+
+    def test_job_new_design_rejects_corrupt_zero_hardlinked_and_unexpected_output(self) -> None:
+        cases = ("corrupt", "zero", "hardlink", "unexpected", "sibling")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                settings, repository, manager = _job_binding_workspace(root)
+                outside = root / "outside.FCStd"
+                outside.write_bytes(b"outside-owned-by-someone-else")
+
+                def invalid_run(_freecadcmd, script, arguments, timeout_seconds):
+                    del timeout_seconds
+                    if Path(script).name == "create_empty_working_copy.py":
+                        working = Path(arguments[0])
+                        if case == "zero":
+                            working.write_bytes(b"")
+                        elif case == "hardlink":
+                            os.link(outside, working)
+                        else:
+                            working.write_bytes(b"not-an-fcstd")
+                        if case == "unexpected":
+                            (working.parent / "unexpected-output.bin").write_bytes(
+                                b"must be preserved"
+                            )
+                        if case == "sibling":
+                            (working.parent.parent / "unexpected-sibling.bin").write_bytes(
+                                b"must be preserved"
+                            )
+                        return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    return SimpleNamespace(
+                        returncode=1,
+                        stdout="",
+                        stderr="FreeCAD rejected corrupt FCStd",
+                    )
+
+                with patch(
+                    "mechanical_design_agent.design.run_freecad_script",
+                    side_effect=invalid_run,
+                ), self.assertRaises(JobFailure) as captured:
+                    DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
+                        job_id="10000000-0000-4000-8000-000000000001",
+                        expected_job_revision=4,
+                        organization_id="org",
+                        design_group_id="group",
+                        family_id=None,
+                        actor_id="owner",
+                    )
+
+                self.assertIn(
+                    captured.exception.code,
+                    {"JOB_FCSTD_INVALID", "JOB_OUTPUT_UNEXPECTED"},
+                )
+                self.assertIsNone(repository.created)
+                if case == "unexpected":
+                    attempts = list((manager.root / "models" / "working").iterdir())
+                    self.assertEqual(len(attempts), 1)
+                    self.assertEqual(
+                        (attempts[0] / "unexpected-output.bin").read_bytes(),
+                        b"must be preserved",
+                    )
+                if case == "hardlink":
+                    self.assertEqual(outside.read_bytes(), b"outside-owned-by-someone-else")
+                if case == "sibling":
+                    self.assertEqual(
+                        (manager.root / "models/working/unexpected-sibling.bin").read_bytes(),
+                        b"must be preserved",
+                    )
     def test_artifact_store_reports_reparse_target_as_an_invalid_stable_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)

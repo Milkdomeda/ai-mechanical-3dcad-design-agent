@@ -286,6 +286,7 @@ def read_managed_file(path: Path) -> ManagedFileRead:
             sha256=digest.hexdigest(),
             size_bytes=size,
             identity=FileIdentity(metadata.st_dev, metadata.st_ino),
+            link_count=metadata.st_nlink,
         )
     except OSError as exc:
         raise SecureFilesystemError(
@@ -613,6 +614,152 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
         remove_tree_at(parent_fd, target.name, label=label)
     finally:
         os.close(parent_fd)
+
+
+def remove_owned_directory_exact(
+    path: Path,
+    *,
+    expected_parent: Path,
+    allowed_files: frozenset[str],
+    label: str,
+) -> None:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(expected_parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            f"{label} cleanup parent cannot be pinned",
+        ) from exc
+    target_fd: int | None = None
+    child_descriptors: list[tuple[str, int, os.stat_result]] = []
+    try:
+        if target.parent != parent:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup target has an unexpected parent",
+            )
+        target_fd = os.open(target.name, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+        target_metadata = os.fstat(target_fd)
+        names = sorted(os.listdir(target_fd))
+        unexpected = [name for name in names if name not in allowed_files]
+        if unexpected:
+            raise SecureFilesystemError(
+                "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                f"{label} has unexpected inventory",
+            )
+        for name in names:
+            metadata = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise SecureFilesystemError(
+                    "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                    f"{label} inventory is not an exclusively owned regular file",
+                )
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=target_fd,
+            )
+            child_descriptors.append((name, child_fd, metadata))
+        for name, child_fd, metadata in child_descriptors:
+            opened = os.fstat(child_fd)
+            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    f"{label} inventory changed during cleanup",
+                )
+            current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    f"{label} inventory changed during cleanup",
+                )
+        for name, _child_fd, _metadata in child_descriptors:
+            os.unlink(name, dir_fd=target_fd)
+        os.fsync(target_fd)
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, target_fd, directory=True
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup root changed",
+            )
+        if os.fstat(target_fd).st_ino != target_metadata.st_ino:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup root changed",
+            )
+        os.close(target_fd)
+        target_fd = None
+        os.rmdir(target.name, dir_fd=descriptors[-1])
+        os.fsync(descriptors[-1])
+    except FileNotFoundError:
+        return
+    except SecureFilesystemError:
+        raise
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            f"{label} exact cleanup could not complete safely",
+        ) from exc
+    finally:
+        for _name, child_fd, _metadata in reversed(child_descriptors):
+            os.close(child_fd)
+        if target_fd is not None:
+            os.close(target_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def set_managed_file_readonly(path: Path) -> None:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(target.parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed read-only target ancestors cannot be pinned",
+        ) from exc
+    leaf_fd: int | None = None
+    try:
+        leaf_fd = os.open(
+            target.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=descriptors[-1],
+        )
+        metadata = os.fstat(leaf_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT",
+                "managed read-only target must be an exclusively owned regular file",
+            )
+        os.fchmod(leaf_fd, stat.S_IMODE(metadata.st_mode) & ~0o222)
+        updated = os.fstat(leaf_fd)
+        if updated.st_mode & 0o222:
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT",
+                "managed file could not be made read-only",
+            )
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, leaf_fd, directory=False
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed read-only target changed during mutation",
+            )
+        _verify_pinned_directory_chain(parent, descriptors)
+    except SecureFilesystemError:
+        raise
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_FILE_CONFLICT",
+            "managed file could not be made read-only safely",
+        ) from exc
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _open_source(source: Path, allowed_root: Path | None) -> tuple[int, Path]:

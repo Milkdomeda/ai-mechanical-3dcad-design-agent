@@ -227,10 +227,10 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
             "cad_working_copy", "product_family"
         ),
         "design_job_working_copy_create": _capability(
-            "design_job_workspace", "cad_working_copy", "product_family"
+            "design_job_workspace", "cad_working_copy"
         ),
         "design_job_new_working_copy_create": _capability(
-            "design_job_workspace", "cad_working_copy", "product_family"
+            "design_job_workspace", "cad_working_copy"
         ),
         "design_change_record": _capability(
             "cad_working_copy", "product_family"
@@ -1114,6 +1114,7 @@ def create_mcp(
         design_group_id: str,
         family_id: str = "",
         model_revision_id: str = "",
+        compatibility_request_id: str = "",
     ) -> str:
         """Create a new FCStd working copy without modifying the STEP/FCStd source."""
         return _json(
@@ -1123,6 +1124,7 @@ def create_mcp(
                 design_group_id=design_group_id,
                 family_id=family_id or None,
                 model_revision_id=model_revision_id or None,
+                compatibility_request_id=compatibility_request_id or None,
             )
         )
 
@@ -1155,6 +1157,7 @@ def create_mcp(
         design_group_id: str,
         family_id: str = "",
         explicit_family_authorization: bool = False,
+        compatibility_request_id: str = "",
     ) -> str:
         """Create a neutral empty FCStd working copy; specialized knowledge is not applied without family authorization."""
         return _json(
@@ -1163,6 +1166,7 @@ def create_mcp(
                 design_group_id=design_group_id,
                 family_id=family_id or None,
                 explicit_family_authorization=explicit_family_authorization,
+                compatibility_request_id=compatibility_request_id or None,
             )
         )
 

@@ -27,6 +27,7 @@ class ManagedFileRead:
     sha256: str
     size_bytes: int
     identity: FileIdentity
+    link_count: int
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,27 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
     _get_backend().remove_owned_tree(
         path, expected_parent=expected_parent, label=label
     )
+
+
+def remove_owned_directory_exact(
+    path: Path,
+    *,
+    expected_parent: Path,
+    allowed_files: set[str] | frozenset[str],
+    label: str,
+) -> None:
+    """Remove a flat owned directory only when every descendant is expected."""
+    _get_backend().remove_owned_directory_exact(
+        path,
+        expected_parent=expected_parent,
+        allowed_files=frozenset(allowed_files),
+        label=label,
+    )
+
+
+def set_managed_file_readonly(path: Path) -> None:
+    """Remove write permissions while the regular file and ancestors stay pinned."""
+    _get_backend().set_managed_file_readonly(path)
 
 
 def ingest_cas_file(

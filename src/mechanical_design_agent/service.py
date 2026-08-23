@@ -62,6 +62,9 @@ class MechanicalDesignService:
                 "organization_id": settings.organization_id,
                 "design_group_id": settings.design_group_id,
             }
+            self.design_workspace = DesignWorkspace(
+                settings, self.repository, self.design_jobs
+            )
             self.bootstrap_error = ""
             return
         self.artifacts = ArtifactStore(settings.artifact_root)
@@ -240,6 +243,34 @@ class MechanicalDesignService:
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
+        if source_files is not None and not isinstance(source_files, (list, tuple)):
+            raise JobFailure(
+                "JOB_SOURCE_FILES_INVALID",
+                "source_files must be an ordered list of CAD source references",
+            )
+        sources = tuple(source_files or ())
+        if sources:
+            if job_type != "mechanical_design":
+                raise JobFailure(
+                    "JOB_SOURCE_FILES_UNSUPPORTED_JOB_TYPE",
+                    "source-file staging is supported only for mechanical-design Jobs",
+                )
+            if len(sources) != 1:
+                raise JobFailure(
+                    "JOB_SOURCE_FILES_COUNT_INVALID",
+                    "source-file staging requires exactly one CAD source",
+                )
+            source = sources[0]
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or Path(source.strip()).suffix.casefold()
+                not in {".fcstd", ".step", ".stp"}
+            ):
+                raise JobFailure(
+                    "JOB_SOURCE_FILE_INVALID",
+                    "the staged source must be one FCStd or STEP path",
+                )
         manifest = self.design_jobs.create(
             job_type=job_type,
             title=title,
@@ -249,13 +280,23 @@ class MechanicalDesignService:
             idempotency_token=idempotency_token,
             actor_id=self.settings.actor_id,
         )
-        if source_files:
+        if sources:
+            job = self._job_manifest_response(manifest)
             return {
                 "schema_version": "MechanicalDesignJobSourceBinding/v1",
                 "status": "staged",
-                "job": self._job_manifest_response(manifest),
-                "source_file_count": len(source_files),
+                "job": job,
+                "source_file_count": 1,
                 "next_action": "design_job_working_copy_create",
+                "next_action_arguments": {
+                    "job_id": job["job_id"],
+                    "expected_job_revision": job["revision"],
+                    "organization_id": organization,
+                    "design_group_id": group,
+                    "family_id": family_id,
+                    "model_revision_id": None,
+                },
+                "required_arguments": ["source_path"],
             }
         return self._job_manifest_response(manifest)
 
@@ -2021,33 +2062,89 @@ class MechanicalDesignService:
         organization_id: str,
         design_group_id: str,
         family_id: str | None,
+        request_identity: dict[str, object],
     ) -> DesignJobManifest:
         organization, group = self._configured_job_scope(
             organization_id=organization_id,
             design_group_id=design_group_id,
         )
+        identity = {
+            "contract": "deprecated-v0.2-cad-working-copy",
+            "organization_id": organization,
+            "design_group_id": group,
+            "family_id": family_id,
+            **request_identity,
+        }
+        token = "compatibility-v0.2-" + hashlib.sha256(
+            json.dumps(
+                identity,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return self.design_jobs.create(
             job_type="mechanical_design",
             title="Deprecated v0.2 CAD working-copy compatibility",
             organization_id=organization,
             design_group_id=group,
             family_id=family_id,
-            idempotency_token="compatibility-v0.2-cad-working-copy",
+            idempotency_token=token,
             actor_id=self.settings.actor_id,
         )
+
+    @staticmethod
+    def _compatibility_retry_result(
+        manifest: DesignJobManifest,
+    ) -> dict[str, Any] | None:
+        if manifest.active_working_copy_id is None:
+            return None
+        return {
+            "id": str(manifest.active_working_copy_id),
+            "job_id": str(manifest.job_id),
+            "status": "already_bound",
+            "job": manifest.as_dict(),
+        }
 
     def design_working_copy_create(self, **kwargs: Any) -> dict[str, Any]:
         """Deprecated v0.2 wrapper; every result is still Job-bound."""
         self._require_database()
+        compatibility_request_id = kwargs.get("compatibility_request_id")
+        if compatibility_request_id is not None and (
+            not isinstance(compatibility_request_id, str)
+            or not compatibility_request_id.strip()
+        ):
+            raise JobFailure(
+                "JOB_INPUT_INVALID",
+                "compatibility_request_id must be a nonblank string when supplied",
+            )
+        source_path = str(kwargs["source_path"])
+        model_revision_id = kwargs.get("model_revision_id")
+        request_identity = {
+            "operation": "existing_model",
+            "request_id": (
+                compatibility_request_id.strip()
+                if isinstance(compatibility_request_id, str)
+                else None
+            ),
+            "model_revision_id": model_revision_id,
+            "source_request_sha256": hashlib.sha256(
+                source_path.strip().replace("\\", "/").encode("utf-8")
+            ).hexdigest(),
+        }
         manifest = self._compatibility_working_copy_job(
             organization_id=str(kwargs["organization_id"]),
             design_group_id=str(kwargs["design_group_id"]),
             family_id=kwargs.get("family_id"),
+            request_identity=request_identity,
         )
+        retry = self._compatibility_retry_result(manifest)
+        if retry is not None:
+            return retry
         return self.design_job_working_copy_create(
             job_id=str(manifest.job_id),
             expected_job_revision=manifest.revision,
-            source_path=str(kwargs["source_path"]),
+            source_path=source_path,
             organization_id=str(kwargs["organization_id"]),
             design_group_id=str(kwargs["design_group_id"]),
             family_id=kwargs.get("family_id"),
@@ -2061,14 +2158,34 @@ class MechanicalDesignService:
         design_group_id: str,
         family_id: str | None = None,
         explicit_family_authorization: bool = False,
+        compatibility_request_id: str | None = None,
     ) -> dict[str, Any]:
         """Deprecated v0.2 wrapper; every result is still Job-bound."""
         self._require_database()
+        if compatibility_request_id is not None and (
+            not isinstance(compatibility_request_id, str)
+            or not compatibility_request_id.strip()
+        ):
+            raise JobFailure(
+                "JOB_INPUT_INVALID",
+                "compatibility_request_id must be a nonblank string when supplied",
+            )
         manifest = self._compatibility_working_copy_job(
             organization_id=organization_id,
             design_group_id=design_group_id,
             family_id=family_id,
+            request_identity={
+                "operation": "new_design",
+                "request_id": (
+                    compatibility_request_id.strip()
+                    if isinstance(compatibility_request_id, str)
+                    else uuid.uuid4().hex
+                ),
+            },
         )
+        retry = self._compatibility_retry_result(manifest)
+        if retry is not None:
+            return retry
         return self.design_job_new_working_copy_create(
             job_id=str(manifest.job_id),
             expected_job_revision=manifest.revision,

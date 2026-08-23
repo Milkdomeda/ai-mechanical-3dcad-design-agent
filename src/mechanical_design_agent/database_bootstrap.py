@@ -29,6 +29,7 @@ EXPECTED_POSTGRES_MIGRATIONS = (
     "009_design_lifecycle_closure.sql",
     "010_design_jobs.sql",
     "011_design_job_working_copies.sql",
+    "012_design_job_binding_hardening.sql",
 )
 EXPECTED_NEO4J_MIGRATIONS = (
     "001_constraints.cypher",

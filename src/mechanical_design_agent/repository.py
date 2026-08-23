@@ -2620,8 +2620,17 @@ class PostgresRepository:
             if requested_model_revision_id:
                 row = connection.execute(
                     "SELECT m.*,a.sha256 AS artifact_sha256 FROM model_revisions m "
-                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s",
-                    (requested_model_revision_id,),
+                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s "
+                    "AND m.organization_id=%s AND m.design_group_id=%s AND a.sha256=%s "
+                    "AND (%s::text IS NULL OR m.family_id=%s)",
+                    (
+                        requested_model_revision_id,
+                        organization_id,
+                        design_group_id,
+                        source_sha256,
+                        requested_family_id,
+                        requested_family_id,
+                    ),
                 ).fetchone()
                 candidates = [row] if row is not None else []
             else:
@@ -2825,8 +2834,9 @@ class PostgresRepository:
 
             working = connection.execute(
                 "INSERT INTO design_working_copies(id,job_id,organization_id,design_group_id,family_id,"
-                "source_model_revision_id,source_sha256,source_kind,design_origin,working_path,created_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "source_model_revision_id,source_snapshot_id,bound_job_revision,source_sha256,source_kind,"
+                "design_origin,working_path,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (
                     working_copy_id,
                     job_id,
@@ -2834,6 +2844,8 @@ class PostgresRepository:
                     design_group_id,
                     family_id,
                     model_revision_id,
+                    snapshot_row["id"] if snapshot_row is not None else None,
+                    expected_job_revision,
                     source_sha256,
                     source_kind,
                     design_origin,
@@ -2867,6 +2879,114 @@ class PostgresRepository:
             "source_snapshot": dict(snapshot_row) if snapshot_row is not None else None,
             "job": dict(updated_job),
         }
+
+    def reconcile_job_working_copy_publication(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        working_copy_id: str,
+        model_revision_id: str | None,
+        source_sha256: str,
+        source_kind: str,
+        design_origin: str,
+        working_path: str,
+        actor_id: str,
+        source_snapshot_id: str | None,
+    ) -> dict[str, Any]:
+        """Reconcile a commit-ambiguous Job binding on a fresh scoped connection."""
+        with self.connection() as connection:
+            job = connection.execute(
+                "SELECT job.* FROM design_jobs job WHERE job.id=%s "
+                "AND job.organization_id=%s AND job.design_group_id=%s "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=job.organization_id)",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if job is None:
+                return {"status": "unknown"}
+            working = connection.execute(
+                "SELECT * FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (working_copy_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            snapshot = None
+            if source_snapshot_id is not None:
+                snapshot = connection.execute(
+                    "SELECT * FROM design_job_source_snapshots WHERE id=%s AND job_id=%s "
+                    "AND organization_id=%s AND design_group_id=%s",
+                    (
+                        source_snapshot_id,
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                    ),
+                ).fetchone()
+
+            if working is None and snapshot is None:
+                return {"status": "not_committed"}
+            if working is None or (
+                source_snapshot_id is not None and snapshot is None
+            ):
+                return {"status": "unknown"}
+
+            exact_working = (
+                str(working.get("job_id")) == job_id
+                and working.get("organization_id") == organization_id
+                and working.get("design_group_id") == design_group_id
+                and working.get("family_id") == family_id
+                and (
+                    str(working.get("source_model_revision_id"))
+                    if working.get("source_model_revision_id") is not None
+                    else None
+                )
+                == model_revision_id
+                and (
+                    str(working.get("source_snapshot_id"))
+                    if working.get("source_snapshot_id") is not None
+                    else None
+                )
+                == source_snapshot_id
+                and int(working.get("bound_job_revision"))
+                == expected_job_revision
+                and working.get("source_sha256") == source_sha256
+                and working.get("source_kind") == source_kind
+                and working.get("design_origin") == design_origin
+                and working.get("working_path") == working_path
+                and working.get("created_by") == actor_id
+            )
+            exact_job = (
+                str(job.get("active_working_copy_id")) == working_copy_id
+                and int(job.get("revision")) == expected_job_revision + 1
+            )
+            exact_snapshot = source_snapshot_id is None or (
+                snapshot is not None
+                and str(snapshot.get("id")) == source_snapshot_id
+                and str(snapshot.get("job_id")) == job_id
+                and snapshot.get("organization_id") == organization_id
+                and snapshot.get("design_group_id") == design_group_id
+                and (
+                    str(snapshot.get("source_model_revision_id"))
+                    if snapshot.get("source_model_revision_id") is not None
+                    else None
+                )
+                == model_revision_id
+                and snapshot.get("sha256") == source_sha256
+                and snapshot.get("created_by") == actor_id
+            )
+            if not (exact_working and exact_job and exact_snapshot):
+                return {"status": "unknown"}
+            return {
+                "status": "committed",
+                "publication": {
+                    "working_copy": dict(working),
+                    "source_snapshot": dict(snapshot) if snapshot is not None else None,
+                    "job": dict(job),
+                },
+            }
 
     @staticmethod
     def _authorized_knowledge_ids(

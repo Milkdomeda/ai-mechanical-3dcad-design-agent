@@ -15,14 +15,19 @@ from .package_resources import freecad_scripts_directory
 from .assembly import validate_assembly_completeness
 from .artifacts import ArtifactStore
 from .secure_fs import (
+    SecureFilesystemError,
     atomic_publish_new,
     atomic_replace,
     ensure_managed_directory,
     exclusive_file_lock,
+    list_managed_directory,
     read_managed_file,
+    remove_owned_directory_exact,
     remove_owned_tree,
+    set_managed_file_readonly,
     validate_managed_path,
 )
+from .jobs import JobFailure
 
 
 def derive_iteration_candidates(
@@ -107,6 +112,26 @@ class DesignWorkspace:
         return self.design_jobs
 
     @staticmethod
+    def _job_attempt_allowed_files(receipt: dict[str, object]) -> frozenset[str]:
+        kind = receipt.get("artifact_kind")
+        if kind == "source_snapshot":
+            return frozenset(
+                {".binding-attempt.json", "source.FCStd", "source.step"}
+            )
+        if kind == "working_copy":
+            return frozenset(
+                {
+                    ".binding-attempt.json",
+                    ".fcstd-validation.json",
+                    "working.FCStd",
+                }
+            )
+        raise JobFailure(
+            "JOB_ATTEMPT_INVENTORY_UNSAFE",
+            "Job binding attempt kind is not recognized",
+        )
+
+    @staticmethod
     def _job_attempt_directory(
         parent: Path, attempt_id: str, receipt: dict[str, object]
     ) -> Path:
@@ -123,18 +148,29 @@ class DesignWorkspace:
                     managed_attempt / ".binding-attempt.json"
                 )
             except Exception as exc:
-                raise RuntimeError(
-                    "an incomplete Job binding attempt cannot prove Agent ownership"
+                raise JobFailure(
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "An incomplete Job binding attempt cannot prove Agent ownership",
                 ) from exc
             if existing.content != receipt_bytes:
-                raise RuntimeError(
-                    "an incomplete Job binding attempt belongs to a different request"
+                raise JobFailure(
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "An incomplete Job binding attempt belongs to a different request",
                 )
-            remove_owned_tree(
-                managed_attempt,
-                expected_parent=parent,
-                label="recoverable Job binding attempt",
-            )
+            try:
+                remove_owned_directory_exact(
+                    managed_attempt,
+                    expected_parent=parent,
+                    allowed_files=DesignWorkspace._job_attempt_allowed_files(
+                        receipt
+                    ),
+                    label="recoverable Job binding attempt",
+                )
+            except Exception as exc:
+                raise JobFailure(
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "Job binding attempt contains unrecognized or unowned bytes",
+                ) from exc
         created = ensure_managed_directory(
             attempt,
             parents=False,
@@ -143,21 +179,282 @@ class DesignWorkspace:
         try:
             atomic_publish_new(created / ".binding-attempt.json", receipt_bytes)
         except Exception:
-            remove_owned_tree(
+            remove_owned_directory_exact(
                 created,
                 expected_parent=parent,
+                allowed_files=DesignWorkspace._job_attempt_allowed_files(receipt),
                 label="Job binding receipt attempt",
             )
             raise
         return created
 
     @staticmethod
-    def _cleanup_job_attempt(parent: Path, attempt: Path, label: str) -> None:
-        remove_owned_tree(
+    def _cleanup_job_attempt(
+        parent: Path,
+        attempt: Path,
+        label: str,
+        *,
+        receipt: dict[str, object],
+    ) -> None:
+        remove_owned_directory_exact(
             attempt,
             expected_parent=parent,
+            allowed_files=DesignWorkspace._job_attempt_allowed_files(receipt),
             label=label,
         )
+
+    @staticmethod
+    def _assert_job_attempt_inventory(
+        attempt: Path,
+        *,
+        required_files: frozenset[str],
+    ) -> None:
+        try:
+            entries = tuple(list_managed_directory(attempt))
+        except SecureFilesystemError as exc:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "FreeCAD output inventory cannot be verified safely",
+            ) from exc
+        names = {entry.name for entry in entries}
+        if names != set(required_files) or any(entry.is_directory for entry in entries):
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "FreeCAD produced files outside the controlled output contract",
+            )
+
+    def _validate_job_fcstd(
+        self,
+        *,
+        working_attempt: Path,
+        working_path: Path,
+    ) -> Any:
+        try:
+            before = read_managed_file(working_path)
+        except SecureFilesystemError as exc:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "FreeCAD working-copy output is missing or unsafe",
+            ) from exc
+        if (
+            working_path.suffix.casefold() != ".fcstd"
+            or before.size_bytes <= 0
+            or before.link_count != 1
+        ):
+            code = (
+                "JOB_OUTPUT_UNEXPECTED"
+                if before.link_count != 1
+                else "JOB_FCSTD_INVALID"
+            )
+            raise JobFailure(
+                code,
+                "FreeCAD working-copy output is not an exclusively owned nonempty FCStd",
+            )
+        self._assert_job_attempt_inventory(
+            working_attempt,
+            required_files=frozenset({".binding-attempt.json", "working.FCStd"}),
+        )
+        validation_path = working_attempt / ".fcstd-validation.json"
+        with freecad_scripts_directory() as scripts:
+            self._run_controlled_job_freecad(
+                script=scripts / "validate_working_copy.py",
+                arguments=[working_path, validation_path],
+                controlled_parent=working_attempt.parent,
+                timeout_seconds=900,
+                failure_code="JOB_FCSTD_INVALID",
+                failure_message="FreeCAD could not reopen, recompute, and validate the FCStd output",
+            )
+        self._assert_job_attempt_inventory(
+            working_attempt,
+            required_files=frozenset(
+                {
+                    ".binding-attempt.json",
+                    ".fcstd-validation.json",
+                    "working.FCStd",
+                }
+            ),
+        )
+        try:
+            validation_read = read_managed_file(validation_path)
+            payload = json.loads(validation_read.content.decode("utf-8"))
+            after = read_managed_file(working_path)
+        except (SecureFilesystemError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise JobFailure(
+                "JOB_FCSTD_INVALID",
+                "FreeCAD validation receipt is missing or invalid",
+            ) from exc
+        expected_fields = {
+            "schema_version",
+            "status",
+            "sha256",
+            "size_bytes",
+            "document_name",
+            "object_count",
+            "recomputed",
+        }
+        if validation_read.link_count != 1:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "FreeCAD validation evidence is not exclusively owned",
+            )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != expected_fields
+            or payload.get("schema_version")
+            != "MechanicalDesignWorkingCopyValidation/v1"
+            or payload.get("status") != "valid"
+            or payload.get("sha256") != before.sha256
+            or payload.get("size_bytes") != before.size_bytes
+            or not isinstance(payload.get("document_name"), str)
+            or not str(payload.get("document_name")).strip()
+            or type(payload.get("object_count")) is not int
+            or int(payload["object_count"]) < 0
+            or payload.get("recomputed") is not True
+            or after.identity != before.identity
+            or after.sha256 != before.sha256
+            or after.size_bytes != before.size_bytes
+            or after.content != before.content
+            or after.link_count != 1
+        ):
+            raise JobFailure(
+                "JOB_FCSTD_INVALID",
+                "FreeCAD validation evidence does not match the controlled FCStd output",
+            )
+        return after
+
+    def _run_controlled_job_freecad(
+        self,
+        *,
+        script: Path,
+        arguments: list[Path],
+        controlled_parent: Path,
+        timeout_seconds: int,
+        failure_code: str,
+        failure_message: str,
+    ) -> None:
+        try:
+            parent_before = tuple(list_managed_directory(controlled_parent))
+        except SecureFilesystemError as exc:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "Controlled FreeCAD output parent cannot be pinned",
+            ) from exc
+        run_error: Exception | None = None
+        completed: Any | None = None
+        try:
+            completed = run_freecad_script(
+                self.settings.freecadcmd,
+                script,
+                arguments,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            run_error = exc
+        try:
+            parent_after = tuple(list_managed_directory(controlled_parent))
+        except SecureFilesystemError as exc:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "Controlled FreeCAD output parent changed identity",
+            ) from exc
+        if parent_after != parent_before:
+            raise JobFailure(
+                "JOB_OUTPUT_UNEXPECTED",
+                "FreeCAD produced a sibling outside the controlled output directory",
+            ) from run_error
+        if run_error is not None or completed is None or completed.returncode != 0:
+            raise JobFailure(failure_code, failure_message) from run_error
+
+    @staticmethod
+    def _translate_job_publication_error(error: Exception) -> JobFailure:
+        if isinstance(error, JobFailure):
+            return error
+        message = str(error).casefold()
+        if "stale" in message and "revision" in message:
+            return JobFailure(
+                "JOB_REVISION_STALE",
+                "The Design Job revision changed before working-copy publication",
+            )
+        if "active working copy" in message or "active working-copy" in message:
+            return JobFailure(
+                "JOB_ACTIVE_WORKING_COPY_EXISTS",
+                "The Design Job already has an active working copy",
+            )
+        if isinstance(error, (KeyError, PermissionError)) or any(
+            marker in message for marker in ("unauthorized", "scope", "family")
+        ):
+            return JobFailure(
+                "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                "The Design Job or source revision is unavailable in the authorized scope",
+            )
+        if "active ready mechanical_design" in message:
+            return JobFailure(
+                "JOB_NOT_ACTIVE",
+                "Working-copy creation requires an active ready mechanical-design Job",
+            )
+        return JobFailure(
+            "JOB_DATABASE_PUBLICATION_FAILED",
+            "The verified CAD bytes could not be published to the Design Job authority",
+        )
+
+    def _publish_job_working_copy(self, **publication: Any) -> dict[str, Any]:
+        """Publish or reconcile a commit-ambiguous repository exception.
+
+        Repository exceptions are never treated as rollback proof.  Reconciliation
+        uses a fresh scoped connection in the repository and deterministic artifact
+        identifiers before this caller decides whether owned bytes may be removed.
+        """
+        try:
+            return self.repository.create_job_working_copy(**publication)
+        except Exception as publication_error:
+            source_snapshot = publication.get("source_snapshot")
+            try:
+                reconciliation = (
+                    self.repository.reconcile_job_working_copy_publication(
+                        job_id=publication["job_id"],
+                        expected_job_revision=publication["expected_job_revision"],
+                        organization_id=publication["organization_id"],
+                        design_group_id=publication["design_group_id"],
+                        family_id=publication["family_id"],
+                        working_copy_id=publication["working_copy_id"],
+                        model_revision_id=publication["model_revision_id"],
+                        source_sha256=publication["source_sha256"],
+                        source_kind=publication["source_kind"],
+                        design_origin=publication["design_origin"],
+                        working_path=publication["working_path"],
+                        actor_id=publication["actor_id"],
+                        source_snapshot_id=(
+                            source_snapshot["id"]
+                            if isinstance(source_snapshot, dict)
+                            else None
+                        ),
+                    )
+                )
+            except Exception as reconciliation_error:
+                raise JobFailure(
+                    "JOB_DATABASE_COMMIT_UNKNOWN",
+                    "Database publication could not be reconciled; owned CAD bytes were preserved",
+                ) from reconciliation_error
+            if not isinstance(reconciliation, dict):
+                raise JobFailure(
+                    "JOB_DATABASE_COMMIT_UNKNOWN",
+                    "Database publication returned no authoritative reconciliation; owned CAD bytes were preserved",
+                ) from publication_error
+            status = reconciliation.get("status")
+            if status == "committed":
+                reconciled = reconciliation.get("publication")
+                if not isinstance(reconciled, dict):
+                    raise JobFailure(
+                        "JOB_DATABASE_COMMIT_UNKNOWN",
+                        "Committed publication evidence was incomplete; owned CAD bytes were preserved",
+                    ) from publication_error
+                return reconciled
+            if status == "not_committed":
+                raise self._translate_job_publication_error(publication_error) from publication_error
+            raise JobFailure(
+                "JOB_DATABASE_COMMIT_UNKNOWN",
+                "Database publication state is inconsistent; owned CAD bytes were preserved",
+            ) from publication_error
 
     def create_job_working_copy(
         self,
@@ -175,7 +472,10 @@ class DesignWorkspace:
         source = Path(os.path.abspath(Path(source_path).expanduser()))
         source_suffix = source.suffix.lower()
         if source_suffix not in {".step", ".stp", ".fcstd"}:
-            raise ValueError("working-copy source must be a STEP or FCStd file")
+            raise JobFailure(
+                "JOB_SOURCE_FILE_INVALID",
+                "Working-copy source must be one FCStd or STEP file",
+            )
         manager = self._require_job_manager()
         database_published = False
         snapshot_attempt: Path | None = None
@@ -191,7 +491,13 @@ class DesignWorkspace:
             job_root = validate_managed_path(
                 job_root, allow_missing_leaf=False
             ).path
-            source_read = read_managed_file(source)
+            try:
+                source_read = read_managed_file(source)
+            except SecureFilesystemError as exc:
+                raise JobFailure(
+                    "JOB_SOURCE_UNSAFE",
+                    "source CAD cannot be read through a stable no-follow handle",
+                ) from exc
             try:
                 job_namespace = uuid.UUID(job_id)
             except ValueError as exc:
@@ -227,23 +533,32 @@ class DesignWorkspace:
             working_parent = validate_managed_path(
                 job_root / "models" / "working", allow_missing_leaf=False
             ).path
+            snapshot_receipt = {
+                "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                "job_id": job_id,
+                "expected_job_revision": expected_job_revision,
+                "artifact_kind": "source_snapshot",
+                "artifact_id": snapshot_id,
+                "source_sha256": source_read.sha256,
+            }
+            working_receipt = {
+                "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+                "job_id": job_id,
+                "expected_job_revision": expected_job_revision,
+                "artifact_kind": "working_copy",
+                "artifact_id": working_copy_id,
+                "source_sha256": source_read.sha256,
+            }
             try:
                 snapshot_attempt = self._job_attempt_directory(
                     source_parent,
                     snapshot_id,
-                    {
-                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
-                        "job_id": job_id,
-                        "expected_job_revision": expected_job_revision,
-                        "artifact_kind": "source_snapshot",
-                        "artifact_id": snapshot_id,
-                        "source_sha256": source_read.sha256,
-                    },
+                    snapshot_receipt,
                 )
                 snapshot_name = "source.FCStd" if source_suffix == ".fcstd" else "source.step"
                 snapshot_path = snapshot_attempt / snapshot_name
                 atomic_publish_new(snapshot_path, source_read.content)
-                os.chmod(snapshot_path, 0o444)
+                set_managed_file_readonly(snapshot_path)
                 snapshot_read = read_managed_file(snapshot_path)
                 if (
                     snapshot_read.sha256 != source_read.sha256
@@ -254,45 +569,50 @@ class DesignWorkspace:
                 working_attempt = self._job_attempt_directory(
                     working_parent,
                     working_copy_id,
-                    {
-                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
-                        "job_id": job_id,
-                        "expected_job_revision": expected_job_revision,
-                        "artifact_kind": "working_copy",
-                        "artifact_id": working_copy_id,
-                        "source_sha256": source_read.sha256,
-                    },
+                    working_receipt,
                 )
                 working_path = working_attempt / "working.FCStd"
                 if source_suffix == ".fcstd":
                     atomic_publish_new(working_path, snapshot_read.content)
                 else:
                     with freecad_scripts_directory() as scripts:
-                        completed = run_freecad_script(
-                            self.settings.freecadcmd,
-                            scripts / "normalize_working_copy.py",
-                            [snapshot_path, working_path],
+                        self._run_controlled_job_freecad(
+                            script=scripts / "normalize_working_copy.py",
+                            arguments=[snapshot_path, working_path],
+                            controlled_parent=working_parent,
                             timeout_seconds=900,
+                            failure_code="JOB_NORMALIZATION_FAILED",
+                            failure_message="FreeCAD could not normalize the governed source snapshot",
                         )
-                    if completed.returncode != 0:
-                        diagnostic = (completed.stderr + "\n" + completed.stdout)[-4000:]
-                        raise RuntimeError(
-                            f"FreeCAD working-copy normalization failed: {diagnostic}"
-                        )
-                working_read = read_managed_file(working_path)
+                working_read = self._validate_job_fcstd(
+                    working_attempt=working_attempt,
+                    working_path=working_path,
+                )
                 if source_suffix == ".fcstd" and (
                     working_read.sha256 != source_read.sha256
                     or working_read.content != source_read.content
                 ):
-                    raise RuntimeError("FCStd working-copy verification failed")
+                    raise JobFailure(
+                        "JOB_FCSTD_INVALID",
+                        "FCStd working-copy bytes do not match the governed snapshot",
+                    )
 
-                final_source_read = read_managed_file(source)
+                try:
+                    final_source_read = read_managed_file(source)
+                except SecureFilesystemError as exc:
+                    raise JobFailure(
+                        "JOB_SOURCE_CHANGED",
+                        "source CAD identity became unavailable during binding",
+                    ) from exc
                 if (
                     final_source_read.identity != source_read.identity
                     or final_source_read.sha256 != source_read.sha256
                     or final_source_read.content != source_read.content
                 ):
-                    raise RuntimeError("source CAD changed while creating working copy")
+                    raise JobFailure(
+                        "JOB_SOURCE_CHANGED",
+                        "source CAD changed while creating the governed working copy",
+                    )
 
                 stored_path = snapshot_path.relative_to(job_root).as_posix()
                 source_snapshot = {
@@ -304,7 +624,7 @@ class DesignWorkspace:
                     "source_kind": "existing_model",
                     "source_model_revision_id": resolved_model_revision_id,
                 }
-                published = self.repository.create_job_working_copy(
+                published = self._publish_job_working_copy(
                     job_id=job_id,
                     expected_job_revision=expected_job_revision,
                     organization_id=organization_id,
@@ -328,19 +648,26 @@ class DesignWorkspace:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                 )
-            except Exception:
-                if not database_published:
+            except Exception as exc:
+                preserve = isinstance(exc, JobFailure) and exc.code in {
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "JOB_OUTPUT_UNEXPECTED",
+                    "JOB_DATABASE_COMMIT_UNKNOWN",
+                }
+                if not database_published and not preserve:
                     if working_attempt is not None:
                         self._cleanup_job_attempt(
                             working_parent,
                             working_attempt,
                             "Job working-copy attempt",
+                            receipt=working_receipt,
                         )
                     if snapshot_attempt is not None:
                         self._cleanup_job_attempt(
                             source_parent,
                             snapshot_attempt,
                             "Job source-snapshot attempt",
+                            receipt=snapshot_receipt,
                         )
                 raise
 
@@ -383,6 +710,14 @@ class DesignWorkspace:
         )
         database_published = False
         working_attempt: Path | None = None
+        working_receipt = {
+            "schema_version": "MechanicalDesignJobBindingAttempt/v1",
+            "job_id": job_id,
+            "expected_job_revision": expected_job_revision,
+            "artifact_kind": "working_copy",
+            "artifact_id": working_copy_id,
+            "source_sha256": None,
+        }
         with manager.locked_active_mechanical_design_job(
             job_id=job_id,
             expected_job_revision=expected_job_revision,
@@ -400,30 +735,23 @@ class DesignWorkspace:
                 working_attempt = self._job_attempt_directory(
                     working_parent,
                     working_copy_id,
-                    {
-                        "schema_version": "MechanicalDesignJobBindingAttempt/v1",
-                        "job_id": job_id,
-                        "expected_job_revision": expected_job_revision,
-                        "artifact_kind": "working_copy",
-                        "artifact_id": working_copy_id,
-                        "source_sha256": None,
-                    },
+                    working_receipt,
                 )
                 working_path = working_attempt / "working.FCStd"
                 with freecad_scripts_directory() as scripts:
-                    completed = run_freecad_script(
-                        self.settings.freecadcmd,
-                        scripts / "create_empty_working_copy.py",
-                        [working_path],
+                    self._run_controlled_job_freecad(
+                        script=scripts / "create_empty_working_copy.py",
+                        arguments=[working_path],
+                        controlled_parent=working_parent,
                         timeout_seconds=120,
+                        failure_code="JOB_FCSTD_INVALID",
+                        failure_message="FreeCAD could not create the governed FCStd working copy",
                     )
-                if completed.returncode != 0:
-                    diagnostic = (completed.stderr + "\n" + completed.stdout)[-4000:]
-                    raise RuntimeError(
-                        f"FreeCAD new working-copy creation failed: {diagnostic}"
-                    )
-                working_read = read_managed_file(working_path)
-                published = self.repository.create_job_working_copy(
+                working_read = self._validate_job_fcstd(
+                    working_attempt=working_attempt,
+                    working_path=working_path,
+                )
+                published = self._publish_job_working_copy(
                     job_id=job_id,
                     expected_job_revision=expected_job_revision,
                     organization_id=organization_id,
@@ -447,12 +775,22 @@ class DesignWorkspace:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                 )
-            except Exception:
-                if not database_published and working_attempt is not None:
+            except Exception as exc:
+                preserve = isinstance(exc, JobFailure) and exc.code in {
+                    "JOB_ATTEMPT_INVENTORY_UNSAFE",
+                    "JOB_OUTPUT_UNEXPECTED",
+                    "JOB_DATABASE_COMMIT_UNKNOWN",
+                }
+                if (
+                    not database_published
+                    and not preserve
+                    and working_attempt is not None
+                ):
                     self._cleanup_job_attempt(
                         working_parent,
                         working_attempt,
                         "Job new-design working-copy attempt",
+                        receipt=working_receipt,
                     )
                 raise
         return {

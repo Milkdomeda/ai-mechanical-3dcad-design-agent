@@ -1458,6 +1458,15 @@ def test_authoritative_working_copy_and_snapshot_project_into_get_doctor_and_rep
     )
     assert doctor["status"] == "ok"
     assert doctor["verified_snapshots"] == [dict(projected.source_snapshots[0])]
+    active_evidence = doctor["verified_active_working_copy"]
+    assert active_evidence == {
+        "working_copy_id": working_copy_id,
+        "relative_path": working_path.relative_to(root).as_posix(),
+        "identity": active_evidence["identity"],
+        "sha256": hashlib.sha256(working_path.read_bytes()).hexdigest(),
+        "size_bytes": len(working_path.read_bytes()),
+    }
+    assert set(active_evidence["identity"]) == {"volume", "file_index"}
 
     payload = json.loads((root / "job.json").read_text(encoding="utf-8"))
     payload["source_snapshots"] = []
@@ -1513,6 +1522,50 @@ def test_authoritative_working_copy_and_snapshot_project_into_get_doctor_and_rep
     historical = repository.jobs[str(JOB_ID)]
     assert historical["source_snapshots"] == authoritative["source_snapshots"]
     assert working_path.exists()
+
+
+def test_repair_rejects_active_working_copy_changed_after_doctor_receipt(
+    tmp_path: Path,
+) -> None:
+    manager, repository = _manager(tmp_path)
+    created = _create_managed_job(manager)
+    root = manager.workspace.jobs_root / created.directory_name
+    working_copy_id = "50000000-0000-4000-8000-000000000001"
+    working_path = root / "models/working" / working_copy_id / "working.FCStd"
+    working_path.parent.mkdir()
+    working_path.write_bytes(b"doctor-bound-working-copy")
+    authoritative = repository.jobs[str(JOB_ID)]
+    authoritative["active_working_copy_id"] = working_copy_id
+    authoritative["active_working_path"] = str(working_path.resolve())
+    authoritative["revision"] = created.revision + 1
+    with locked_job_root(job_root=root) as locked:
+        projected = manager.publish_authoritative_manifest_locked(
+            locked_root=locked,
+            job_id=str(JOB_ID),
+            expected_job_revision=created.revision,
+            working_copy_id=working_copy_id,
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+        )
+    report = manager.doctor(
+        job_id=str(JOB_ID),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+    )
+    working_path.write_bytes(b"changed-between-doctor-and-repair")
+
+    with pytest.raises(JobFailure) as captured:
+        manager.repair(
+            job_id=str(JOB_ID),
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+            expected_revision=projected.revision,
+            doctor_receipt_hash=str(report["receipt_sha256"]),
+            reason="must not repair from stale model evidence",
+        )
+
+    assert captured.value.code == "JOB_DOCTOR_RECEIPT_MISMATCH"
 
 
 def test_doctor_fails_closed_before_manifest_reads_when_locked_authority_is_revoked(
