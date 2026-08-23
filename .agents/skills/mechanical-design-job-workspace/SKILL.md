@@ -6,9 +6,8 @@ description: Route FreeCAD product operations through controlled Design Jobs. Us
 # Mechanical Design Job Workspace
 
 Use this Skill before any product operation: a new design, an existing model,
-a resume, Product Family onboarding, or Design Lessons. It covers public
-FreeCAD work on macOS and Windows only; it does not add Blender, rendering, or
-video work.
+a resume, Product Family onboarding, or Design Lessons. Its public scope is
+mechanical FreeCAD work on macOS and Windows.
 
 ## Routing decision matrix
 
@@ -35,20 +34,21 @@ an ambiguous intent.
 | Design Lesson | Originating `mechanical_design` only | Stop if origin is missing or ambiguous; never create a replacement or onboarding Job. |
 
 Job identity is not an arbitrary filesystem path. Read [the Job
-contract](references/job-contract.md) for the Task 4 interfaces, their
-lifecycle limits, and the later Task 6 binding behavior.
+contract](references/job-contract.md) for lifecycle, working-copy, provenance,
+and recovery behavior.
 
 ## Work within the Job
 
 Product work uses the resolved Job workspace.
 Do not create a Git branch or Git worktree.
-Treat an existing source model as read-only. Task 6 supplies the governed
-source-snapshot and downstream-binding behavior; Task 4's lifecycle APIs do not
-yet provide an executable snapshot operation.
+Treat an existing source model as read-only. Stage exactly one FCStd/STEP source
+through `design_job_create`, then call `design_job_working_copy_create` with the
+returned Job revision. For a new design, call
+`design_job_new_working_copy_create` after creating the Job.
 
-Keep the Job ID with every downstream working-copy, evidence, and Design Lesson
-ID when the governed downstream interfaces are available. Do not invent an
-unbound substitute or write a Job binding directly to the filesystem.
+Keep the Job ID and expected revision with every downstream working-copy,
+evidence, Product Family, and Design Lesson operation. Do not invent an unbound
+substitute or write a Job binding directly to the filesystem.
 
 Product Family and Design Lesson database writes are Job operations. Changing
 their implementation, schema, migrations, or tests is software development.

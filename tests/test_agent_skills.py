@@ -131,6 +131,10 @@ def test_design_job_skill_routes_product_operations_through_jobs() -> None:
     assert re.search(r'(?m)^  default_prompt: ".+"$', metadata_text)
 
     assert "Do not create a Git branch or Git worktree" in skill_text
+    assert "Task 4" not in skill_text + contract_text
+    assert "Task 6" not in skill_text + contract_text
+    assert "design_job_working_copy_create" in skill_text + contract_text
+    assert "design_job_new_working_copy_create" in skill_text + contract_text
     routing = _markdown_table(skill_text, "## Routing decision matrix")
     assert routing == {
         "Explicit Job UUID or display ID": {

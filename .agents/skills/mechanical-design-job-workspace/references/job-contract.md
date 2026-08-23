@@ -19,9 +19,9 @@ review, knowledge, and database publication reuse their original
 `product_family_onboarding` Job. A Design Lesson uses its originating
 `mechanical_design` Job only; stop if that origin is missing or ambiguous.
 
-## Task 4 MCP calls
+## Job lifecycle and binding MCP calls
 
-Task 4 exposes these public MCP interfaces:
+The release exposes these public MCP interfaces:
 
 - `design_job_resolve` returns all authorized candidates for an intent query;
   it never selects a Job implicitly.
@@ -31,6 +31,10 @@ Task 4 exposes these public MCP interfaces:
   `design_job_list` filters Jobs only within the configured authorized scope.
 - `design_job_close` and `design_job_reopen` transition the lifecycle only
   with the required current revision, reason, phase, and user confirmation.
+- `design_job_working_copy_create` captures one immutable existing-model source
+  and creates its governed FCStd working copy with the current Job revision.
+- `design_job_new_working_copy_create` creates a neutral governed FCStd seed for
+  a new design with the current Job revision.
 
 ## Allowed Job types and phases
 
@@ -56,15 +60,16 @@ MCP tools. Use `mechanical-design job doctor` for read-only inspection and
 the matching user confirmation. Never supply a confirmation on the user's
 behalf.
 
-## Current boundary and later bindings
+## Governed source and downstream bindings
 
-Task 4 is a Job lifecycle contract. In this release, `design_job_create`
-rejects `source_files`: it cannot create source snapshots, working-copy
-bindings, evidence bindings, or Design Lesson bindings. Do not claim that an
-unsupported Task 4 call performed any of those operations.
+`design_job_create` accepts no source for a new design or exactly one FCStd,
+STEP, or STP source for an existing-model Job. A supplied source is staged as
+intent only; the returned `next_action` must be completed with
+`design_job_working_copy_create` before editing. The source remains read-only,
+and the Job stores an immutable snapshot and normalized FCStd working copy.
 
-Task 6 governs immutable source snapshots and binds each downstream
-`working_copy_id`, evidence artifact ID, and Design Lesson ID to the Job ID.
-Until that governed interface is available, preserve the resolved Job identity,
-keep sources read-only, and stop rather than manufacture filesystem metadata or
-an unsupported binding.
+Each downstream `working_copy_id`, validation/delivery evidence record, Product
+Family onboarding record, and Design Lesson record is bound to the Job ID and
+expected revision. A stale revision, foreign Job, ambiguous origin, or missing
+binding stops the operation. Do not manufacture filesystem metadata or cross a
+Job boundary to bypass the governed interface.

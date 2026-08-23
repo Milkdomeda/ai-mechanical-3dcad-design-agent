@@ -54,10 +54,11 @@ def test_new_existing_resume_and_independent_design_jobs_use_freecad() -> None:
     organization_id = str(service.bootstrap_config["organization_id"])
     design_group_id = str(service.bootstrap_config["design_group_id"])
     run = uuid4().hex
+    new_title = f"v0.3 live new design {run}"
 
     new_job = service.design_job_create(
         job_type="mechanical_design",
-        title=f"v0.3 live new design {run}",
+        title=new_title,
         organization_id=organization_id,
         design_group_id=design_group_id,
         family_id=None,
@@ -73,7 +74,7 @@ def test_new_existing_resume_and_independent_design_jobs_use_freecad() -> None:
     _assert_governed_job_tree(new_root, new_working["working_path"])
 
     resumed = service.design_job_resolve(
-        query=str(new_job["display_id"]),
+        query=new_title,
         job_type="mechanical_design",
         statuses=("active", "blocked"),
     )

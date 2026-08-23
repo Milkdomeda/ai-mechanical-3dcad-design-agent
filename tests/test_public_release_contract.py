@@ -164,6 +164,23 @@ def test_manifest_explicitly_excludes_private_development_content() -> None:
         assert path in excluded
 
 
+def test_repository_ignores_runtime_job_and_release_artifacts() -> None:
+    rules = {
+        line.strip()
+        for line in (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert {"/jobs/", "/output/", "/dist/"} <= rules
+    tracked = subprocess.run(
+        ["git", "ls-files", "jobs", "output", "dist"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.stdout == ""
+
+
 def test_projection_contains_only_materialized_allowlist(
     tmp_path: Path,
 ) -> None:
