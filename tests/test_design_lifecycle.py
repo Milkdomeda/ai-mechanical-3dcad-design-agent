@@ -126,6 +126,22 @@ class _RetrievalRepository:
         }
 
 
+class _LessonJobWorkspace:
+    @contextmanager
+    def locked_job_working_copy(self, working_copy_id: str):
+        yield (
+            None,
+            None,
+            {
+                "id": working_copy_id,
+                "job_id": "00000000-0000-0000-0000-000000000010",
+                "organization_id": "org",
+                "design_group_id": "group",
+            },
+            {"id": "00000000-0000-0000-0000-000000000010", "revision": 3},
+        )
+
+
 class _ChangeRecordConnection:
     def __init__(self, retrieval_status: str) -> None:
         self.retrieval_status = retrieval_status
@@ -387,6 +403,11 @@ class DesignLifecycleTests(unittest.TestCase):
         service = MechanicalDesignService.__new__(MechanicalDesignService)
         service.repository = repository
         service.settings = SimpleNamespace(actor_id="owner")
+        service.bootstrap_config = {
+            "organization_id": "org",
+            "design_group_id": "group",
+        }
+        service.design_workspace = _LessonJobWorkspace()
         service._require_database = lambda: None
 
         result = service.design_confirmation_record(

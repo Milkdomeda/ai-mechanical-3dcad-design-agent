@@ -45,6 +45,23 @@ def _job_json(call: Callable[[], object]) -> str:
         raise ToolError(safe_job_error_json(exc)) from None
 
 
+def _optional_job_binding(
+    job_id: str, expected_job_revision: int
+) -> dict[str, object]:
+    has_job = bool(job_id.strip())
+    has_revision = expected_job_revision >= 0
+    if has_job != has_revision:
+        raise ValueError(
+            "job_id and expected_job_revision must be supplied together"
+        )
+    if not has_job:
+        return {}
+    return {
+        "job_id": job_id.strip(),
+        "expected_job_revision": expected_job_revision,
+    }
+
+
 def _strict_json_loads(value: str) -> Any:
     def reject_constant(constant: str) -> None:
         raise ValueError(f"strict JSON does not allow {constant}")
@@ -1033,6 +1050,8 @@ def create_mcp(
         package_json: str,
         evidence_items_json: str,
         supersedes_review_id: str = "",
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Prepare one immutable review card from a material, generalizable Codex summary; leave predecessor empty for a new review."""
         require_safe_id(working_copy_id, "working_copy_id")
@@ -1049,12 +1068,17 @@ def create_mcp(
                 package,
                 evidence_items,
                 predecessor or None,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
     def design_lesson_review_approve(
-        review_id: str, reviewer_text: str, confirmation: str
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Approve the entire immutable review card as one batch decision using exactly `批准设计经验 <review_id>`; no digest is supplied."""
         require_safe_id(review_id, "review_id")
@@ -1071,12 +1095,17 @@ def create_mcp(
                 review_id=review_id,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
     def design_lesson_review_reject(
-        review_id: str, reviewer_text: str, confirmation: str
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Reject the entire immutable review card using exactly `拒绝设计经验 <review_id>` with a nonblank reviewer explanation."""
         require_safe_id(review_id, "review_id")
@@ -1093,6 +1122,7 @@ def create_mcp(
                 review_id=review_id,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
@@ -1105,7 +1135,12 @@ def create_mcp(
         return _json(service.design_lesson_review_status(review_id, retry=retry))
 
     @mcp.tool()
-    def design_lesson_stage(package_json: str, evidence_paths_json: str) -> str:
+    def design_lesson_stage(
+        package_json: str,
+        evidence_paths_json: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
         """Stage a local immutable lesson review package; staging makes no PostgreSQL write."""
         package = _object(package_json, "package_json")
         if package.get("status") == "approved":
@@ -1117,12 +1152,25 @@ def create_mcp(
         for item in evidence_items:
             if not all(isinstance(item.get(field), str) for field in required_fields):
                 raise ValueError("evidence paths, roles, and media types must be strings")
-        return _json(service.design_lesson_stage(package, evidence_items))
+        return _json(
+            service.design_lesson_stage(
+                package,
+                evidence_items,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
 
     @mcp.tool()
-    def design_lesson_staged_get(lesson_id: str) -> str:
+    def design_lesson_staged_get(
+        lesson_id: str, working_copy_id: str = ""
+    ) -> str:
         """Get one local-only staged lesson package by its opaque lesson id."""
-        return _json(service.design_lesson_staged_get(lesson_id))
+        return _json(
+            service.design_lesson_staged_get(
+                lesson_id,
+                working_copy_id=working_copy_id or None,
+            )
+        )
 
     @mcp.tool()
     def design_lesson_approve(
@@ -1130,6 +1178,8 @@ def create_mcp(
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Approve a verified staged package only after service-level Chinese confirmation checks."""
         return _json(
@@ -1138,6 +1188,7 @@ def create_mcp(
                 expected_package_sha256=expected_package_sha256,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
@@ -1187,6 +1238,8 @@ def create_mcp(
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Replace an approved lesson with a separately staged package after explicit confirmation."""
         return _json(
@@ -1196,13 +1249,27 @@ def create_mcp(
                 expected_package_sha256=expected_package_sha256,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
-    def design_lesson_revoke(lesson_id: str, reason: str, confirmation: str) -> str:
+    def design_lesson_revoke(
+        lesson_id: str,
+        reason: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
         """Revoke an approved lesson with an auditable reason and Chinese confirmation."""
-        return _json(service.design_lesson_revoke(lesson_id=lesson_id, reason=reason, confirmation=confirmation))
+        return _json(
+            service.design_lesson_revoke(
+                lesson_id=lesson_id,
+                reason=reason,
+                confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
 
     @mcp.tool()
     def design_working_copy_create(
@@ -1374,6 +1441,8 @@ def create_mcp(
         working_copy_id: str,
         lesson_summary_json: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Record the mandatory lesson summary immediately after explicit model-design confirmation."""
         return _json(
@@ -1381,6 +1450,7 @@ def create_mcp(
                 working_copy_id=working_copy_id,
                 lesson_summary=_object(lesson_summary_json, "lesson_summary_json"),
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 

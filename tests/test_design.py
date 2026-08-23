@@ -127,6 +127,26 @@ class FakeJobBindingRepository(FakeRepository):
         self.committed_publication = publication
         return publication
 
+    def get_working_copy(self, working_copy_id):
+        if not self.working_path:
+            return super().get_working_copy(working_copy_id)
+        return {
+            "id": working_copy_id,
+            "job_id": "job-operational",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": None,
+            "working_path": str(Path(self.working_path).resolve()),
+            "working_relative_path": Path(self.working_path).name,
+        }
+
+    def get_design_job(self, **_scope):
+        return {
+            "id": "job-operational",
+            "revision": 1,
+            "active_working_copy_id": "copy",
+        }
+
     def reconcile_job_working_copy_publication(self, **kwargs):
         self.reconciliations.append(kwargs)
         if self.reconciliation_responses:
@@ -164,6 +184,7 @@ class FakeJobBindingManager:
             "organization_id": kwargs["organization_id"],
             "design_group_id": kwargs["design_group_id"],
             "family_id": kwargs.get("family_id"),
+            "active_working_copy_id": "copy",
         }
 
     def publish_authoritative_manifest_locked(self, **kwargs):
@@ -1277,7 +1298,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             package.mkdir()
             working = workspace / "working.FCStd"
             working.write_bytes(b"approved model bytes")
-            repository = FakeRepository()
+            repository = FakeJobBindingRepository()
             repository.working_path = str(working)
             settings = Settings(
                 workspace=workspace,
@@ -1292,7 +1313,11 @@ class DesignWorkspaceTests(unittest.TestCase):
                 family_config_path=package / "family.json",
             )
 
-            approved = DesignWorkspace(settings, repository).approve_delivery(
+            approved = DesignWorkspace(
+                settings,
+                repository,
+                FakeJobBindingManager(workspace),
+            ).approve_delivery(
                 "copy",
                 "owner",
                 "批准 copy",
@@ -1304,7 +1329,11 @@ class DesignWorkspaceTests(unittest.TestCase):
             snapshot_path = Path(approved["approved_final_artifact_path"])
             self.assertEqual(snapshot_path.read_bytes(), b"approved model bytes")
             self.assertTrue(
-                relative_managed_path(snapshot_path, settings.artifact_root).parts
+                relative_managed_path(snapshot_path, workspace).parts
+            )
+            self.assertEqual(
+                relative_managed_path(snapshot_path, workspace).parts[:2],
+                ("delivery", "copy"),
             )
             self.assertEqual(approved["approved_final_sha256"], file_sha256(snapshot_path))
 
@@ -1379,7 +1408,7 @@ class DesignWorkspaceTests(unittest.TestCase):
                 family_config_path=config,
             )
             before = file_sha256(source)
-            repository = FakeRepository()
+            repository = FakeJobBindingRepository()
             result = DesignWorkspace(settings, repository).create_working_copy(
                 source_path=str(source),
                 organization_id="org",
@@ -1401,7 +1430,7 @@ class DesignWorkspaceTests(unittest.TestCase):
             package.mkdir()
             source = workspace / "source.FCStd"
             source.write_bytes(b"ambiguous-fcstd")
-            repository = FakeRepository()
+            repository = FakeJobBindingRepository()
             repository.resolution_error = ValueError("found 2")
             settings = Settings(
                 workspace=workspace,
@@ -1512,9 +1541,13 @@ class DesignWorkspaceTests(unittest.TestCase):
                 artifact_root=package / "data",
                 family_config_path=package / "family.json",
             )
-            repository = FakeRepository()
+            repository = FakeJobBindingRepository()
             repository.working_path = str(working)
-            design = DesignWorkspace(settings, repository)
+            design = DesignWorkspace(
+                settings,
+                repository,
+                FakeJobBindingManager(workspace),
+            )
 
             for validation_kind in ("fastener_interfaces", "mechanical_interfaces"):
                 with self.subTest(validation_kind=validation_kind):

@@ -107,6 +107,8 @@ class _LifecycleConnection:
             return _Rows([{"aggregate_version": 1}])
         if normalized.startswith("SELECT * FROM design_lesson_events"):
             return _Rows([self.lesson])
+        if normalized.startswith("SELECT w.job_id FROM design_lesson_events"):
+            return _Rows([{"job_id": "00000000-0000-0000-0000-000000000010"}])
         if normalized.startswith("UPDATE design_lesson_events"):
             return _Rows([{**self.lesson, "status": "revoked"}])
         if "FROM design_lesson_assertions l JOIN knowledge_assertions" in normalized:
@@ -701,7 +703,12 @@ class PostgresDesignLessonRepositoryTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(
             (lifecycle["aggregate_type"], lifecycle["aggregate_id"], lifecycle["event_type"], lifecycle["payload"]),
-            ("design_lesson", lesson["id"], "design_lesson.approved", {"lesson_id": lesson["id"]}),
+            (
+                "design_lesson",
+                lesson["id"],
+                "design_lesson.approved",
+                {"lesson_id": lesson["id"], "job_id": lesson["job_id"]},
+            ),
         )
         binding = self.connection.execute(
             "SELECT evidence_id,validation_kind,working_copy_id::text,change_set_id::text,working_sha256 "

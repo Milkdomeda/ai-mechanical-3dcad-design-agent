@@ -19,8 +19,13 @@ from unittest.mock import patch
 from mechanical_design_agent.artifacts import ArtifactStore
 from mechanical_design_agent.design import DesignWorkspace
 from mechanical_design_agent.design_lessons import DesignLessonStagingStore
+from mechanical_design_agent.lesson_reviews import DesignLessonReviewStore
 from mechanical_design_agent.hashing import file_sha256
-from mechanical_design_agent.jobs import DesignJobRepairResult, JobFailure
+from mechanical_design_agent.jobs import (
+    DesignJobRepairResult,
+    JobFailure,
+    locked_job_root,
+)
 from mechanical_design_agent.server import build_server, create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
 
@@ -84,15 +89,43 @@ class FakeDesignLessonRepository:
         self.calls.append(("audit_get", kwargs))
         return {**(self.raw_lesson or {}), "review_history": [{"decision": "approve-design-lesson"}]}
 
+    def get_working_copy(self, working_copy_id: str):
+        return {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+            "working_path": "/workspace/current.working.FCStd",
+        }
+
 
 class FakeDesignWorkspace:
-    def __init__(self, current_sha256: str) -> None:
+    def __init__(self, current_sha256: str, job_root: Path | None = None) -> None:
         self.current_sha256 = current_sha256
+        self.job_root = job_root
         self.requested_working_copy_ids: list[str] = []
 
     def current_hash(self, working_copy_id: str) -> str:
         self.requested_working_copy_ids.append(working_copy_id)
         return self.current_sha256
+
+    @contextmanager
+    def locked_job_working_copy(self, working_copy_id: str):
+        working = {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+        }
+        root = (self.job_root or Path("/workspace")).resolve()
+        yield (
+            root,
+            root / "current.working.FCStd",
+            working,
+            {"id": working["job_id"], "revision": 1},
+        )
 
     def current_snapshot(self, working_copy_id: str, artifact_store: ArtifactStore) -> dict:
         self.requested_working_copy_ids.append(working_copy_id)
@@ -120,7 +153,22 @@ class LockingApprovalRepository(FakeDesignLessonRepository):
         self.approved_working_copy_artifact: dict | None = None
 
     def get_working_copy(self, working_copy_id: str) -> dict:
-        return {"id": working_copy_id, "working_path": str(self.working_path)}
+        return {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+            "working_path": str(self.working_path.resolve()),
+            "working_relative_path": self.working_path.name,
+        }
+
+    def get_design_job(self, **_scope) -> dict:
+        return {
+            "id": "00000000-0000-0000-0000-000000000010",
+            "revision": 1,
+            "active_working_copy_id": "00000000-0000-0000-0000-000000000011",
+        }
 
     def approve_design_lesson(self, **kwargs):
         self.approved_working_copy_artifact = kwargs["working_copy_artifact"]
@@ -128,6 +176,20 @@ class LockingApprovalRepository(FakeDesignLessonRepository):
         if not self.allow_commit.wait(timeout=5):
             raise TimeoutError("approval test did not release the repository commit")
         return {"id": "00000000-0000-0000-0000-000000000101", "status": "approved"}
+
+
+class _LockingJobManager:
+    def __init__(self, job_root: Path) -> None:
+        self.job_root = job_root
+
+    @contextmanager
+    def locked_active_mechanical_design_job(self, **_scope):
+        with locked_job_root(job_root=self.job_root) as locked:
+            yield locked, {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "revision": 1,
+                "active_working_copy_id": "00000000-0000-0000-0000-000000000011",
+            }
 
 
 def design_lesson_package() -> dict:
@@ -211,9 +273,22 @@ def make_service_with_staged_lesson():
         "organization_id": "org-001",
         "design_group_id": "group-001",
     }
-    service.design_lesson_staging = DesignLessonStagingStore(workspace)
+    service.design_lesson_staging = DesignLessonStagingStore(
+        workspace,
+        staging_parts=("knowledge", "design-lessons", "staging"),
+    )
+    service.design_lesson_reviews = DesignLessonReviewStore(
+        workspace,
+        review_parts=("knowledge", "design-lessons", "reviews"),
+    )
     service.artifacts = ArtifactStore(workspace / "artifacts")
-    service.design_workspace = FakeDesignWorkspace(package["source"]["after_model_sha256"])
+    service.design_workspace = FakeDesignWorkspace(
+        package["source"]["after_model_sha256"], workspace
+    )
+    service._job_design_lesson_stores = lambda _job_root: (
+        service.design_lesson_staging,
+        service.design_lesson_reviews,
+    )
     service._require_database = lambda: None
     service._safe_projection = lambda: {"status": "deferred"}
     staged = service.design_lesson_stage(
@@ -818,9 +893,24 @@ class ServiceDesignLessonBoundaryTests(unittest.TestCase):
                 "organization_id": "org-001",
                 "design_group_id": "group-001",
             }
-            service.design_lesson_staging = DesignLessonStagingStore(workspace)
+            service.design_lesson_staging = DesignLessonStagingStore(
+                workspace,
+                staging_parts=("knowledge", "design-lessons", "staging"),
+            )
+            service.design_lesson_reviews = DesignLessonReviewStore(
+                workspace,
+                review_parts=("knowledge", "design-lessons", "reviews"),
+            )
             service.artifacts = ArtifactStore(workspace / "artifacts")
-            service.design_workspace = DesignWorkspace(settings, repository)
+            service.design_workspace = DesignWorkspace(
+                settings,
+                repository,
+                _LockingJobManager(workspace),
+            )
+            service._job_design_lesson_stores = lambda _job_root: (
+                service.design_lesson_staging,
+                service.design_lesson_reviews,
+            )
             service._require_database = lambda: None
             service._safe_projection = lambda: {"status": "deferred"}
             staged = service.design_lesson_stage(package, [evidence_item])
@@ -1114,12 +1204,14 @@ class FakeLessonMcpService:
         self.search_results: list[dict] = []
         self.search_next_cursor: str | None = None
 
-    def design_lesson_stage(self, package: dict, evidence_items: list[dict]) -> dict:
-        self.calls.append(("stage", {"package": package, "evidence_items": evidence_items}))
+    def design_lesson_stage(
+        self, package: dict, evidence_items: list[dict], **job_binding
+    ) -> dict:
+        self.calls.append(("stage", {"package": package, "evidence_items": evidence_items, **job_binding}))
         return {"status": "staged-local-only"}
 
-    def design_lesson_staged_get(self, lesson_id: str) -> dict:
-        self.calls.append(("staged_get", {"lesson_id": lesson_id}))
+    def design_lesson_staged_get(self, lesson_id: str, **job_binding) -> dict:
+        self.calls.append(("staged_get", {"lesson_id": lesson_id, **job_binding}))
         return {"lesson_id": lesson_id}
 
     def design_lesson_approve(self, **kwargs) -> dict:
@@ -1159,6 +1251,7 @@ class FakeLessonMcpService:
         package: dict,
         evidence_items: list[dict],
         supersedes_review_id: str | None = None,
+        **job_binding,
     ) -> dict:
         self.calls.append(
             (
@@ -1168,6 +1261,7 @@ class FakeLessonMcpService:
                     "package": package,
                     "evidence_items": evidence_items,
                     "supersedes_review_id": supersedes_review_id,
+                    **job_binding,
                 },
             )
         )
@@ -1218,7 +1312,13 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
         ).parameters
         self.assertEqual(
             list(approval_parameters),
-            ["review_id", "reviewer_text", "confirmation"],
+            [
+                "review_id",
+                "reviewer_text",
+                "confirmation",
+                "job_id",
+                "expected_job_revision",
+            ],
         )
 
     def test_lesson_review_prepare_parses_payloads_and_optional_predecessor(self) -> None:

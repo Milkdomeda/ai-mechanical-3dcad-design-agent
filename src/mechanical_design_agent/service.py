@@ -43,6 +43,7 @@ from .secure_fs import (
     atomic_replace,
     ensure_managed_directory,
     relative_managed_path,
+    read_managed_file,
     same_managed_path,
     validate_managed_path,
 )
@@ -1261,22 +1262,119 @@ class MechanicalDesignService:
         kwargs["organization_id"] = configured_organization
         return self.context_builder.build(**kwargs)
 
+    @staticmethod
+    def _job_design_lesson_stores(
+        job_root: Path,
+    ) -> tuple[DesignLessonStagingStore, DesignLessonReviewStore]:
+        """Construct local lesson stores only from an already locked Job root."""
+        return (
+            DesignLessonStagingStore(
+                job_root,
+                staging_parts=("knowledge", "design-lessons", "staging"),
+            ),
+            DesignLessonReviewStore(
+                job_root,
+                review_parts=("knowledge", "design-lessons", "reviews"),
+            ),
+        )
+
+    def _require_lesson_job_request(
+        self,
+        *,
+        working: dict[str, Any],
+        fresh_job: dict[str, Any],
+        job_id: str | None,
+        expected_job_revision: int | None,
+    ) -> str:
+        origin_job_id = str(working.get("job_id") or "")
+        if not origin_job_id:
+            raise JobFailure(
+                "JOB_MIGRATION_REQUIRED",
+                "the Design Lesson source is not bound to a Design Job",
+            )
+        if job_id is not None:
+            organization, group = self._configured_job_scope(
+                organization_id=str(working["organization_id"]),
+                design_group_id=str(working["design_group_id"]),
+            )
+            requested = self._resolve_job_reference(
+                job_id,
+                organization_id=organization,
+                design_group_id=group,
+            )
+            if requested != origin_job_id:
+                raise JobFailure(
+                    "JOB_BINDING_MISMATCH",
+                    "the requested Job is not the Design Lesson origin",
+                )
+        if expected_job_revision is not None:
+            expected = self._expected_job_revision(expected_job_revision)
+            if int(fresh_job["revision"]) != expected:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        return origin_job_id
+
     def design_lesson_stage(
         self,
         package: dict[str, Any],
         evidence_items: list[dict[str, str]],
         *,
         review_revision: bool = False,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Write an immutable local review package without touching PostgreSQL."""
+        """Write an immutable review package inside its originating Design Job."""
         if package.get("status") == "approved":
             raise ValueError("status is assigned by approval and cannot be supplied by the caller")
-        if review_revision:
-            return self.design_lesson_staging.stage_review(package, evidence_items)
-        return self.design_lesson_staging.stage(package, evidence_items)
+        source = package.get("source")
+        if not isinstance(source, dict) or not str(source.get("working_copy_id", "")):
+            raise ValueError("design lesson source working_copy_id is required")
+        self._require_database()
+        working_copy_id = str(source["working_copy_id"])
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            _,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            staging, _ = self._job_design_lesson_stores(job_root)
+            result = (
+                staging.stage_review(package, evidence_items)
+                if review_revision
+                else staging.stage(package, evidence_items)
+            )
+            return {
+                **result,
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+            }
 
-    def design_lesson_staged_get(self, lesson_id: str) -> dict[str, Any]:
-        return self.design_lesson_staging.get(lesson_id)
+    def design_lesson_staged_get(
+        self, lesson_id: str, *, working_copy_id: str | None = None
+    ) -> dict[str, Any]:
+        if working_copy_id is None:
+            # Retain read-only access to packages staged by v0.2.0. New packages
+            # are never discovered by scanning Job directories.
+            return self.design_lesson_staging.get(lesson_id)
+        self._require_database()
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            _,
+            working,
+            fresh_job,
+        ):
+            staging, _ = self._job_design_lesson_stores(job_root)
+            result = staging.get(lesson_id)
+            return {
+                **result,
+                "job_id": str(working["job_id"]),
+                "job_revision": int(fresh_job["revision"]),
+            }
 
     def design_lesson_approve(
         self,
@@ -1285,6 +1383,8 @@ class MechanicalDesignService:
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(reviewer_text, str) or not reviewer_text.strip():
             raise ValueError("reviewer_text is required")
@@ -1294,14 +1394,73 @@ class MechanicalDesignService:
                 "confirmation must include lesson_id, SHA-256, and 批准 using canonical confirmation: "
                 + expected_confirmation
             )
-        return self._approve_verified_design_lesson(
-            lesson_id=lesson_id,
-            expected_package_sha256=expected_package_sha256,
-            reviewer_text=reviewer_text,
+        if job_id is None and expected_job_revision is None:
+            # v0.2.0 local staging compatibility. Governed v0.3.0 callers must
+            # provide the Job identity and exact revision.
+            return self._approve_verified_design_lesson(
+                lesson_id=lesson_id,
+                expected_package_sha256=expected_package_sha256,
+                reviewer_text=reviewer_text,
+            )
+        if job_id is None or expected_job_revision is None:
+            raise ValueError(
+                "job_id and expected_job_revision are required together"
+            )
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization,
+            design_group_id=group,
         )
+        job = self.repository.get_design_job(
+            job_id=resolved_job_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+        expected = self._expected_job_revision(expected_job_revision)
+        if int(job["revision"]) != expected:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        working_copy_id = str(job.get("active_working_copy_id") or "")
+        if not working_copy_id:
+            raise JobFailure(
+                "JOB_WORKING_COPY_NOT_ACTIVE",
+                "the Design Job has no active working copy",
+            )
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            _,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=resolved_job_id,
+                expected_job_revision=expected,
+            )
+            staging_store, review_store = self._job_design_lesson_stores(job_root)
+            result = self._approve_verified_design_lesson(
+                lesson_id=lesson_id,
+                expected_package_sha256=expected_package_sha256,
+                reviewer_text=reviewer_text,
+                staging_store=staging_store,
+                review_store=review_store,
+            )
+            return {
+                **result,
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+            }
 
     def design_lesson_review_approve(
-        self, *, review_id: str, reviewer_text: str, confirmation: str
+        self,
+        *,
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(reviewer_text, str) or not reviewer_text.strip():
             raise ValueError("reviewer_text is required")
@@ -1314,6 +1473,41 @@ class MechanicalDesignService:
         self._require_database()
         review = self.repository.get_design_lesson_review(review_id)
         self._require_design_lesson_review_scope(review)
+        with self.design_workspace.locked_job_working_copy(
+            str(review["working_copy_id"])
+        ) as (job_root, _, working, fresh_job):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            if str(review.get("job_id") or origin_job_id) != origin_job_id:
+                raise ImmutableReviewBindingDriftError(
+                    "design lesson review Job binding changed"
+                )
+            staging_store, review_store = self._job_design_lesson_stores(job_root)
+            result = self._design_lesson_review_approve_locked(
+                review=review,
+                reviewer_text=reviewer_text,
+                staging_store=staging_store,
+                review_store=review_store,
+            )
+            return {
+                **result,
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+            }
+
+    def _design_lesson_review_approve_locked(
+        self,
+        *,
+        review: dict[str, Any],
+        reviewer_text: str,
+        staging_store: DesignLessonStagingStore,
+        review_store: DesignLessonReviewStore,
+    ) -> dict[str, Any]:
+        review_id = str(review["id"])
         if review["status"] == "stored-and-retrievable":
             lesson = self.repository.get_design_lesson(
                 str(review["published_design_lesson_id"]),
@@ -1342,6 +1536,8 @@ class MechanicalDesignService:
                 reviewer_text=reviewer_text,
                 review_id=review_id,
                 review=review,
+                staging_store=staging_store,
+                review_store=review_store,
             )
         except (
             ImmutableReviewBindingDriftError,
@@ -1435,6 +1631,8 @@ class MechanicalDesignService:
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(reviewer_text, str) or not reviewer_text.strip():
             raise ValueError("reviewer_text is required")
@@ -1446,15 +1644,52 @@ class MechanicalDesignService:
                 "confirmation must include both lesson ids, SHA-256, and 替代 using canonical confirmation: "
                 + expected_confirmation
             )
-        return self._approve_verified_design_lesson(
-            lesson_id=replacement_lesson_id,
-            expected_package_sha256=expected_package_sha256,
-            reviewer_text=reviewer_text,
-            supersedes_lesson_id=lesson_id,
+        self._require_database()
+        predecessor = self.repository.get_design_lesson(
+            lesson_id,
+            organization_id=self.bootstrap_config["organization_id"],
         )
+        working_copy_id = str(predecessor.get("source_working_copy_id") or "")
+        if not working_copy_id:
+            raise JobFailure(
+                "JOB_MIGRATION_REQUIRED",
+                "the predecessor Design Lesson has no originating working copy",
+            )
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            _,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            staging_store, review_store = self._job_design_lesson_stores(job_root)
+            result = self._approve_verified_design_lesson(
+                lesson_id=replacement_lesson_id,
+                expected_package_sha256=expected_package_sha256,
+                reviewer_text=reviewer_text,
+                supersedes_lesson_id=lesson_id,
+                staging_store=staging_store,
+                review_store=review_store,
+            )
+            return {
+                **result,
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+            }
 
     def design_lesson_revoke(
-        self, *, lesson_id: str, reason: str, confirmation: str
+        self,
+        *,
+        lesson_id: str,
+        reason: str,
+        confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reason is required")
@@ -1465,12 +1700,39 @@ class MechanicalDesignService:
                 + expected_confirmation
             )
         self._require_database()
-        lesson = self.repository.revoke_design_lesson(
-            lesson_id=lesson_id,
-            reviewer_id=self.settings.actor_id,
-            reviewer_text=reason,
+        current = self.repository.get_design_lesson(
+            lesson_id,
+            organization_id=self.bootstrap_config["organization_id"],
         )
-        return {"lesson": lesson, "projection": self._safe_projection()}
+        working_copy_id = str(current.get("source_working_copy_id") or "")
+        if not working_copy_id:
+            raise JobFailure(
+                "JOB_MIGRATION_REQUIRED",
+                "the Design Lesson has no originating working copy",
+            )
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            _,
+            _,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            lesson = self.repository.revoke_design_lesson(
+                lesson_id=lesson_id,
+                reviewer_id=self.settings.actor_id,
+                reviewer_text=reason,
+            )
+            return {
+                "lesson": lesson,
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+                "projection": self._safe_projection(),
+            }
 
     def _approve_verified_design_lesson(
         self,
@@ -1481,11 +1743,15 @@ class MechanicalDesignService:
         supersedes_lesson_id: str | None = None,
         review_id: str | None = None,
         review: dict[str, Any] | None = None,
+        staging_store: DesignLessonStagingStore | None = None,
+        review_store: DesignLessonReviewStore | None = None,
     ) -> dict[str, Any]:
         self._require_database()
         verified_review_card_sha256 = None
         verified_review_path = None
         verified_package_path = None
+        staging_store = staging_store or self.design_lesson_staging
+        review_store = review_store or self.design_lesson_reviews
         if review_id is None:
             existing = self.repository.existing_design_lesson_approval(
                 package_sha256=expected_package_sha256,
@@ -1501,19 +1767,19 @@ class MechanicalDesignService:
                     "idempotent": True,
                     "projection": self._safe_projection(),
                 }
-            self.design_lesson_staging.verify(lesson_id, expected_package_sha256)
-            paths = self.design_lesson_staging.package_paths(lesson_id)
+            staging_store.verify(lesson_id, expected_package_sha256)
+            paths = staging_store.package_paths(lesson_id)
         else:
             if review is None or str(review.get("id")) != review_id:
                 raise ImmutableReviewBindingDriftError(
                     "design lesson review binding is required"
                 )
             try:
-                verified_review = self.design_lesson_reviews.verify(
+                verified_review = review_store.verify(
                     review_id, expected_package_sha256
                 )
-                review_inspection = self.design_lesson_reviews.inspect(review_id)
-                paths = self.design_lesson_staging.review_package_paths(
+                review_inspection = review_store.inspect(review_id)
+                paths = staging_store.review_package_paths(
                     expected_package_sha256
                 )
             except ValueError as error:
@@ -1622,9 +1888,9 @@ class MechanicalDesignService:
             )
         archived_evidence: list[dict[str, Any]] = []
         evidence_paths = (
-            self.design_lesson_staging.evidence_paths(lesson_id)
+            staging_store.evidence_paths(lesson_id)
             if review_id is None
-            else self.design_lesson_staging.review_evidence_paths(
+            else staging_store.review_evidence_paths(
                 expected_package_sha256
             )
         )
@@ -1682,13 +1948,13 @@ class MechanicalDesignService:
 
                 def pre_commit_verifier() -> None:
                     try:
-                        self.design_lesson_reviews.verify(
+                        review_store.verify(
                             review_id, expected_package_sha256
                         )
-                        self.design_lesson_staging.review_package_paths(
+                        staging_store.review_package_paths(
                             expected_package_sha256
                         )
-                        for descriptor, evidence_path in self.design_lesson_staging.review_evidence_paths(
+                        for descriptor, evidence_path in staging_store.review_evidence_paths(
                             expected_package_sha256
                         ):
                             if file_sha256(evidence_path) != descriptor["sha256"]:
@@ -1760,6 +2026,7 @@ class MechanicalDesignService:
             "status": review.get("status"),
             "lesson_id": review.get("lesson_id"),
             "working_copy_id": review.get("working_copy_id"),
+            "job_id": review.get("job_id"),
         }
         for field in ("supersedes_review_id", "published_design_lesson_id"):
             if field in review:
@@ -2096,7 +2363,13 @@ class MechanicalDesignService:
         )
 
     def design_lesson_review_reject(
-        self, *, review_id: str, reviewer_text: str, confirmation: str
+        self,
+        *,
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         if not isinstance(reviewer_text, str) or not reviewer_text.strip():
             raise ValueError("reviewer_text is required")
@@ -2109,12 +2382,25 @@ class MechanicalDesignService:
         self._require_database()
         review = self.repository.get_design_lesson_review(review_id)
         self._require_design_lesson_review_scope(review)
-        review = self.repository.reject_design_lesson_review(
-            review_id=review_id,
-            reviewer_id=self.settings.actor_id,
-            reviewer_text=reviewer_text,
-        )
-        return self._design_lesson_review_result(review=review)
+        with self.design_workspace.locked_job_working_copy(
+            str(review["working_copy_id"])
+        ) as (_, _, working, fresh_job):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            review = self.repository.reject_design_lesson_review(
+                review_id=review_id,
+                reviewer_id=self.settings.actor_id,
+                reviewer_text=reviewer_text,
+            )
+            return {
+                **self._design_lesson_review_result(review=review),
+                "job_id": origin_job_id,
+                "job_revision": int(fresh_job["revision"]),
+            }
 
     def _require_design_lesson_review_scope(self, review: dict[str, Any]) -> None:
         if (
@@ -2482,15 +2768,31 @@ class MechanicalDesignService:
         working_copy_id: str,
         lesson_summary: dict[str, Any],
         confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         self._require_database()
         if working_copy_id not in confirmation or "模型设计确认" not in confirmation:
             raise ValueError("confirmation must include working_copy_id and 模型设计确认")
-        result = self.repository.record_design_lesson_summary(
-            working_copy_id=working_copy_id,
-            summary=lesson_summary,
-            actor_id=self.settings.actor_id,
-        )
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            _,
+            _,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            result = self.repository.record_design_lesson_summary(
+                working_copy_id=working_copy_id,
+                summary=lesson_summary,
+                actor_id=self.settings.actor_id,
+            )
+            result["job_id"] = origin_job_id
+            result["job_revision"] = int(fresh_job["revision"])
         result["lesson_review_flow"] = {
             "status": result["publication_status"],
             "next_tool": "design_lesson_stage" if result["publication_status"] == "ready" else None,
@@ -2630,11 +2932,24 @@ class MechanicalDesignService:
         package: dict[str, Any],
         evidence_items: list[dict[str, str]],
         supersedes_review_id: str | None = None,
+        *,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
     ) -> dict[str, Any]:
         self._require_database()
-        with self.design_workspace.locked_working_copy_path(
-            working_copy_id
-        ) as locked_working_path:
+        with self.design_workspace.locked_job_working_copy(working_copy_id) as (
+            job_root,
+            locked_working_path,
+            working,
+            fresh_job,
+        ):
+            origin_job_id = self._require_lesson_job_request(
+                working=working,
+                fresh_job=fresh_job,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+            )
+            staging_store, review_store = self._job_design_lesson_stores(job_root)
             read_model = self._design_lesson_review_read_model(working_copy_id)
             context = self._design_lesson_review_context_from_read_model(
                 working_copy_id,
@@ -2648,6 +2963,11 @@ class MechanicalDesignService:
                 supersedes_review_id,
                 context,
                 locked_working_path,
+                job_root,
+                staging_store,
+                review_store,
+                origin_job_id,
+                int(fresh_job["revision"]),
             )
 
     def _design_lesson_review_prepare_locked(
@@ -2658,6 +2978,11 @@ class MechanicalDesignService:
         supersedes_review_id: str | None,
         context: dict[str, Any],
         locked_working_path: Path,
+        job_root: Path,
+        staging_store: DesignLessonStagingStore,
+        review_store: DesignLessonReviewStore,
+        origin_job_id: str,
+        job_revision: int,
     ) -> dict[str, Any]:
         if not isinstance(package, dict):
             raise ValueError("design lesson package must be an object")
@@ -2710,6 +3035,10 @@ class MechanicalDesignService:
             self.settings.workspace,
             allow_missing_leaf=False,
         ).path
+        locked_job_root = validate_managed_path(
+            job_root,
+            allow_missing_leaf=False,
+        ).path
         validation_bindings: dict[str, dict[str, Any]] = {}
         immutable_evidence_items: list[dict[str, str]] = []
         for evidence in evidence_items:
@@ -2718,22 +3047,50 @@ class MechanicalDesignService:
             relative_path = evidence.get("path")
             if not isinstance(relative_path, str) or not relative_path:
                 raise ValueError("evidence path is required")
-            evidence_path = workspace / relative_path
-            snapshot = self.artifacts.ingest_file(
-                evidence_path, allowed_root=workspace
+            job_candidate = locked_job_root / relative_path
+            workspace_candidate = workspace / relative_path
+            evidence_path = (
+                job_candidate if job_candidate.exists() else workspace_candidate
             )
-            snapshot_path = Path(str(snapshot["storage_path"]))
+            if not evidence_path.exists():
+                raise ValueError(f"design lesson evidence is missing: {relative_path}")
             try:
-                snapshot_relative_path = relative_managed_path(
-                    snapshot_path,
-                    workspace,
+                relative_managed_path(
+                    evidence_path,
+                    locked_job_root,
                 )
             except ValueError as exc:
                 raise ValueError(
-                    "immutable evidence snapshot must remain inside the workspace"
+                    "design lesson evidence must belong to the originating Design Job"
                 ) from exc
+            snapshot = self.artifacts.ingest_file(
+                evidence_path, allowed_root=locked_job_root
+            )
+            evidence_root = locked_job_root
+            for part in ("knowledge", "design-lessons", "evidence"):
+                evidence_root = ensure_managed_directory(
+                    evidence_root / part,
+                    parents=False,
+                    exist_ok=True,
+                ).path
+            suffix = evidence_path.suffix.casefold()
+            immutable_evidence_path = (
+                evidence_root / f"{snapshot['sha256']}{suffix}"
+            )
+            if immutable_evidence_path.exists():
+                if file_sha256(immutable_evidence_path) != snapshot["sha256"]:
+                    raise ValueError("immutable Job evidence checksum drift")
+            else:
+                atomic_publish_new(
+                    immutable_evidence_path,
+                    read_managed_file(evidence_path).content,
+                )
+            job_relative_path = relative_managed_path(
+                immutable_evidence_path,
+                locked_job_root,
+            )
             immutable_evidence_items.append(
-                {**evidence, "path": snapshot_relative_path.as_posix()}
+                {**evidence, "path": job_relative_path.as_posix()}
             )
 
             role = evidence.get("role")
@@ -2779,11 +3136,9 @@ class MechanicalDesignService:
         review_id: str | None = None
         prepared: dict[str, Any] | None = None
         try:
-            staged = self.design_lesson_stage(
-                package, immutable_evidence_items, review_revision=True
-            )
+            staged = staging_store.stage_review(package, immutable_evidence_items)
             staged_package_sha256 = staged["package_sha256"]
-            staged_inspection = self.design_lesson_staging.get_review(
+            staged_inspection = staging_store.get_review(
                 staged_package_sha256
             )
             if staged_inspection.get("status") != "verified-local-only":
@@ -2848,7 +3203,7 @@ class MechanicalDesignService:
                 )
 
             review_id = f"DLR-{uuid.uuid4()}"
-            prepared = self.design_lesson_reviews.prepare(
+            prepared = review_store.prepare(
                 review_id,
                 staged_inspection,
                 supersedes_review_id=supersedes_review_id,
@@ -2876,10 +3231,10 @@ class MechanicalDesignService:
                     raise ValueError(
                         "working copy changed after delivery approval; approve delivery again"
                     )
-                current_staged = self.design_lesson_staging.get_review(
+                current_staged = staging_store.get_review(
                     staged_package_sha256
                 )
-                current_review = self.design_lesson_reviews.inspect(review_id)
+                current_review = review_store.inspect(review_id)
                 if current_staged.get("status") != "verified-local-only":
                     raise ValueError(
                         "staged design lesson changed before review insertion"
@@ -2889,11 +3244,14 @@ class MechanicalDesignService:
                         "design lesson review changed before repository insertion"
                     )
                 for evidence, evidence_path in (
-                    self.design_lesson_staging.review_evidence_paths(
+                    staging_store.review_evidence_paths(
                         staged_package_sha256
                     )
                 ):
-                    self.artifacts.verify_file(evidence_path, evidence["sha256"])
+                    if file_sha256(evidence_path) != evidence["sha256"]:
+                        raise ValueError(
+                            "immutable Job evidence changed before review insertion"
+                        )
 
             verify_filesystem_bindings()
             self.repository.create_design_lesson_review(
@@ -2908,7 +3266,7 @@ class MechanicalDesignService:
                 approved_final_artifact_path=approved_final_artifact_path,
                 review_path=prepared["review_card_path"],
                 package_path=str(
-                    self.design_lesson_staging.review_package_paths(
+                    staging_store.review_package_paths(
                         staged_package_sha256
                     )["lesson_json"]
                 ),
@@ -2920,14 +3278,14 @@ class MechanicalDesignService:
             cleanup_errors: list[tuple[str, Exception]] = []
             if prepared is not None and review_id is not None:
                 try:
-                    self.design_lesson_reviews.discard_prepared_attempt_owned(
+                    review_store.discard_prepared_attempt_owned(
                         review_id
                     )
                 except Exception as cleanup_error:
                     cleanup_errors.append(("review", cleanup_error))
             if staged_package_sha256 is not None:
                 try:
-                    self.design_lesson_staging.discard_review_attempt_owned(
+                    staging_store.discard_review_attempt_owned(
                         staged_package_sha256
                     )
                 except Exception as cleanup_error:
@@ -2940,6 +3298,8 @@ class MechanicalDesignService:
             raise
         return {
             "review_id": review_id,
+            "job_id": origin_job_id,
+            "job_revision": job_revision,
             "status": prepared["status"],
             "review_card": prepared["review_card"],
             "review_card_markdown": prepared["review_card_markdown"],

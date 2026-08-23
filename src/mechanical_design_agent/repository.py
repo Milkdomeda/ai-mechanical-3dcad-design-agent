@@ -1441,6 +1441,10 @@ class PostgresRepository:
                 raise KeyError(f"unknown source working_copy_id: {source['working_copy_id']}")
             if working["organization_id"] != source["organization_id"] or working["design_group_id"] != source["design_group_id"]:
                 raise ValueError("source working copy organization/design-group relationship is invalid")
+            if working.get("job_id") is None:
+                raise ValueError(
+                    "JOB_MIGRATION_REQUIRED: source working copy is not bound to a Design Job"
+                )
             if working.get("family_id") != source.get("family_id"):
                 raise ValueError("source working copy family relationship is invalid")
             artifact_source_path = str(working_copy_artifact.get("source_path", ""))
@@ -1559,6 +1563,18 @@ class PostgresRepository:
                     raise RuntimeError("design lesson lineage changed while acquiring its lock")
                 if predecessor["organization_id"] != source["organization_id"]:
                     raise ValueError("replacement and predecessor must belong to the same organization")
+                predecessor_job = connection.execute(
+                    "SELECT job_id FROM design_working_copies WHERE id=%s FOR UPDATE",
+                    (predecessor["source_working_copy_id"],),
+                ).fetchone()
+                if (
+                    predecessor_job is None
+                    or predecessor_job.get("job_id") is None
+                    or str(predecessor_job["job_id"]) != str(working["job_id"])
+                ):
+                    raise ValueError(
+                        "replacement and predecessor must belong to the same Design Job"
+                    )
                 rows = connection.execute(
                     "SELECT a.*,l.assertion_key FROM design_lesson_assertions l "
                     "JOIN knowledge_assertions a ON a.id=l.assertion_id WHERE l.lesson_event_id=%s FOR UPDATE OF a",
@@ -2103,8 +2119,9 @@ class PostgresRepository:
                     "FROM design_lesson_assertions la JOIN knowledge_assertions a ON a.id=la.assertion_id "
                     "JOIN knowledge_search_documents d ON d.assertion_id=a.id WHERE a.status='approved' AND ("
                     "%s=ANY(d.exact_terms) OR d.search_vector @@ plainto_tsquery('simple',%s) OR similarity(d.search_text,%s)>=0.12) "
-                    "GROUP BY la.lesson_event_id) SELECT l.*,m.exact_match,m.text_rank,m.trigram_similarity "
-                    "FROM matches m JOIN design_lesson_events l ON l.id=m.lesson_event_id WHERE "
+                    "GROUP BY la.lesson_event_id) SELECT l.*,w.job_id,m.exact_match,m.text_rank,m.trigram_similarity "
+                    "FROM matches m JOIN design_lesson_events l ON l.id=m.lesson_event_id "
+                    "LEFT JOIN design_working_copies w ON w.id=l.source_working_copy_id WHERE "
                     + " AND ".join(filters)
                     + cursor_filter
                     + " ORDER BY m.exact_match DESC,m.text_rank DESC,m.trigram_similarity DESC,"
@@ -2134,7 +2151,8 @@ class PostgresRepository:
                         decoded_cursor["key"],
                     ]
                 rows = connection.execute(
-                    "SELECT l.* FROM design_lesson_events l WHERE "
+                    "SELECT l.*,w.job_id FROM design_lesson_events l "
+                    "LEFT JOIN design_working_copies w ON w.id=l.source_working_copy_id WHERE "
                     + " AND ".join(filters)
                     + cursor_filter
                     + " ORDER BY l.approved_at DESC,encode(digest(l.id::text,'sha256'),'hex') DESC"
@@ -2249,6 +2267,33 @@ class PostgresRepository:
         if not rows:
             return []
         lesson_ids = [row["id"] for row in rows]
+        jobs_by_lesson = {
+            str(row["id"]): (
+                str(row["job_id"]) if row.get("job_id") is not None else None
+            )
+            for row in rows
+            if "job_id" in row
+        }
+        missing_origin_ids = [
+            row["id"] for row in rows if "job_id" not in row
+        ]
+        if missing_origin_ids:
+            origin_rows = connection.execute(
+                "SELECT e.id AS lesson_event_id,w.job_id FROM design_lesson_events e "
+                "LEFT JOIN design_working_copies w ON w.id=e.source_working_copy_id "
+                "WHERE e.id = ANY(%s::uuid[])",
+                (missing_origin_ids,),
+            ).fetchall()
+            jobs_by_lesson.update(
+                {
+                    str(item["lesson_event_id"]): (
+                        str(item["job_id"])
+                        if item.get("job_id") is not None
+                        else None
+                    )
+                    for item in origin_rows
+                }
+            )
         assertion_rows = connection.execute(
             "SELECT l.lesson_event_id,a.*,l.assertion_key,l.sort_order,"
             "COALESCE((SELECT max(o.aggregate_version) FROM outbox_events o "
@@ -2285,6 +2330,7 @@ class PostgresRepository:
             record = dict(row)
             lesson_id = str(record["id"])
             record["id"] = lesson_id
+            record["job_id"] = jobs_by_lesson.get(lesson_id)
             if record.get("supersedes") is not None:
                 record["supersedes"] = str(record["supersedes"])
             record["assertions"] = assertions_by_lesson[lesson_id]
@@ -3664,6 +3710,10 @@ class PostgresRepository:
             ).fetchone()
             if working_copy is None:
                 raise KeyError(f"unknown working_copy_id: {working_copy_id}")
+            if working_copy.get("job_id") is None:
+                raise ValueError(
+                    "JOB_MIGRATION_REQUIRED: working copy is not bound to a Design Job"
+                )
             design_group = connection.execute(
                 "SELECT * FROM design_groups WHERE id=%s FOR UPDATE",
                 (design_group_id,),
@@ -3766,7 +3816,10 @@ class PostgresRepository:
     def get_design_lesson_review(self, review_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM design_lesson_reviews WHERE id=%s", (review_id,)
+                "SELECT r.*,w.job_id FROM design_lesson_reviews r "
+                "JOIN design_working_copies w ON w.id=r.working_copy_id "
+                "WHERE r.id=%s",
+                (review_id,),
             ).fetchone()
         if row is None:
             raise KeyError(f"unknown design lesson review: {review_id}")
@@ -4990,12 +5043,22 @@ class PostgresRepository:
     @staticmethod
     def _enqueue_design_lesson_event(connection: Any, *, event_type: str, lesson_id: str) -> None:
         """Enqueue a lesson lifecycle event inside the caller's PostgreSQL transaction."""
+        origin = connection.execute(
+            "SELECT w.job_id FROM design_lesson_events e "
+            "JOIN design_working_copies w ON w.id=e.source_working_copy_id "
+            "WHERE e.id::text=%s",
+            (lesson_id,),
+        ).fetchone()
+        if origin is None or origin.get("job_id") is None:
+            raise ValueError(
+                "JOB_MIGRATION_REQUIRED: design lesson has no originating Design Job"
+            )
         PostgresRepository._enqueue(
             connection,
             "design_lesson",
             lesson_id,
             event_type,
-            {"lesson_id": lesson_id},
+            {"lesson_id": lesson_id, "job_id": str(origin["job_id"])},
         )
 
     @staticmethod
@@ -5006,12 +5069,21 @@ class PostgresRepository:
         review: dict[str, Any],
         superseded_by_review_id: str | None = None,
     ) -> None:
+        origin = connection.execute(
+            "SELECT job_id FROM design_working_copies WHERE id=%s",
+            (review["working_copy_id"],),
+        ).fetchone()
+        if origin is None or origin.get("job_id") is None:
+            raise ValueError(
+                "JOB_MIGRATION_REQUIRED: design lesson review has no originating Design Job"
+            )
         payload = {
             "review_id": str(review["id"]),
             "organization_id": review["organization_id"],
             "design_group_id": review["design_group_id"],
             "status": review["status"],
             "working_copy_id": str(review["working_copy_id"]),
+            "job_id": str(origin["job_id"]),
             "lesson_id": review["lesson_id"],
             "package_sha256": review["package_sha256"],
             "review_card_sha256": review["review_card_sha256"],
