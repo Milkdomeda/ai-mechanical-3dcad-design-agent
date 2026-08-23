@@ -7,6 +7,31 @@ from types import SimpleNamespace
 import pytest
 
 from mechanical_design_agent import cli
+from mechanical_design_agent.jobs import DesignJobRepairResult
+
+
+def _repair_manifest(job_id: object, revision: int = 4) -> dict[str, object]:
+    return {
+        "schema_version": "MechanicalDesignJob/v1",
+        "job_id": str(job_id),
+        "display_id": "JOB-20260823-501",
+        "job_type": "mechanical_design",
+        "workspace_id": "20000000-0000-4000-8000-000000000001",
+        "title": "CLI authorized pump",
+        "slug": "cli-authorized-pump",
+        "status": "active",
+        "phase": "requirements",
+        "revision": revision,
+        "organization_id": "org-001",
+        "design_group_id": "group-001",
+        "family_id": None,
+        "directory_name": "JOB-20260823-501-cli-authorized-pump",
+        "active_working_copy_id": None,
+        "source_snapshots": [],
+        "created_at": "2026-08-23T08:15:30.000000Z",
+        "created_by": "actor-001",
+        "updated_at": "2026-08-23T08:15:30.000000Z",
+    }
 
 
 class _ReadyRuntime:
@@ -65,7 +90,7 @@ class _JobCliService:
         self.calls.append(("repair", kwargs))
         return {
             "schema_version": "MechanicalDesignJobRepair/v1",
-            "job": {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"], "revision": 4},
+            "job": _repair_manifest(kwargs["job_id"]),
             "audit": {"action": "repair", "reason": kwargs["reason"], "actor_id": "actor", "authoritative_revision": 4},
         }
 
@@ -164,6 +189,7 @@ def test_job_cli_routes_all_operations_through_the_scoped_service(
     assert set(repaired) == {"schema_version", "job", "audit"}
     assert repaired["schema_version"] == "MechanicalDesignJobRepair/v1"
     assert repaired["job"]["schema_version"] == "MechanicalDesignJob/v1"
+    assert DesignJobRepairResult.from_dict(repaired).as_dict() == repaired
     assert [name for name, _ in service.calls] == [
         "create",
         "list",

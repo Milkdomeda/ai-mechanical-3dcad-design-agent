@@ -20,7 +20,7 @@ from mechanical_design_agent.artifacts import ArtifactStore
 from mechanical_design_agent.design import DesignWorkspace
 from mechanical_design_agent.design_lessons import DesignLessonStagingStore
 from mechanical_design_agent.hashing import file_sha256
-from mechanical_design_agent.jobs import JobFailure
+from mechanical_design_agent.jobs import DesignJobRepairResult, JobFailure
 from mechanical_design_agent.server import build_server, create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
 
@@ -1600,8 +1600,22 @@ class _JobManifestForService:
             "schema_version": "MechanicalDesignJob/v1",
             "job_id": self.job_id,
             "display_id": "JOB-20260823-401",
+            "job_type": "mechanical_design",
+            "workspace_id": "20000000-0000-4000-8000-000000000001",
             "title": "Authorized pump",
+            "slug": "authorized-pump",
+            "status": "active",
+            "phase": "requirements",
             "revision": 4,
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "family_id": None,
+            "directory_name": "JOB-20260823-401-authorized-pump",
+            "active_working_copy_id": None,
+            "source_snapshots": [],
+            "created_at": "2026-08-23T08:15:30.000000Z",
+            "created_by": "configured-actor",
+            "updated_at": "2026-08-23T08:15:30.000000Z",
         }
 
 
@@ -1790,6 +1804,9 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         self.assertEqual(closed["schema_version"], "MechanicalDesignJob/v1")
         self.assertEqual(reopened["schema_version"], "MechanicalDesignJob/v1")
         self.assertEqual(repaired["schema_version"], "MechanicalDesignJobRepair/v1")
+        self.assertEqual(
+            DesignJobRepairResult.from_dict(repaired).as_dict(), repaired
+        )
         repair = [item for item in service.design_jobs.calls if item[0] == "repair"]
         self.assertEqual(repair[0][1]["expected_revision"], 4)
         self.assertEqual([name for name, _ in service.design_jobs.calls], [
@@ -1848,6 +1865,9 @@ class ServiceDesignJobFacadeTests(unittest.TestCase):
         self.assertEqual(response["schema_version"], "MechanicalDesignJobRepair/v1")
         self.assertEqual(response["job"]["schema_version"], "MechanicalDesignJob/v1")
         self.assertNotIn("repair_audit", response["job"])
+        self.assertEqual(
+            DesignJobRepairResult.from_dict(response).as_dict(), response
+        )
 
 
 if __name__ == "__main__":

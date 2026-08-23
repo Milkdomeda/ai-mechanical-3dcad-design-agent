@@ -1456,6 +1456,22 @@ def test_repair_uses_only_the_pinned_receipt_evidence_after_comparison(
     )
     manifest_path = manager.workspace.jobs_root / manifest.directory_name / "job.json"
 
+    original_evidence = manager._locked_doctor_evidence
+
+    def fail_second_evidence_access(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("repair must not acquire filesystem evidence after receipt creation")
+
+    def arm_after_evidence(*, locked: Path, row: dict[str, object]):
+        evidence = original_evidence(locked=locked, row=row)
+        # Every semantic reader/enumerator used by this implementation is
+        # armed immediately after the receipt evidence is complete. Publishing
+        # remains intentionally unguarded: it may validate its write target.
+        monkeypatch.setattr(jobs_module, "read_managed_file", fail_second_evidence_access)
+        monkeypatch.setattr(jobs_module, "list_managed_directory", fail_second_evidence_access)
+        monkeypatch.setattr(jobs_module, "_read_json_with_evidence", fail_second_evidence_access)
+        monkeypatch.setattr(jobs_module, "_read_json", fail_second_evidence_access)
+        return evidence
+
     def mutate_after_receipt(name: str) -> None:
         if name == "after_repair_receipt_comparison":
             manifest_path.write_text(
@@ -1463,11 +1479,7 @@ def test_repair_uses_only_the_pinned_receipt_evidence_after_comparison(
             )
 
     monkeypatch.setattr(manager, "_checkpoint", mutate_after_receipt)
-    monkeypatch.setattr(
-        jobs_module,
-        "_read_json",
-        lambda _path: pytest.fail("repair must not re-read job.json after receipt comparison"),
-    )
+    monkeypatch.setattr(manager, "_locked_doctor_evidence", arm_after_evidence)
     repaired = manager.repair(
         job_id=str(JOB_ID), organization_id=ORGANIZATION_ID,
         design_group_id=DESIGN_GROUP_ID, actor_id=ACTOR_ID,
