@@ -119,6 +119,41 @@ class _JobCliService:
             "migrated": [],
         }
 
+    def product_family_onboarding_start(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("onboard-start", kwargs))
+        return {"schema_version": "ProductFamilyOnboardingStart/v1", "job": {"revision": 2}}
+
+    def product_family_onboarding_analyze(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("onboard-analyze", kwargs))
+        return {
+            "schema_version": "ProductFamilyOnboardingAnalysisResult/v1",
+            "package_sha256": "c" * 64,
+            "job": {"revision": 3},
+        }
+
+    def product_family_onboarding_review(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("onboard-review", kwargs))
+        return {
+            "schema_version": "ProductFamilyOnboardingReviewResult/v1",
+            "review": {"review_identity": "d" * 64},
+            "job": {"revision": 4},
+        }
+
+    def product_family_onboarding_publish(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("onboard-publish", kwargs))
+        return {
+            "schema_version": "ProductFamilyOnboardingPublicationResult/v1",
+            "publication": {"publication_identity": "e" * 64},
+            "job": {"revision": 5, "status": "completed"},
+        }
+
+    def product_family_onboarding_status(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("onboard-status", kwargs))
+        return {
+            "schema_version": "ProductFamilyOnboardingStatus/v1",
+            "onboarding": {"status": "published"},
+        }
+
 
 def _run_cli(
     monkeypatch: pytest.MonkeyPatch,
@@ -266,6 +301,104 @@ def test_job_cli_migrates_legacy_inventory_without_using_an_active_job_binding(
     assert isinstance(apply_call, dict)
     assert apply_call["plan"] == plan
     assert apply_call["confirmation"] == f"迁移旧设计 {plan['receipt_sha256']}"
+
+
+def test_family_onboarding_cli_routes_all_evidence_operations_through_one_job(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    service = _JobCliService()
+    monkeypatch.setattr(cli.BootstrapRuntime, "from_process", lambda **_kwargs: _ReadyRuntime())
+    monkeypatch.setattr(cli, "MechanicalDesignService", lambda _settings: service)
+    analysis_file = tmp_path / "analysis.json"
+    candidates_file = tmp_path / "candidates.json"
+    analysis_file.write_text('{"summary":"family"}', encoding="utf-8")
+    candidates_file.write_text("[]", encoding="utf-8")
+    common = ("--job", service.job_id, "--family-id", "family-001")
+
+    started = _run_cli(
+        monkeypatch,
+        capsys,
+        "family",
+        "onboard",
+        "start",
+        *common,
+        "--expected-revision",
+        "1",
+        "--source",
+        str(tmp_path / "source.FCStd"),
+    )
+    analyzed = _run_cli(
+        monkeypatch,
+        capsys,
+        "family",
+        "onboard",
+        "analyze",
+        *common,
+        "--expected-revision",
+        "2",
+        "--analysis-file",
+        str(analysis_file),
+        "--candidate-file",
+        str(candidates_file),
+    )
+    reviewed = _run_cli(
+        monkeypatch,
+        capsys,
+        "family",
+        "onboard",
+        "review",
+        *common,
+        "--expected-revision",
+        "3",
+        "--package-sha256",
+        "c" * 64,
+        "--decision",
+        "approve",
+        "--reviewer-text",
+        "checked",
+        "--confirmation",
+        f"批准产品族知识 {'c' * 64}",
+    )
+    published = _run_cli(
+        monkeypatch,
+        capsys,
+        "family",
+        "onboard",
+        "publish",
+        *common,
+        "--expected-revision",
+        "4",
+        "--package-sha256",
+        "c" * 64,
+        "--review-identity",
+        "d" * 64,
+        "--confirmation",
+        f"发布产品族知识 {'d' * 64}",
+    )
+    status = _run_cli(
+        monkeypatch,
+        capsys,
+        "family",
+        "onboard",
+        "status",
+        "--job",
+        service.job_id,
+    )
+
+    assert started["job"]["revision"] == 2
+    assert analyzed["package_sha256"] == "c" * 64
+    assert reviewed["review"]["review_identity"] == "d" * 64
+    assert published["job"]["status"] == "completed"
+    assert status["onboarding"]["status"] == "published"
+    assert [name for name, _ in service.calls] == [
+        "onboard-start",
+        "onboard-analyze",
+        "onboard-review",
+        "onboard-publish",
+        "onboard-status",
+    ]
 
 
 def test_job_cli_explicit_job_overrides_process_scoped_binding_without_persisting_it(

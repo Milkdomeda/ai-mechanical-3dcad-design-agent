@@ -4023,6 +4023,510 @@ class PostgresRepository:
             if updated is None:
                 raise RuntimeError("outbox event is not leased by this worker")
 
+    @staticmethod
+    def _require_onboarding_job(
+        connection: Any,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        job = connection.execute(
+            "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+            "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+            "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id) "
+            "FOR UPDATE",
+            (job_id, organization_id, design_group_id, actor_id),
+        ).fetchone()
+        if job is None:
+            raise KeyError("unknown product family onboarding Job or unauthorized")
+        if int(job["revision"]) != expected_job_revision:
+            raise ValueError("stale design job revision")
+        if (
+            job["job_type"] != "product_family_onboarding"
+            or job["status"] != "active"
+            or job["provisioning_state"] != "ready"
+            or job.get("family_id") != family_id
+        ):
+            raise ValueError(
+                "operation requires an active ready product_family_onboarding Job in the same family"
+            )
+        return dict(job)
+
+    def start_product_family_onboarding(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        input_manifest: dict[str, Any],
+        input_manifest_sha256: str,
+        snapshots: list[dict[str, Any]],
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            existing = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE job_id=%s FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["id"]) != run_id
+                    or existing["input_manifest_sha256"] != input_manifest_sha256
+                    or existing["input_manifest"] != input_manifest
+                ):
+                    raise ValueError("onboarding Job is already bound to different inputs")
+                return {"run": dict(existing), "job": job, "changed": False}
+            for snapshot in snapshots:
+                connection.execute(
+                    "INSERT INTO design_job_source_snapshots(id,job_id,organization_id,design_group_id,"
+                    "source_model_revision_id,source_filename,stored_path,sha256,size_bytes,source_kind,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'product_family_input',%s)",
+                    (
+                        snapshot["id"],
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                        None,
+                        snapshot["source_filename"],
+                        snapshot["stored_path"],
+                        snapshot["sha256"],
+                        snapshot["size_bytes"],
+                        actor_id,
+                    ),
+                )
+            run = connection.execute(
+                "INSERT INTO product_family_onboarding_runs(id,job_id,organization_id,design_group_id,"
+                "family_id,status,input_manifest,input_manifest_sha256,started_job_revision,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,'started',%s::jsonb,%s,%s,%s) RETURNING *",
+                (
+                    run_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    json.dumps(input_manifest, ensure_ascii=False),
+                    input_manifest_sha256,
+                    expected_job_revision + 1,
+                    actor_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family onboarding inputs captured",
+            )
+        return {"run": dict(run), "job": dict(updated_job), "changed": True}
+
+    def analyze_product_family_onboarding(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        analysis: dict[str, Any],
+        analysis_sha256: str,
+        analysis_path: str,
+        candidate_knowledge: list[dict[str, Any]],
+        package_sha256: str,
+        package_path: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None:
+                raise KeyError("product family onboarding run is missing")
+            if run["status"] != "started":
+                if (
+                    run.get("analysis_sha256") == analysis_sha256
+                    and run.get("package_sha256") == package_sha256
+                    and run.get("analysis") == analysis
+                    and run.get("candidate_knowledge") == candidate_knowledge
+                ):
+                    return {"run": dict(run), "job": job, "changed": False}
+                raise ValueError("onboarding analysis is already immutable")
+            run = connection.execute(
+                "UPDATE product_family_onboarding_runs SET status='analyzed',analysis=%s::jsonb,"
+                "analysis_sha256=%s,analysis_path=%s,candidate_knowledge=%s::jsonb,"
+                "package_sha256=%s,package_path=%s,analyzed_job_revision=%s,analyzed_at=now() "
+                "WHERE id=%s RETURNING *",
+                (
+                    json.dumps(analysis, ensure_ascii=False),
+                    analysis_sha256,
+                    analysis_path,
+                    json.dumps(candidate_knowledge, ensure_ascii=False),
+                    package_sha256,
+                    package_path,
+                    expected_job_revision + 1,
+                    run_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET phase='analysis',revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family analysis and knowledge candidates recorded",
+            )
+        return {"run": dict(run), "job": dict(updated_job), "changed": True}
+
+    def review_product_family_onboarding(
+        self,
+        *,
+        review_id: str,
+        review_identity: str,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        package_sha256: str,
+        decision: str,
+        reviewer_id: str,
+        reviewer_text: str,
+        review_path: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=reviewer_id,
+            )
+            actor = connection.execute(
+                "SELECT * FROM actors WHERE id=%s AND organization_id=%s FOR SHARE",
+                (reviewer_id, organization_id),
+            ).fetchone()
+            if actor is None or actor["role"] != "family_owner":
+                raise PermissionError("product family onboarding review requires family_owner")
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None or run["status"] != "analyzed":
+                existing = connection.execute(
+                    "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s",
+                    (run_id,),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["review_identity"] == review_identity
+                    and existing["package_sha256"] == package_sha256
+                    and existing["decision"] == decision
+                ):
+                    return {"review": dict(existing), "job": job, "changed": False}
+                raise ValueError("onboarding run is not awaiting review")
+            if run["package_sha256"] != package_sha256:
+                raise ValueError("review package identity does not match onboarding analysis")
+            review = connection.execute(
+                "INSERT INTO product_family_onboarding_reviews(id,run_id,job_id,organization_id,"
+                "design_group_id,family_id,package_sha256,review_identity,decision,reviewer_id,"
+                "reviewer_text,review_path,reviewed_job_revision) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                (
+                    review_id,
+                    run_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    package_sha256,
+                    review_identity,
+                    decision,
+                    reviewer_id,
+                    reviewer_text,
+                    review_path,
+                    expected_job_revision + 1,
+                ),
+            ).fetchone()
+            run_status = "approved" if decision == "approve" else "rejected"
+            connection.execute(
+                "UPDATE product_family_onboarding_runs SET status=%s WHERE id=%s",
+                (run_status, run_id),
+            )
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET phase='knowledge_review',revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=reviewer_id,
+                reason=f"product family knowledge review {decision}",
+            )
+        return {"review": dict(review), "job": dict(updated_job), "changed": True}
+
+    def publish_product_family_onboarding(
+        self,
+        *,
+        publication_id: str,
+        publication_identity: str,
+        publication_receipt_sha256: str,
+        publication_path: str,
+        assertion_ids: list[str],
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        package_sha256: str,
+        review_identity: str,
+        candidates: list[dict[str, Any]],
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            existing = connection.execute(
+                "SELECT * FROM product_family_onboarding_publications WHERE run_id=%s FOR SHARE",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["publication_identity"] != publication_identity
+                    or existing["publication_receipt_sha256"]
+                    != publication_receipt_sha256
+                    or existing["package_sha256"] != package_sha256
+                ):
+                    raise ValueError("onboarding publication identity diverged")
+                return {"publication": dict(existing), "job": job, "changed": False}
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            review = connection.execute(
+                "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s "
+                "AND review_identity=%s FOR SHARE",
+                (run_id, review_identity),
+            ).fetchone()
+            if (
+                run is None
+                or run["status"] != "approved"
+                or run["package_sha256"] != package_sha256
+                or run["candidate_knowledge"] != candidates
+                or review is None
+                or review["decision"] != "approve"
+                or review["package_sha256"] != package_sha256
+            ):
+                raise ValueError("approved onboarding review does not match publication")
+            if len(assertion_ids) != len(candidates) or len(set(assertion_ids)) != len(assertion_ids):
+                raise ValueError("publication assertion identities are invalid")
+            for assertion_id, candidate in zip(assertion_ids, candidates, strict=True):
+                evidence = list(candidate["evidence"])
+                evidence.append(
+                    {
+                        "onboarding_job_id": job_id,
+                        "onboarding_run_id": run_id,
+                        "package_sha256": package_sha256,
+                        "review_identity": review_identity,
+                    }
+                )
+                connection.execute(
+                    "INSERT INTO knowledge_assertions(id,organization_id,design_group_id,family_id,"
+                    "subject_ref,predicate,object_value,unit,scope_kind,risk_level,status,source_kind,"
+                    "evidence,confidence,applicability,non_applicable_conditions,contradicts,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,'family',%s,'approved',%s,"
+                    "%s::jsonb,%s,%s::jsonb,%s::jsonb,'[]'::jsonb,%s)",
+                    (
+                        assertion_id,
+                        organization_id,
+                        design_group_id,
+                        family_id,
+                        candidate["subject_ref"],
+                        candidate["predicate"],
+                        json.dumps(candidate["object_value"], ensure_ascii=False),
+                        candidate.get("unit"),
+                        candidate["risk_level"],
+                        candidate["source_kind"],
+                        json.dumps(evidence, ensure_ascii=False),
+                        candidate["confidence"],
+                        json.dumps(candidate["applicability"], ensure_ascii=False),
+                        json.dumps(
+                            candidate["non_applicable_conditions"], ensure_ascii=False
+                        ),
+                        actor_id,
+                    ),
+                )
+                object_value = candidate["object_value"]
+                exact_terms = sorted(
+                    set(_search_terms(object_value))
+                    | {
+                        str(candidate["subject_ref"]).strip().lower(),
+                        str(candidate["predicate"]).strip().lower(),
+                    }
+                )
+                search_text = " ".join(
+                    [
+                        str(candidate["subject_ref"]),
+                        str(candidate["predicate"]),
+                        json.dumps(object_value, ensure_ascii=False, sort_keys=True),
+                    ]
+                )
+                connection.execute(
+                    "INSERT INTO knowledge_search_documents(assertion_id,organization_id,design_group_id,"
+                    "family_id,exact_terms,search_text) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        assertion_id,
+                        organization_id,
+                        design_group_id,
+                        family_id,
+                        exact_terms,
+                        search_text,
+                    ),
+                )
+                self._enqueue(
+                    connection,
+                    "knowledge_assertion",
+                    assertion_id,
+                    "knowledge_assertion.reviewed",
+                    {
+                        "assertion_id": assertion_id,
+                        "status": "approved",
+                        "onboarding_job_id": job_id,
+                        "onboarding_run_id": run_id,
+                        "publication_identity": publication_identity,
+                    },
+                )
+            publication = connection.execute(
+                "INSERT INTO product_family_onboarding_publications(id,run_id,review_id,job_id,"
+                "organization_id,design_group_id,family_id,package_sha256,publication_identity,"
+                "publication_receipt_sha256,publication_path,assertion_ids,published_job_revision,published_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) RETURNING *",
+                (
+                    publication_id,
+                    run_id,
+                    review["id"],
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    package_sha256,
+                    publication_identity,
+                    publication_receipt_sha256,
+                    publication_path,
+                    json.dumps(assertion_ids),
+                    expected_job_revision + 1,
+                    actor_id,
+                ),
+            ).fetchone()
+            connection.execute(
+                "UPDATE product_family_onboarding_runs SET status='published' WHERE id=%s",
+                (run_id,),
+            )
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET status='completed',phase='completed',blocked_reason=NULL,"
+                "active_working_copy_id=NULL,revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family onboarding knowledge published",
+            )
+        return {
+            "publication": dict(publication),
+            "job": dict(updated_job),
+            "changed": True,
+        }
+
+    def get_product_family_onboarding(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection:
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None:
+                raise KeyError("product family onboarding run is missing or unauthorized")
+            review = connection.execute(
+                "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s",
+                (run["id"],),
+            ).fetchone()
+            publication = connection.execute(
+                "SELECT * FROM product_family_onboarding_publications WHERE run_id=%s",
+                (run["id"],),
+            ).fetchone()
+        result = dict(run)
+        result["review"] = dict(review) if review is not None else None
+        result["publication"] = dict(publication) if publication is not None else None
+        return result
+
     def create_design_job(
         self,
         *,

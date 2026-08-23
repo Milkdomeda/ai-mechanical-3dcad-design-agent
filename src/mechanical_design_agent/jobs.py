@@ -1286,6 +1286,61 @@ class DesignJobManager:
             self._read_ready_manifest(fresh)
             yield locked, fresh
 
+    @contextmanager
+    def locked_active_job(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        job_type: str,
+        family_id: str | None = None,
+    ) -> Iterator[tuple[Path, dict[str, Any]]]:
+        """Yield one active Job of the explicitly requested product-operation type."""
+        if job_type not in _JOB_TYPES:
+            raise JobFailure("JOB_INPUT_INVALID", "job_type is invalid")
+        if type(expected_job_revision) is not int or expected_job_revision < 0:
+            raise JobFailure(
+                "JOB_INPUT_INVALID",
+                "expected_job_revision must be a non-negative integer",
+            )
+        row = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        if row.get("revision") != expected_job_revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        root = self._final_path(row)
+        with locked_job_root(job_root=root) as locked:
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
+            )
+            if fresh.get("revision") != expected_job_revision:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+            if fresh.get("status") != "active" or fresh.get("job_type") != job_type:
+                raise JobFailure(
+                    "JOB_TYPE_OR_STATUS_MISMATCH",
+                    f"operation requires an active {job_type} Job",
+                )
+            if fresh.get("provisioning_state") != "ready":
+                raise JobFailure(
+                    "JOB_PROVISIONING_INCOMPLETE", "Job provisioning is incomplete"
+                )
+            if family_id is not None and fresh.get("family_id") != family_id:
+                raise JobFailure(
+                    "JOB_FAMILY_MISMATCH",
+                    "operation family does not match the authorized Job",
+                )
+            self._read_ready_manifest(fresh)
+            yield locked, fresh
+
     def publish_authoritative_manifest_locked(
         self,
         *,
@@ -1335,6 +1390,35 @@ class DesignJobManager:
                 "authorized Job directory changed while reading its projection",
             )
         return self._read_ready_manifest(authoritative_row)
+
+    def publish_authoritative_revision_locked(
+        self,
+        *,
+        locked_root: Path,
+        job_id: str,
+        expected_previous_revision: int,
+        organization_id: str,
+        design_group_id: str,
+    ) -> DesignJobManifest:
+        """Publish an operation-owned Job revision after its database transaction."""
+        fresh = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        if int(fresh.get("revision", -1)) != expected_previous_revision + 1:
+            raise JobFailure(
+                "JOB_PROJECTION_INCOMPLETE",
+                "authoritative operation committed at an unexpected Job revision",
+            )
+        if self._final_path(fresh) != locked_root:
+            raise JobFailure(
+                "JOB_DIRECTORY_MISMATCH",
+                "authorized Job directory changed during operation publication",
+            )
+        manifest = self._manifest_from_row(fresh)
+        self._replace_projection(locked_root / "job.json", manifest)
+        return manifest
 
     def get(
         self,

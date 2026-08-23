@@ -77,6 +77,11 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_job_resolve": request("design_job_workspace"),
     "design_job_close": request("design_job_workspace"),
     "design_job_reopen": request("design_job_workspace"),
+    "product_family_onboarding_start": request("design_job_workspace"),
+    "product_family_onboarding_analyze": request("design_job_workspace"),
+    "product_family_onboarding_review": request("design_job_workspace"),
+    "product_family_onboarding_publish": request("design_job_workspace"),
+    "product_family_onboarding_status": request("design_job_workspace"),
     "job_get": request("library_ingest"),
     "model_get_analysis": request("library_ingest"),
     "model_identity_confirm": request("library_ingest"),
@@ -158,6 +163,8 @@ def test_uninitialized_mcp_registers_tools_without_constructing_service(
     assert "family_bootstrap_get" in mcp._tool_manager._tools
     assert "workspace_product_family_list" in mcp._tool_manager._tools
     assert "workspace_product_family_create" in mcp._tool_manager._tools
+    assert "product_family_onboarding_start" in mcp._tool_manager._tools
+    assert "product_family_onboarding_publish" in mcp._tool_manager._tools
     assert "workspace_product_family_set_default" in mcp._tool_manager._tools
     assert "workspace_product_family_active" in mcp._tool_manager._tools
     assert "standard_part_providers_get" in mcp._tool_manager._tools

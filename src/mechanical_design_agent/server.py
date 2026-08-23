@@ -155,6 +155,11 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "design_job_resolve": _capability("design_job_workspace"),
         "design_job_close": _capability("design_job_workspace"),
         "design_job_reopen": _capability("design_job_workspace"),
+        "product_family_onboarding_start": _capability("design_job_workspace"),
+        "product_family_onboarding_analyze": _capability("design_job_workspace"),
+        "product_family_onboarding_review": _capability("design_job_workspace"),
+        "product_family_onboarding_publish": _capability("design_job_workspace"),
+        "product_family_onboarding_status": _capability("design_job_workspace"),
         "job_get": _capability("library_ingest"),
         "model_get_analysis": _capability("library_ingest"),
         "model_identity_confirm": _capability("library_ingest"),
@@ -712,6 +717,90 @@ def create_mcp(
                 confirmation=confirmation,
             )
         )
+
+    @mcp.tool()
+    def product_family_onboarding_start(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        source_paths_json: str,
+    ) -> str:
+        """Snapshot Product Family source models into an active onboarding Job."""
+        def invoke() -> object:
+            source_paths = _required_array(source_paths_json, "source_paths_json")
+            if not all(isinstance(item, str) for item in source_paths):
+                raise ValueError("source_paths_json must contain only path strings")
+            return service.product_family_onboarding_start(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                family_id=family_id,
+                source_paths=source_paths,
+            )
+        return _job_json(invoke)
+
+    @mcp.tool()
+    def product_family_onboarding_analyze(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        analysis_json: str,
+        candidate_knowledge_json: str,
+    ) -> str:
+        """Store deterministic analysis and reviewable family-knowledge candidates in the same Job."""
+        return _job_json(lambda: service.product_family_onboarding_analyze(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            analysis=_required_object(analysis_json, "analysis_json"),
+            candidate_knowledge=_required_array(
+                candidate_knowledge_json, "candidate_knowledge_json"
+            ),
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_review(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        decision: str,
+        reviewer_text: str,
+        confirmation: str,
+    ) -> str:
+        """Approve or reject one exact candidate package as the configured family owner."""
+        return _job_json(lambda: service.product_family_onboarding_review(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            package_sha256=package_sha256,
+            decision=decision,
+            reviewer_text=reviewer_text,
+            confirmation=confirmation,
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_publish(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        review_identity: str,
+        confirmation: str,
+    ) -> str:
+        """Publish one approved package transactionally to PostgreSQL and the outbox."""
+        return _job_json(lambda: service.product_family_onboarding_publish(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            package_sha256=package_sha256,
+            review_identity=review_identity,
+            confirmation=confirmation,
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_status(job_id: str) -> str:
+        """Read the authoritative onboarding run, review, and publication identities."""
+        return _job_json(lambda: service.product_family_onboarding_status(job_id=job_id))
 
     @mcp.tool()
     def job_get(job_id: str) -> str:

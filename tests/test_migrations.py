@@ -395,6 +395,7 @@ class MigrationTests(unittest.TestCase):
                     "011_design_job_working_copies.sql",
                     "012_design_job_binding_hardening.sql",
                     "013_design_job_binding_security.sql",
+                    "014_design_job_knowledge.sql",
                 ],
             )
 

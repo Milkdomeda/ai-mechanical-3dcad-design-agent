@@ -54,6 +54,7 @@ CLI_CAPABILITIES = {
     "rebuild-projection": "projection",
     "smoke-fixture": "model_validation",
     "job": "design_job_workspace",
+    "family": "design_job_workspace",
 }
 
 
@@ -147,6 +148,43 @@ def main() -> None:
     family_default.add_argument("family_id")
     family_active = family_sub.add_parser("active")
     _add_bootstrap_args(family_active)
+    family_onboard = family_sub.add_parser("onboard")
+    family_onboard_sub = family_onboard.add_subparsers(
+        dest="family_onboard_command", required=True
+    )
+    family_onboard_start = family_onboard_sub.add_parser("start")
+    _add_bootstrap_args(family_onboard_start)
+    family_onboard_start.add_argument("--job", default=None)
+    family_onboard_start.add_argument("--expected-revision", type=int, required=True)
+    family_onboard_start.add_argument("--family-id", required=True)
+    family_onboard_start.add_argument("--source", action="append", required=True)
+    family_onboard_analyze = family_onboard_sub.add_parser("analyze")
+    _add_bootstrap_args(family_onboard_analyze)
+    family_onboard_analyze.add_argument("--job", default=None)
+    family_onboard_analyze.add_argument("--expected-revision", type=int, required=True)
+    family_onboard_analyze.add_argument("--family-id", required=True)
+    family_onboard_analyze.add_argument("--analysis-file", required=True)
+    family_onboard_analyze.add_argument("--candidate-file", required=True)
+    family_onboard_review = family_onboard_sub.add_parser("review")
+    _add_bootstrap_args(family_onboard_review)
+    family_onboard_review.add_argument("--job", default=None)
+    family_onboard_review.add_argument("--expected-revision", type=int, required=True)
+    family_onboard_review.add_argument("--family-id", required=True)
+    family_onboard_review.add_argument("--package-sha256", required=True)
+    family_onboard_review.add_argument("--decision", choices=("approve", "reject"), required=True)
+    family_onboard_review.add_argument("--reviewer-text", required=True)
+    family_onboard_review.add_argument("--confirmation", required=True)
+    family_onboard_publish = family_onboard_sub.add_parser("publish")
+    _add_bootstrap_args(family_onboard_publish)
+    family_onboard_publish.add_argument("--job", default=None)
+    family_onboard_publish.add_argument("--expected-revision", type=int, required=True)
+    family_onboard_publish.add_argument("--family-id", required=True)
+    family_onboard_publish.add_argument("--package-sha256", required=True)
+    family_onboard_publish.add_argument("--review-identity", required=True)
+    family_onboard_publish.add_argument("--confirmation", required=True)
+    family_onboard_status = family_onboard_sub.add_parser("status")
+    _add_bootstrap_args(family_onboard_status)
+    family_onboard_status.add_argument("--job", default=None)
     standard_parts = sub.add_parser("standard-parts")
     standard_parts_sub = standard_parts.add_subparsers(
         dest="standard_parts_command",
@@ -307,7 +345,7 @@ def main() -> None:
     if args.command == "config" and args.config_command == "show":
         _print_result(runtime.config_show())
         return
-    if args.command == "family":
+    if args.command == "family" and args.family_command != "onboard":
         try:
             if args.family_command == "list":
                 result = runtime.list_product_families()
@@ -385,7 +423,12 @@ def main() -> None:
             _print(repository.apply_migrations(migrations))
         return
     try:
-        settings = runtime.job_operational_settings() if args.command == "job" else runtime.operational_settings()
+        settings = (
+            runtime.job_operational_settings()
+            if args.command == "job"
+            or (args.command == "family" and args.family_command == "onboard")
+            else runtime.operational_settings()
+        )
     except DiagnosticGateError as exc:
         _print_result(exc.response)
         return
@@ -400,6 +443,66 @@ def main() -> None:
         return
     if args.command == "smoke-fixture":
         _print(run_test_fixture(settings, args.source))
+        return
+    if args.command == "family" and args.family_command == "onboard":
+        try:
+            service = MechanicalDesignService(settings)
+            job_id = _job_binding(args)
+            if args.family_onboard_command == "start":
+                result = service.product_family_onboarding_start(
+                    job_id=job_id,
+                    expected_job_revision=args.expected_revision,
+                    family_id=args.family_id,
+                    source_paths=args.source,
+                )
+            elif args.family_onboard_command == "analyze":
+                analysis = json.loads(
+                    Path(args.analysis_file).expanduser().resolve(strict=True).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                candidates = json.loads(
+                    Path(args.candidate_file).expanduser().resolve(strict=True).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if not isinstance(analysis, dict) or not isinstance(candidates, list):
+                    raise JobFailure(
+                        "JOB_ONBOARDING_INPUT_INVALID",
+                        "analysis file must be an object and candidate file must be an array",
+                    )
+                result = service.product_family_onboarding_analyze(
+                    job_id=job_id,
+                    expected_job_revision=args.expected_revision,
+                    family_id=args.family_id,
+                    analysis=analysis,
+                    candidate_knowledge=candidates,
+                )
+            elif args.family_onboard_command == "review":
+                result = service.product_family_onboarding_review(
+                    job_id=job_id,
+                    expected_job_revision=args.expected_revision,
+                    family_id=args.family_id,
+                    package_sha256=args.package_sha256,
+                    decision=args.decision,
+                    reviewer_text=args.reviewer_text,
+                    confirmation=args.confirmation,
+                )
+            elif args.family_onboard_command == "publish":
+                result = service.product_family_onboarding_publish(
+                    job_id=job_id,
+                    expected_job_revision=args.expected_revision,
+                    family_id=args.family_id,
+                    package_sha256=args.package_sha256,
+                    review_identity=args.review_identity,
+                    confirmation=args.confirmation,
+                )
+            else:
+                result = service.product_family_onboarding_status(job_id=job_id)
+        except Exception as exc:
+            _print_result(_job_error(exc))
+            return
+        _print(result)
         return
     if args.command == "job":
         try:

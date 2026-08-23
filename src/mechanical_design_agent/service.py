@@ -33,6 +33,7 @@ from .lesson_reviews import DesignLessonReviewStore
 from .migrations import postgres_migrations_directory
 from .projection import Neo4jProjection
 from .product_families import validate_product_family_config
+from .product_family_onboarding import ProductFamilyOnboarding
 from .repository import PostgresRepository
 from .standard_parts import StandardPartRegistry
 from .workspace_bootstrap import read_workspace_manifest
@@ -492,6 +493,116 @@ class MechanicalDesignService:
             receipt_sha256=receipt_sha256,
             confirmation=confirmation,
         )
+
+    def _family_onboarding(self) -> ProductFamilyOnboarding:
+        organization, group = self._configured_job_scope()
+        return ProductFamilyOnboarding(
+            repository=self.repository,
+            jobs=self.design_jobs,
+            actor_id=self.settings.actor_id,
+            organization_id=organization,
+            design_group_id=group,
+        )
+
+    def product_family_onboarding_start(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        source_paths: list[str],
+    ) -> dict[str, object]:
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved = self._resolve_job_reference(
+            job_id, organization_id=organization, design_group_id=group
+        )
+        return self._family_onboarding().start(
+            job_id=resolved,
+            expected_job_revision=self._expected_job_revision(expected_job_revision),
+            family_id=family_id,
+            source_paths=source_paths,
+        )
+
+    def product_family_onboarding_analyze(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        analysis: dict[str, object],
+        candidate_knowledge: list[object],
+    ) -> dict[str, object]:
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved = self._resolve_job_reference(
+            job_id, organization_id=organization, design_group_id=group
+        )
+        return self._family_onboarding().analyze(
+            job_id=resolved,
+            expected_job_revision=self._expected_job_revision(expected_job_revision),
+            family_id=family_id,
+            analysis=analysis,
+            candidate_knowledge=candidate_knowledge,
+        )
+
+    def product_family_onboarding_review(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        decision: str,
+        reviewer_text: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved = self._resolve_job_reference(
+            job_id, organization_id=organization, design_group_id=group
+        )
+        return self._family_onboarding().review(
+            job_id=resolved,
+            expected_job_revision=self._expected_job_revision(expected_job_revision),
+            family_id=family_id,
+            package_sha256=package_sha256,
+            decision=decision,
+            reviewer_text=reviewer_text,
+            confirmation=confirmation,
+        )
+
+    def product_family_onboarding_publish(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        review_identity: str,
+        confirmation: str,
+    ) -> dict[str, object]:
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved = self._resolve_job_reference(
+            job_id, organization_id=organization, design_group_id=group
+        )
+        return self._family_onboarding().publish(
+            job_id=resolved,
+            expected_job_revision=self._expected_job_revision(expected_job_revision),
+            family_id=family_id,
+            package_sha256=package_sha256,
+            review_identity=review_identity,
+            confirmation=confirmation,
+        )
+
+    def product_family_onboarding_status(self, *, job_id: str) -> dict[str, object]:
+        self._require_database()
+        organization, group = self._configured_job_scope()
+        resolved = self._resolve_job_reference(
+            job_id, organization_id=organization, design_group_id=group
+        )
+        return self._family_onboarding().status(job_id=resolved)
 
     def design_job_repair(
         self,
