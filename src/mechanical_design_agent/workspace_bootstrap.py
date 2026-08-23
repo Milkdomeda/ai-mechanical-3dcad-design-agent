@@ -26,6 +26,7 @@ _SAFE_ACTOR_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 MANIFEST_RELATIVE_PATH = Path("config/mechanical_design.json")
 DEFAULT_ARTIFACT_ROOT = "data/artifacts"
+DEFAULT_JOBS_ROOT = "jobs"
 DEFAULT_STANDARD_PART_SOURCES = "config/standard_parts_sources.json"
 DEFAULT_PRODUCT_FAMILIES = "config/product_families"
 
@@ -97,6 +98,7 @@ class WorkspaceManifest:
     workspace_id: uuid.UUID
     actor_id: str
     artifact_root: Path
+    jobs_root: Path
     standard_parts_sources: Path
     product_families: Path
     default_product_family_id: str | None
@@ -484,6 +486,11 @@ def read_workspace_manifest(workspace: Path) -> WorkspaceManifest:
             paths.get("artifact_root"),
             "artifact_root",
         ),
+        jobs_root=_workspace_owned_path(
+            canonical_workspace,
+            paths.get("jobs_root", DEFAULT_JOBS_ROOT),
+            "jobs_root",
+        ),
         standard_parts_sources=_workspace_owned_path(
             canonical_workspace,
             paths.get("standard_parts_sources"),
@@ -533,6 +540,7 @@ def _manifest_template(
         },
         "paths": {
             "artifact_root": DEFAULT_ARTIFACT_ROOT,
+            "jobs_root": DEFAULT_JOBS_ROOT,
             "standard_parts_sources": DEFAULT_STANDARD_PART_SOURCES,
             "product_families": DEFAULT_PRODUCT_FAMILIES,
         },
@@ -685,6 +693,7 @@ def _validate_initialized_managed_state(manifest: WorkspaceManifest) -> None:
     for label, path in (
         ("product_families", manifest.product_families),
         ("artifact_root", manifest.artifact_root),
+        ("jobs_root", manifest.jobs_root),
     ):
         try:
             managed = validate_managed_path(path, allow_missing_leaf=True)
@@ -806,18 +815,29 @@ def initialize_workspace(
                 "ACTOR_ID_CONFLICT",
                 "explicit actor differs from initialized workspace default",
             )
+        jobs_created = False
+        if not manifest.jobs_root.exists():
+            relative_jobs_root = manifest.jobs_root.relative_to(canonical).as_posix()
+            with _initialization_lock(canonical):
+                _ensure_managed_directory(canonical, relative_jobs_root)
+                jobs_created = True
         _validate_initialized_managed_state(manifest)
+        managed_names = (
+            "config/mechanical_design.json",
+            "config/standard_parts_sources.json",
+            "config/product_families",
+            "data/artifacts",
+            "jobs",
+        )
         return InitResult(
             status="ok",
             result="already_initialized",
             workspace=canonical,
             manifest_path=manifest_path,
-            created=(),
-            reused=(
-                "config/mechanical_design.json",
-                "config/standard_parts_sources.json",
-                "config/product_families",
-                "data/artifacts",
+            created=("jobs",) if jobs_created else (),
+            reused=tuple(
+                path for path in managed_names
+                if path != "jobs" or not jobs_created
             ),
             next_steps=(),
         )
@@ -829,6 +849,7 @@ def initialize_workspace(
         "config/standard_parts_sources.json",
         "data",
         "data/artifacts",
+        "jobs",
         "config/mechanical_design.json",
     )
     if dry_run:
@@ -867,6 +888,7 @@ def initialize_workspace(
         canonical / "config/standard_parts_sources.json",
         canonical / "data",
         canonical / "data/artifacts",
+        canonical / "jobs",
         manifest_path,
     ]
     existed_before = {path for path in managed_paths if path.exists()}
@@ -874,6 +896,7 @@ def initialize_workspace(
         config = _ensure_managed_directory(canonical, "config")
         _ensure_managed_directory(canonical, "config/product_families")
         _ensure_managed_directory(canonical, "data/artifacts")
+        _ensure_managed_directory(canonical, "jobs")
         sources_path = config / "standard_parts_sources.json"
         _reuse_exact_or_publish(
             sources_path,

@@ -21,6 +21,7 @@ from mechanical_design_agent.secure_fs import (
 from mechanical_design_agent.workspace_bootstrap import (
     BootstrapFailure,
     DEFAULT_ARTIFACT_ROOT,
+    DEFAULT_JOBS_ROOT,
     DEFAULT_PRODUCT_FAMILIES,
     DEFAULT_STANDARD_PART_SOURCES,
     EnvEntry,
@@ -375,11 +376,26 @@ def test_final_override_uses_manifest_then_logical_package_default() -> None:
 
 def test_package_path_defaults_are_logical_workspace_relative_values() -> None:
     assert DEFAULT_ARTIFACT_ROOT == "data/artifacts"
+    assert DEFAULT_JOBS_ROOT == "jobs"
     assert DEFAULT_STANDARD_PART_SOURCES == "config/standard_parts_sources.json"
     assert DEFAULT_PRODUCT_FAMILIES == "config/product_families"
     assert not Path(DEFAULT_ARTIFACT_ROOT).is_absolute()
+    assert not Path(DEFAULT_JOBS_ROOT).is_absolute()
     assert not Path(DEFAULT_STANDARD_PART_SOURCES).is_absolute()
     assert not Path(DEFAULT_PRODUCT_FAMILIES).is_absolute()
+
+
+def test_v1_manifest_without_jobs_root_uses_portable_default(tmp_path: Path) -> None:
+    workspace = tmp_path / "legacy workspace"
+    write_manifest_for_test(workspace)
+    assert read_workspace_manifest(workspace).jobs_root == workspace / "jobs"
+
+
+def test_init_creates_jobs_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "机械设计 workspace"
+    result = initialize_workspace(workspace=workspace, actor_id="actor-1", dry_run=False)
+    assert (workspace / "jobs").is_dir()
+    assert "jobs" in result.created
 
 
 def test_workspace_selection_uses_runtime_before_process_and_env_file(
@@ -654,6 +670,7 @@ def test_init_creates_exact_portable_workspace_tree(tmp_path: Path) -> None:
         "config/standard_parts_sources.json",
         "data",
         "data/artifacts",
+        "jobs",
     ]
     assert not (workspace / "output").exists()
     assert not (workspace / "knowledge").exists()
@@ -673,6 +690,7 @@ def test_init_creates_exact_portable_workspace_tree(tmp_path: Path) -> None:
     assert manifest["freecad"] == {"command": None}
     assert manifest["paths"] == {
         "artifact_root": "data/artifacts",
+        "jobs_root": "jobs",
         "product_families": "config/product_families",
         "standard_parts_sources": "config/standard_parts_sources.json",
     }
