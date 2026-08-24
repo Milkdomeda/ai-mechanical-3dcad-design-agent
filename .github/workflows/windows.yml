@@ -66,8 +66,8 @@ jobs:
             $failed += [int]$suite.failures + [int]$suite.errors
             $skipped += [int]$suite.skipped
           }
-          # 57 prior public skips + D3 live opt-in; the second-volume gate runs.
-          $expectedSkipped = 59
+          # Live database/GUI/Job gates remain opt-in; second-volume tests run.
+          $expectedSkipped = 71
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }

@@ -18,6 +18,7 @@ from .secure_fs import (
     ensure_managed_directory,
     exclusive_creation_lock,
     validate_managed_path,
+    relative_managed_path,
 )
 
 
@@ -387,17 +388,22 @@ def _workspace_owned_path(
             Path(os.path.abspath(candidate)),
             allow_missing_leaf=True,
         ).path
+        relative = relative_managed_path(
+            candidate,
+            workspace,
+            allow_missing_leaf=True,
+        )
     except SecureFilesystemError as exc:
         raise BootstrapFailure(
             exc.code if exc.code.startswith("WINDOWS_") else "MANIFEST_PATH_ESCAPE",
             str(exc),
         ) from exc
-    if not candidate.is_relative_to(workspace):
+    except ValueError:
         raise BootstrapFailure(
             "MANIFEST_PATH_ESCAPE",
             f"{label} escapes workspace: {candidate}",
-        )
-    return candidate
+        ) from None
+    return workspace / relative
 
 
 def _optional_string(

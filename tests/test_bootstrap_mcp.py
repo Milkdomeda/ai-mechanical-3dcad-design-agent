@@ -26,6 +26,16 @@ from mechanical_design_agent.secure_fs import read_managed_file
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
 
+def _fake_x64_freecadcmd_bytes() -> bytes:
+    """Return the smallest fixture accepted by the Windows PE trust preflight."""
+    payload = bytearray(70)
+    payload[:2] = b"MZ"
+    payload[0x3C:0x40] = (64).to_bytes(4, "little")
+    payload[64:68] = b"PE\0\0"
+    payload[68:70] = (0x8664).to_bytes(2, "little")
+    return bytes(payload)
+
+
 def clear_bootstrap_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "MECH_DESIGN_WORKSPACE",
@@ -815,7 +825,7 @@ def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
     workspace = tmp_path / "workspace"
     initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
     freecadcmd = tmp_path / "FreeCADCmd 1.1.1"
-    freecadcmd.write_bytes(b"local executable probe boundary")
+    freecadcmd.write_bytes(_fake_x64_freecadcmd_bytes())
     pinned = read_managed_file(freecadcmd)
     monkeypatch.setattr(
         "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
@@ -860,7 +870,7 @@ def test_job_cad_requires_exact_reviewed_official_executable_digest(
         encoding="utf-8",
     )
     freecadcmd = tmp_path / "FreeCADCmd 1.1.3"
-    freecadcmd.write_bytes(b"official executable candidate")
+    freecadcmd.write_bytes(_fake_x64_freecadcmd_bytes())
     pinned = read_managed_file(freecadcmd)
     version_calls: list[Path] = []
 

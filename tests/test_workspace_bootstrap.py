@@ -390,7 +390,8 @@ def test_package_path_defaults_are_logical_workspace_relative_values() -> None:
 def test_v1_manifest_without_jobs_root_uses_portable_default(tmp_path: Path) -> None:
     workspace = tmp_path / "legacy workspace"
     write_manifest_for_test(workspace)
-    assert read_workspace_manifest(workspace).jobs_root == workspace / "jobs"
+    manifest = read_workspace_manifest(workspace)
+    assert manifest.jobs_root == manifest.workspace / "jobs"
 
 
 def test_init_creates_jobs_root(tmp_path: Path) -> None:

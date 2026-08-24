@@ -25,6 +25,7 @@ from .secure_fs import (
     list_managed_directory,
     read_managed_file,
     remove_owned_tree,
+    same_managed_path,
     set_managed_file_readonly,
     validate_managed_path,
 )
@@ -156,7 +157,7 @@ class DesignWorkspace:
                 allow_missing_leaf=False,
             )
             authoritative = Path(os.path.abspath(str(working["working_path"])))
-            if path != authoritative or path.suffix.casefold() != ".fcstd":
+            if not same_managed_path(path, authoritative) or path.suffix.casefold() != ".fcstd":
                 raise JobFailure(
                     "JOB_WORKING_COPY_PATH_INVALID",
                     "the governed working-copy path disagrees with authority",
