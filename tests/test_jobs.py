@@ -26,6 +26,7 @@ from mechanical_design_agent.jobs import (
 )
 from mechanical_design_agent.migrations import postgres_migrations_directory
 from mechanical_design_agent.repository import PostgresRepository
+from mechanical_design_agent.secure_fs import relative_managed_path
 from mechanical_design_agent.workspace_bootstrap import WorkspaceManifest
 
 
@@ -1141,11 +1142,16 @@ def test_managed_job_path_supports_spaces_and_unicode_but_rejects_symlink(
     root = manager.workspace.jobs_root / manifest.directory_name
     safe = root / "analysis" / "载荷 case 1"
     safe.mkdir()
-    assert managed_job_path(
+    result = managed_job_path(
         job_root=root,
         relative_path="analysis/载荷 case 1/result.json",
         allow_missing_leaf=True,
-    ) == safe / "result.json"
+    )
+    assert relative_managed_path(
+        result,
+        root,
+        allow_missing_leaf=True,
+    ) == Path("analysis/载荷 case 1/result.json")
 
     outside = tmp_path / "outside"
     outside.mkdir()

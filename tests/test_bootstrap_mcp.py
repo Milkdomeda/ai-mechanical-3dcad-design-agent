@@ -22,7 +22,7 @@ from mechanical_design_agent.server import (
 )
 from mechanical_design_agent.config import JobCadSettings, JobSettings
 from mechanical_design_agent.jobs import JobFailure
-from mechanical_design_agent.secure_fs import read_managed_file
+from mechanical_design_agent.secure_fs import read_managed_file, same_managed_path
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
 
@@ -905,7 +905,8 @@ def test_job_cad_requires_exact_reviewed_official_executable_digest(
     assert version_calls == []
 
     settings = runtime(pinned.sha256).job_cad_operational_settings()
-    assert version_calls and set(version_calls) == {freecadcmd}
+    assert version_calls
+    assert all(same_managed_path(path, freecadcmd) for path in version_calls)
     assert settings.freecadcmd_sha256 == pinned.sha256
     assert settings.freecadcmd_identity == pinned.identity
     assert settings.freecadcmd_version == "1.1.3"

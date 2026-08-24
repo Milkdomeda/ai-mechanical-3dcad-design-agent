@@ -9,7 +9,7 @@ from mechanical_design_agent.freecad_runner import (
     FreeCADExecutableTrustError,
     run_freecad_script,
 )
-from mechanical_design_agent.secure_fs import read_managed_file
+from mechanical_design_agent.secure_fs import read_managed_file, same_managed_path
 
 
 def test_runner_scrubs_environment_and_isolates_process_inside_attempt(
@@ -48,7 +48,7 @@ def test_runner_scrubs_environment_and_isolates_process_inside_attempt(
     assert "NEO4J_PASSWORD" not in environment
     assert environment["HOME"] == str(attempt)
     assert environment["TMPDIR"] == str(attempt)
-    assert captured["cwd"] == attempt
+    assert same_managed_path(Path(captured["cwd"]), attempt)
 
 
 def test_runner_rejects_substituted_executable_after_invocation(

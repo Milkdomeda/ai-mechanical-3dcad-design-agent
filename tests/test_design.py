@@ -321,10 +321,12 @@ class DesignWorkspaceTests(unittest.TestCase):
                 self.assertEqual(evidence["size_bytes"], expected_file.stat().st_size)
                 self.assertEqual(set(evidence["identity"]), {"volume", "file_index"})
             self.assertTrue(result["source_snapshot"]["stored_path"].startswith("inputs/source/"))
-            self.assertTrue(
-                Path(result["working_path"]).is_relative_to(
-                    (manager.root / "models" / "working").resolve()
-                )
+            self.assertEqual(
+                relative_managed_path(
+                    Path(result["working_path"]),
+                    manager.root / "models" / "working",
+                ).name,
+                "working.FCStd",
             )
             self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
 
@@ -725,10 +727,12 @@ class DesignWorkspaceTests(unittest.TestCase):
             self.assertEqual(
                 Path(result["working_path"]).read_bytes(), _safe_fcstd_bytes("new")
             )
-            self.assertTrue(
-                Path(result["working_path"]).is_relative_to(
-                    (manager.root / "models" / "working").resolve()
-                )
+            self.assertEqual(
+                relative_managed_path(
+                    Path(result["working_path"]),
+                    manager.root / "models" / "working",
+                ).name,
+                "working.FCStd",
             )
             self.assertIsNone(result["source_snapshot"])
             self.assertIsNone(repository.created["model_revision_id"])

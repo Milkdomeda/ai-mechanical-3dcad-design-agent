@@ -21,6 +21,7 @@ from mechanical_design_agent.hashing import file_sha256
 from mechanical_design_agent.lesson_reviews import DesignLessonReviewStore
 from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.repository import PostgresRepository
+from mechanical_design_agent.secure_fs import relative_managed_path
 from mechanical_design_agent.server import create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
 
@@ -1189,8 +1190,14 @@ def test_service_review_preparation_is_contained_under_originating_job_knowledge
         expected_root = (
             service.settings.workspace / "knowledge" / "design-lessons"
         ).resolve()
-        assert Path(inserted["package_path"]).is_relative_to(expected_root)
-        assert Path(inserted["review_path"]).is_relative_to(expected_root)
+        package_relative = relative_managed_path(
+            Path(inserted["package_path"]), expected_root
+        )
+        review_relative = relative_managed_path(
+            Path(inserted["review_path"]), expected_root
+        )
+        assert package_relative.name == "lesson.json"
+        assert review_relative.name == "review.md"
         assert prepared["job_id"] == "00000000-0000-0000-0000-000000000010"
         assert prepared["job_revision"] == 7
     finally:
