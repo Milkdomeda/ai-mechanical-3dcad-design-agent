@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 - 2026-08-24
+
+- Normalize Windows managed workspace paths before ownership, containment, and
+  locked working-copy comparisons so ordinary and `\\?\` extended spellings
+  refer to the same Design Job artifacts.
+- Preserve canonical Windows paths when isolating FreeCADCmd subprocesses and
+  validate equivalent paths by managed file identity.
+- Keep the v0.3.0 Design Job, knowledge, validation, and packaging contracts
+  unchanged; this release is a cross-platform correctness patch.
+
 ## 0.3.0 - 2026-08-24
 
 - Route every product operation through a controlled Design Job workspace;

@@ -6,7 +6,7 @@ AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.3.0.
+0.3.1.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,15 +15,15 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.3.0 adds governed Design Job workspaces to the coding-agent/MCP-server
-release. It includes deterministic workspace bootstrap, Job lifecycle and
-legacy migration, product-family onboarding, model analysis, engineering
-knowledge workflows, standard-part provenance, validation resources, and
-package-owned database migrations. It also publishes project-owned agent
-instructions and skills for Design Job routing, standard-part selection, and
-FreeCAD model validation. It does not bundle a language model, a CAD model
-library, generated Job output, engineering reports, database services, or a
-FreeCAD GUI MCP integration.
+Version 0.3.1 delivers the governed Design Job workspaces introduced in 0.3.0
+with corrected Windows managed-path handling. It includes deterministic
+workspace bootstrap, Job lifecycle and legacy migration, product-family
+onboarding, model analysis, engineering knowledge workflows, standard-part
+provenance, validation resources, and package-owned database migrations. It
+also publishes project-owned agent instructions and skills for Design Job
+routing, standard-part selection, and FreeCAD model validation. It does not
+bundle a language model, a CAD model library, generated Job output, engineering
+reports, database services, or a FreeCAD GUI MCP integration.
 
 See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
 [Design Job workspace guide](docs/DESIGN_JOB_WORKSPACES.md) for routing,

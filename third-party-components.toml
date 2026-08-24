@@ -1,6 +1,6 @@
 schema_version = "ThirdPartyComponents/v1"
 project_distribution = "ai-mechanical-3dcad-design-agent"
-project_version = "0.3.0"
+project_version = "0.3.1"
 audit_date = 2026-08-16
 lockfile = "uv.lock"
 provider_config = "src/mechanical_design_agent/resources/config/standard_part_providers.json"
