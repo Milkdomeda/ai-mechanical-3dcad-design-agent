@@ -55,7 +55,12 @@ def _redact_human_value(value: Any) -> Any:
 class DesignLessonReviewStore:
     """Filesystem-only immutable engineer-review cards for staged design lessons."""
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        review_parts: tuple[str, ...] = _REVIEW_PARTS,
+    ) -> None:
         candidate = Path(workspace)
         if candidate.is_symlink():
             raise ValueError("workspace must not be a symlink")
@@ -65,11 +70,21 @@ class DesignLessonReviewStore:
             candidate,
             allow_missing_leaf=False,
         ).path
+        if not review_parts or any(
+            not isinstance(part, str)
+            or not part
+            or part in {".", ".."}
+            or "/" in part
+            or "\\" in part
+            for part in review_parts
+        ):
+            raise ValueError("review_parts must contain safe path components")
+        self._review_parts = tuple(review_parts)
 
     @property
     def review_root(self) -> Path:
         current = self.workspace
-        for part in _REVIEW_PARTS:
+        for part in self._review_parts:
             current = current / part
             if current.exists() and current.is_symlink():
                 raise ValueError("review path must not be a symlink")

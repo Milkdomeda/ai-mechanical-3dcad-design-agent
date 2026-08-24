@@ -12,11 +12,15 @@ similarity as engineering authority.
 2. Use `family create` to register organization, design group, family identity,
    and owner. Select it explicitly for the operational session or set it as the
    workspace default.
-3. `library_scan` may report candidate CAD files but never imports them.
-4. The engineer confirms the canonical family name, aliases, owning group, and
+3. Create or resume one `product_family_onboarding` Design Job for the family
+   intake. Keep its source snapshots, analysis, engineer review, approved
+   knowledge, and database-publication receipt in that same Job. Do not create a
+   Git worktree for the onboarding operation.
+4. `library_scan` may report candidate CAD files but never imports them.
+5. The engineer confirms the canonical family name, aliases, owning group, and
    source-folder mapping. Nested folders remain source metadata rather than
    automatic subfamilies.
-5. Only an explicit `library_ingest_changes` selection starts FreeCADCmd.
+6. Only an explicit `library_ingest_changes` selection starts FreeCADCmd.
 
 ## B. Learn one model
 
@@ -56,23 +60,28 @@ definition/occurrence candidate; it never proves shared names or functions.
 
 ## D. Use knowledge in design
 
-1. Build `DesignContext/v2` before retrieval or editing.
-2. Without family authority, ask for requirements in neutral terms; do not
+1. Route the request through a `mechanical_design` Job. Continue the same design
+   in the same active or blocked Job; create a new Job only for an independent
+   requirement. A missing or ambiguous resume requires user direction. Do not
+   create a Git worktree for product design.
+2. Build `DesignContext/v2` before retrieval or editing.
+3. Without family authority, ask for requirements in neutral terms; do not
    borrow specialized roles, names, or parameter ranges.
-3. Existing models become source-revision-bound FCStd working copies. New
+4. Existing models become immutable-source-snapshot and
+   source-revision-bound FCStd working copies inside the Job. New
    designs start from a neutral seed.
-4. Record proposal, structure, and parameter changes as separately reviewable
+5. Record proposal, structure, and parameter changes as separately reviewable
    change phases.
-5. Apply only approved changes through the appropriate FreeCAD integration and
+6. Apply only approved changes through the appropriate FreeCAD integration and
    record the resulting FCStd hash.
-6. Run FreeCAD model validation. Require the complete model-detected fastener
+7. Run FreeCAD model validation. Require the complete model-detected fastener
    inventory and the same-revision FCStd SHA-256.
-7. Run declared mechanical-interface validation and then
+8. Run declared mechanical-interface validation and then
    `AssemblyCompleteness/v2`. Require exactly-once fastened-joint assignment
    for the whole inventory.
-8. Missing, duplicate, unknown, failed, or stale evidence is a mandatory model
+9. Missing, duplicate, unknown, failed, or stale evidence is a mandatory model
    and assembly failure. `AssemblyCompleteness/v1` is rejected.
-9. A reusable failure, correction, omission, or review outcome may enter the
+10. A reusable failure, correction, omission, or review outcome may enter the
    separate lesson workflow. Lesson capture never changes the delivery result.
 
 The service serializes working-copy operations with a workspace-owned lock.
@@ -103,6 +112,12 @@ design outcome -> design_lesson_review_context
    verification until the review is `stored-and-retrievable`.
 5. `design_lesson_review_status(retry=True)` may perform one bounded retry
    using the already approved immutable card.
+
+All of these lesson operations reuse the originating `mechanical_design` Job.
+The staging package, immutable evidence, review card, publication receipt,
+supersession, and revocation cannot be moved to another Job. If origin is
+missing or ambiguous, stop; never create an onboarding or replacement Job for
+the lesson.
 
 The hash-bound `design_lesson_stage`, `design_lesson_staged_get`,
 `design_lesson_approve`, and `design_lesson_supersede` tools remain an

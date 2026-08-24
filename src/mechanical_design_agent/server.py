@@ -19,6 +19,7 @@ from .context import DesignContextBuilder
 from .design_lessons import match_design_lesson, normalize_design_features
 from .models import require_safe_id
 from .service import MechanicalDesignService
+from .job_errors import safe_job_error_json
 from .workspace_bootstrap import BootstrapFailure
 
 
@@ -34,6 +35,31 @@ def _json(value: Any) -> str:
         )
     except ValueError as exc:
         raise ValueError("non-finite JSON value cannot be serialized") from exc
+
+
+def _job_json(call: Callable[[], object]) -> str:
+    """Map every public Job failure to the redacted v1 transport contract."""
+    try:
+        return _json(call())
+    except Exception as exc:
+        raise ToolError(safe_job_error_json(exc)) from None
+
+
+def _optional_job_binding(
+    job_id: str, expected_job_revision: int
+) -> dict[str, object]:
+    has_job = bool(job_id.strip())
+    has_revision = expected_job_revision >= 0
+    if has_job != has_revision:
+        raise ValueError(
+            "job_id and expected_job_revision must be supplied together"
+        )
+    if not has_job:
+        return {}
+    return {
+        "job_id": job_id.strip(),
+        "expected_job_revision": expected_job_revision,
+    }
 
 
 def _strict_json_loads(value: str) -> Any:
@@ -140,6 +166,17 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "library_register": _capability("library_ingest"),
         "library_scan": _capability("library_ingest"),
         "library_ingest_changes": _capability("library_ingest"),
+        "design_job_create": _capability("design_job_workspace"),
+        "design_job_list": _capability("design_job_workspace"),
+        "design_job_get": _capability("design_job_workspace"),
+        "design_job_resolve": _capability("design_job_workspace"),
+        "design_job_close": _capability("design_job_workspace"),
+        "design_job_reopen": _capability("design_job_workspace"),
+        "product_family_onboarding_start": _capability("design_job_workspace"),
+        "product_family_onboarding_analyze": _capability("design_job_workspace"),
+        "product_family_onboarding_review": _capability("design_job_workspace"),
+        "product_family_onboarding_publish": _capability("design_job_workspace"),
+        "product_family_onboarding_status": _capability("design_job_workspace"),
         "job_get": _capability("library_ingest"),
         "model_get_analysis": _capability("library_ingest"),
         "model_identity_confirm": _capability("library_ingest"),
@@ -211,6 +248,12 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "design_new_working_copy_create": _capability(
             "cad_working_copy", "product_family"
         ),
+        "design_job_working_copy_create": _capability(
+            "design_job_workspace", "freecadcmd"
+        ),
+        "design_job_new_working_copy_create": _capability(
+            "design_job_workspace", "freecadcmd"
+        ),
         "design_change_record": _capability(
             "cad_working_copy", "product_family"
         ),
@@ -252,11 +295,11 @@ class _LazyServiceProxy:
         self,
         *,
         runtime: BootstrapRuntime,
-        service_factory: Callable[[Settings], Any],
+        service_factory: Callable[[object], Any],
     ) -> None:
         self.runtime = runtime
         self.service_factory = service_factory
-        self._service: Any | None = None
+        self._services: dict[str, Any] = {}
         self._lock = Lock()
 
     def _mapping_failure(self, member: str) -> ToolError:
@@ -277,14 +320,27 @@ class _LazyServiceProxy:
             self.runtime.require_capability(request, probe=True)
         except DiagnosticGateError as exc:
             raise ToolError(_json(exc.response)) from None
-        if self._service is not None:
-            return self._service
+        if request.capability == "design_job_workspace":
+            key = (
+                "job_cad"
+                if "freecadcmd" in request.additional_components
+                else "job"
+            )
+        else:
+            key = "operational"
+        if key in self._services:
+            return self._services[key]
         with self._lock:
-            if self._service is not None:
-                return self._service
+            if key in self._services:
+                return self._services[key]
             try:
-                settings = self.runtime.operational_settings()
-                self._service = self.service_factory(settings)
+                if key == "job":
+                    settings = self.runtime.job_operational_settings()
+                elif key == "job_cad":
+                    settings = self.runtime.job_cad_operational_settings()
+                else:
+                    settings = self.runtime.operational_settings()
+                self._services[key] = self.service_factory(settings)
             except DiagnosticGateError as exc:
                 raise ToolError(_json(exc.response)) from None
             except Exception as exc:
@@ -297,7 +353,7 @@ class _LazyServiceProxy:
                     ),
                 )
                 raise ToolError(_json(response)) from None
-        return self._service
+        return self._services[key]
 
     def __getattr__(self, member: str) -> Any:
         request = SERVICE_METHOD_CAPABILITIES.get(member)
@@ -384,7 +440,7 @@ def create_mcp(
     service: Any | None = None,
     runtime: BootstrapRuntime | None = None,
     product_family_id: str | None = None,
-    service_factory: Callable[[Settings], Any] | None = None,
+    service_factory: Callable[[object], Any] | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
         cwd=Path.cwd(),
@@ -577,6 +633,191 @@ def create_mcp(
                 reanalyze,
             )
         )
+
+    @mcp.tool()
+    def design_job_create(
+        job_type: str,
+        title: str,
+        organization_id: str,
+        design_group_id: str,
+        idempotency_token: str,
+        family_id: str = "",
+        source_files: list[str] = [],
+    ) -> str:
+        """Create one scoped Design Job. Product operations do not create a Git worktree."""
+        return _job_json(lambda:
+            service.design_job_create(
+                job_type=job_type,
+                title=title,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                idempotency_token=idempotency_token,
+                source_files=source_files,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_list(
+        status: str = "",
+        job_type: str = "",
+        family_id: str = "",
+    ) -> str:
+        """List authorized Design Jobs. Product operations do not create a Git worktree."""
+        return _job_json(lambda:
+            service.design_job_list(
+                status=status or None,
+                job_type=job_type or None,
+                family_id=family_id or None,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_get(job_id: str) -> str:
+        """Read one Job UUID/display ID, never a filesystem path. Product operations do not create a Git worktree."""
+        return _job_json(lambda: service.design_job_get(job_id=job_id))
+
+    @mcp.tool()
+    def design_job_resolve(
+        query: str,
+        job_type: str = "",
+        family_id: str = "",
+        statuses_json: str = '["active", "blocked"]',
+    ) -> str:
+        """Return all authorized Job candidates without choosing one. Product operations do not create a Git worktree."""
+        def invoke() -> object:
+            statuses = _array(statuses_json, "statuses_json")
+            if not all(isinstance(item, str) for item in statuses):
+                raise ValueError("statuses_json must contain only status strings")
+            return service.design_job_resolve(
+                query=query, job_type=job_type or None, family_id=family_id or None,
+                statuses=tuple(statuses),
+            )
+        return _job_json(invoke)
+
+    @mcp.tool()
+    def design_job_close(
+        job_id: str,
+        expected_revision: int,
+        status: str,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> str:
+        """Close a Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
+        return _job_json(lambda:
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=expected_revision,
+                status=status,
+                phase=phase,
+                reason=reason,
+                confirmation=confirmation,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_reopen(
+        job_id: str,
+        expected_revision: int,
+        phase: str,
+        reason: str,
+        confirmation: str,
+    ) -> str:
+        """Reopen a terminal Job with revision, reason, and user confirmation. Product operations do not create a Git worktree."""
+        return _job_json(lambda:
+            service.design_job_reopen(
+                job_id=job_id,
+                expected_revision=expected_revision,
+                phase=phase,
+                reason=reason,
+                confirmation=confirmation,
+            )
+        )
+
+    @mcp.tool()
+    def product_family_onboarding_start(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        source_paths_json: str,
+    ) -> str:
+        """Snapshot Product Family source models into an active onboarding Job."""
+        def invoke() -> object:
+            source_paths = _required_array(source_paths_json, "source_paths_json")
+            if not all(isinstance(item, str) for item in source_paths):
+                raise ValueError("source_paths_json must contain only path strings")
+            return service.product_family_onboarding_start(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                family_id=family_id,
+                source_paths=source_paths,
+            )
+        return _job_json(invoke)
+
+    @mcp.tool()
+    def product_family_onboarding_analyze(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        analysis_json: str,
+        candidate_knowledge_json: str,
+    ) -> str:
+        """Store deterministic analysis and reviewable family-knowledge candidates in the same Job."""
+        return _job_json(lambda: service.product_family_onboarding_analyze(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            analysis=_required_object(analysis_json, "analysis_json"),
+            candidate_knowledge=_required_array(
+                candidate_knowledge_json, "candidate_knowledge_json"
+            ),
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_review(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        decision: str,
+        reviewer_text: str,
+        confirmation: str,
+    ) -> str:
+        """Approve or reject one exact candidate package as the configured family owner."""
+        return _job_json(lambda: service.product_family_onboarding_review(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            package_sha256=package_sha256,
+            decision=decision,
+            reviewer_text=reviewer_text,
+            confirmation=confirmation,
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_publish(
+        job_id: str,
+        expected_job_revision: int,
+        family_id: str,
+        package_sha256: str,
+        review_identity: str,
+        confirmation: str,
+    ) -> str:
+        """Publish one approved package transactionally to PostgreSQL and the outbox."""
+        return _job_json(lambda: service.product_family_onboarding_publish(
+            job_id=job_id,
+            expected_job_revision=expected_job_revision,
+            family_id=family_id,
+            package_sha256=package_sha256,
+            review_identity=review_identity,
+            confirmation=confirmation,
+        ))
+
+    @mcp.tool()
+    def product_family_onboarding_status(job_id: str) -> str:
+        """Read the authoritative onboarding run, review, and publication identities."""
+        return _job_json(lambda: service.product_family_onboarding_status(job_id=job_id))
 
     @mcp.tool()
     def job_get(job_id: str) -> str:
@@ -809,6 +1050,8 @@ def create_mcp(
         package_json: str,
         evidence_items_json: str,
         supersedes_review_id: str = "",
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Prepare one immutable review card from a material, generalizable Codex summary; leave predecessor empty for a new review."""
         require_safe_id(working_copy_id, "working_copy_id")
@@ -825,12 +1068,17 @@ def create_mcp(
                 package,
                 evidence_items,
                 predecessor or None,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
     def design_lesson_review_approve(
-        review_id: str, reviewer_text: str, confirmation: str
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Approve the entire immutable review card as one batch decision using exactly `批准设计经验 <review_id>`; no digest is supplied."""
         require_safe_id(review_id, "review_id")
@@ -847,12 +1095,17 @@ def create_mcp(
                 review_id=review_id,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
     def design_lesson_review_reject(
-        review_id: str, reviewer_text: str, confirmation: str
+        review_id: str,
+        reviewer_text: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Reject the entire immutable review card using exactly `拒绝设计经验 <review_id>` with a nonblank reviewer explanation."""
         require_safe_id(review_id, "review_id")
@@ -869,6 +1122,7 @@ def create_mcp(
                 review_id=review_id,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
@@ -881,7 +1135,12 @@ def create_mcp(
         return _json(service.design_lesson_review_status(review_id, retry=retry))
 
     @mcp.tool()
-    def design_lesson_stage(package_json: str, evidence_paths_json: str) -> str:
+    def design_lesson_stage(
+        package_json: str,
+        evidence_paths_json: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
         """Stage a local immutable lesson review package; staging makes no PostgreSQL write."""
         package = _object(package_json, "package_json")
         if package.get("status") == "approved":
@@ -893,12 +1152,25 @@ def create_mcp(
         for item in evidence_items:
             if not all(isinstance(item.get(field), str) for field in required_fields):
                 raise ValueError("evidence paths, roles, and media types must be strings")
-        return _json(service.design_lesson_stage(package, evidence_items))
+        return _json(
+            service.design_lesson_stage(
+                package,
+                evidence_items,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
 
     @mcp.tool()
-    def design_lesson_staged_get(lesson_id: str) -> str:
+    def design_lesson_staged_get(
+        lesson_id: str, working_copy_id: str = ""
+    ) -> str:
         """Get one local-only staged lesson package by its opaque lesson id."""
-        return _json(service.design_lesson_staged_get(lesson_id))
+        return _json(
+            service.design_lesson_staged_get(
+                lesson_id,
+                working_copy_id=working_copy_id or None,
+            )
+        )
 
     @mcp.tool()
     def design_lesson_approve(
@@ -906,6 +1178,8 @@ def create_mcp(
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Approve a verified staged package only after service-level Chinese confirmation checks."""
         return _json(
@@ -914,6 +1188,7 @@ def create_mcp(
                 expected_package_sha256=expected_package_sha256,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
@@ -963,6 +1238,8 @@ def create_mcp(
         expected_package_sha256: str,
         reviewer_text: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Replace an approved lesson with a separately staged package after explicit confirmation."""
         return _json(
@@ -972,13 +1249,27 @@ def create_mcp(
                 expected_package_sha256=expected_package_sha256,
                 reviewer_text=reviewer_text,
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
     @mcp.tool()
-    def design_lesson_revoke(lesson_id: str, reason: str, confirmation: str) -> str:
+    def design_lesson_revoke(
+        lesson_id: str,
+        reason: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
         """Revoke an approved lesson with an auditable reason and Chinese confirmation."""
-        return _json(service.design_lesson_revoke(lesson_id=lesson_id, reason=reason, confirmation=confirmation))
+        return _json(
+            service.design_lesson_revoke(
+                lesson_id=lesson_id,
+                reason=reason,
+                confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
 
     @mcp.tool()
     def design_working_copy_create(
@@ -987,10 +1278,35 @@ def create_mcp(
         design_group_id: str,
         family_id: str = "",
         model_revision_id: str = "",
+        compatibility_request_id: str = "",
     ) -> str:
         """Create a new FCStd working copy without modifying the STEP/FCStd source."""
-        return _json(
+        return _job_json(lambda:
             service.design_working_copy_create(
+                source_path=source_path,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                model_revision_id=model_revision_id or None,
+                compatibility_request_id=compatibility_request_id or None,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_working_copy_create(
+        job_id: str,
+        expected_job_revision: int,
+        source_path: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str = "",
+        model_revision_id: str = "",
+    ) -> str:
+        """Create a Job-bound immutable source snapshot and FCStd working copy."""
+        return _job_json(lambda:
+            service.design_job_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
                 source_path=source_path,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
@@ -1005,10 +1321,33 @@ def create_mcp(
         design_group_id: str,
         family_id: str = "",
         explicit_family_authorization: bool = False,
+        compatibility_request_id: str = "",
     ) -> str:
         """Create a neutral empty FCStd working copy; specialized knowledge is not applied without family authorization."""
-        return _json(
+        return _job_json(lambda:
             service.design_new_working_copy_create(
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id or None,
+                explicit_family_authorization=explicit_family_authorization,
+                compatibility_request_id=compatibility_request_id or None,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_new_working_copy_create(
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str = "",
+        explicit_family_authorization: bool = False,
+    ) -> str:
+        """Create one empty FCStd directly inside an active mechanical-design Job."""
+        return _job_json(lambda:
+            service.design_job_new_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
                 organization_id=organization_id,
                 design_group_id=design_group_id,
                 family_id=family_id or None,
@@ -1102,6 +1441,8 @@ def create_mcp(
         working_copy_id: str,
         lesson_summary_json: str,
         confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
     ) -> str:
         """Record the mandatory lesson summary immediately after explicit model-design confirmation."""
         return _json(
@@ -1109,6 +1450,7 @@ def create_mcp(
                 working_copy_id=working_copy_id,
                 lesson_summary=_object(lesson_summary_json, "lesson_summary_json"),
                 confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
             )
         )
 
@@ -1182,6 +1524,7 @@ def create_mcp(
         metadata_json: str = "{}",
         approval_reference: str = "",
         validation_report_path: str = "",
+        working_copy_id: str = "",
     ) -> str:
         """Register a downloaded catalog part with exact provider, source URL, and checksum."""
         return _json(service.standard_part_download_register(
@@ -1194,6 +1537,7 @@ def create_mcp(
             metadata=_object(metadata_json, "metadata_json"),
             approval_reference=approval_reference,
             validation_report_path=validation_report_path,
+            working_copy_id=working_copy_id,
         ))
 
     @mcp.tool()

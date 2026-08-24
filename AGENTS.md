@@ -33,7 +33,18 @@
 - Keep the FreeCAD RPC bridge local. `remote_enabled` must remain `false` unless the user explicitly requests a separately reviewed remote-access configuration.
 - Never read unrelated user files, start remote connections, install add-ons, or update pinned vendor sources as a side effect of a CAD task.
 - Use `get_view` to inspect meaningful geometry changes. Confirm object names, placements, dimensions, shape state, and recompute results before advancing the design lifecycle.
-- The pinned FreeCAD bridge under `vendor/freecad-mcp` is an external integration boundary. Update it only in a dedicated maintenance change with provenance, license, security, compatibility, and regression review.
+- The exact external FreeCAD GUI MCP identity is an integration boundary documented in `docs/FREECAD_GUI_MCP_INTEGRATION.md`; it is not vendored by the public repository. Change that accepted identity only in a dedicated maintenance change with provenance, license, security, compatibility, and regression review.
+
+## Product Job routing
+
+- Treat a new design, existing model, resume, Product Family onboarding, or Design Lessons request as a product operation. A supplied Job UUID or display ID calls `design_job_get` for authorized state; do not treat that identity as a `design_job_resolve` query.
+- An explicitly independent demand calls `design_job_create` directly, even when similar Jobs exist. For continue/resume without an explicit ID, call `design_job_resolve` only for `active` and `blocked`: reuse the one same design candidate, return multiple candidates and stop, and with zero candidates clarify independent/new intent before creating. Never select or create from ambiguity.
+- New, existing, and resumed mechanical design use `mechanical_design`; Product Family intake/onboarding uses `product_family_onboarding`. Product Family review, knowledge, and database publication reuse that original onboarding Job. A Design Lesson uses only its originating `mechanical_design` Job; stop if the origin is missing or ambiguous and never create a replacement or onboarding Job.
+- Use `design_job_list`, `design_job_get`, `design_job_close`, or `design_job_reopen` only through the configured Mechanical Design MCP, never an arbitrary filesystem path, as Job identity.
+- Product work uses its Job workspace. Do not create a Git branch or Git worktree. Software changes to agent implementation, schemas, migrations, or tests may use the normal Git workflow. Explicitly split mixed product/software requests before acting.
+- Source snapshots, working copies, validation evidence, delivery records, Product Family knowledge, and Design Lessons must remain bound to their authoritative Job and expected revision. Preserve the resolved Job ID and stop when any required governed binding is unavailable or stale.
+- Product Family and Design Lesson database writes are Job operations. Changing their implementation or schema is software development.
+- Use `design_job_close` or `design_job_reopen` only with the exact current revision, reason, phase, and the user's matching confirmation. Do not provide confirmation on the user's behalf.
 
 ## Managed model and change lifecycle
 
@@ -96,7 +107,7 @@
 
 - Git tracks reusable Agent capabilities: source code, tests, migrations, schemas, portable configuration templates, project-owned skills, documentation, and reviewed project-wide rules.
 - Keep generated FCStd/STEP models, drawings, renders, screenshots, BOM exports, validation outputs, runtime databases, knowledge contents, caches, credentials, machine-local configuration, and customer or project-specific design evidence out of the public repository.
-- Store requested local deliverables under `output/` or another designated ignored artifact directory. Do not commit a design artifact merely because it is final or approved.
+- Store governed mechanical-design deliverables inside the originating ignored Job directory; use `output/` only for explicitly requested non-Job local exports. Do not commit a design artifact merely because it is final or approved.
 - Store project-owned distributable skills under `.agents/skills/`. Keep temporary skill build directories and installed user-level skill copies out of Git.
 - Before publishing, scan for absolute paths, usernames, hostnames, secrets, private source identities, generated artifacts, and unapproved third-party content. Preserve license and provenance notices for every distributed dependency or asset.
 - Do not push, publish a package, move a release tag, or open a pull request unless the user explicitly requests that external action.

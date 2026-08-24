@@ -16,6 +16,58 @@ from mechanical_design_agent.repository import PostgresRepository
 DATABASE_URL = os.environ.get("MECH_DESIGN_DATABASE_URL", "").strip()
 
 
+def _insert_governed_working_copy(
+    connection,
+    ids: dict[str, str],
+    *,
+    working_path: str,
+) -> dict[str, object]:
+    """Install a real governed new-design Job fixture, never a post-011 legacy row."""
+    job_id = str(uuid.uuid4())
+    workspace_id = str(uuid.uuid4())
+    working_copy_id = str(uuid.uuid4())
+    token = uuid.uuid4().hex
+    connection.execute(
+        "INSERT INTO design_jobs(id,workspace_id,display_id,job_type,title,slug,status,phase,"
+        "revision,organization_id,design_group_id,family_id,directory_name,idempotency_token,"
+        "provisioning_state,created_by) VALUES (%s,%s,%s,'mechanical_design','Design lesson fixture',"
+        "'design-lesson-fixture','active','lesson_capture',1,%s,%s,%s,%s,%s,'ready',%s)",
+        (
+            job_id,
+            workspace_id,
+            f"JOB-20260823-{token[:8]}",
+            ids["organization_id"],
+            ids["design_group_id"],
+            ids["family_id"],
+            f"JOB-20260823-{token[:8]}-design-lesson-fixture",
+            f"design-lesson-fixture-{token}",
+            ids["owner_id"],
+        ),
+    )
+    working = connection.execute(
+        "INSERT INTO design_working_copies(id,job_id,organization_id,design_group_id,family_id,"
+        "source_snapshot_id,bound_job_revision,source_sha256,source_kind,design_origin,working_path,"
+        "created_by) VALUES (%s,%s,%s,%s,%s,NULL,1,%s,'new_design_seed','new_design',%s,%s) "
+        "RETURNING id",
+        (
+            working_copy_id,
+            job_id,
+            ids["organization_id"],
+            ids["design_group_id"],
+            ids["family_id"],
+            "1" * 64,
+            working_path,
+            ids["owner_id"],
+        ),
+    ).fetchone()
+    connection.execute(
+        "UPDATE design_jobs SET active_working_copy_id=%s,revision=2 WHERE id=%s",
+        (working_copy_id, job_id),
+    )
+    ids["job_id"] = job_id
+    return dict(working)
+
+
 class _Rows:
     def __init__(self, rows=()):
         self.rows = list(rows)
@@ -55,6 +107,8 @@ class _LifecycleConnection:
             return _Rows([{"aggregate_version": 1}])
         if normalized.startswith("SELECT * FROM design_lesson_events"):
             return _Rows([self.lesson])
+        if normalized.startswith("SELECT w.job_id FROM design_lesson_events"):
+            return _Rows([{"job_id": "00000000-0000-0000-0000-000000000010"}])
         if normalized.startswith("UPDATE design_lesson_events"):
             return _Rows([{**self.lesson, "status": "revoked"}])
         if "FROM design_lesson_assertions l JOIN knowledge_assertions" in normalized:
@@ -128,14 +182,11 @@ class PostgresDesignLessonLifecycleConcurrencyTests(unittest.TestCase):
                 "VALUES (%s,%s,%s,'Lifecycle family','active','{}'::jsonb)",
                 (self.ids["family_id"], self.ids["organization_id"], self.ids["design_group_id"]),
             )
-            working = connection.execute(
-                "INSERT INTO design_working_copies(organization_id,design_group_id,family_id,source_sha256,"
-                "source_kind,working_path,created_by) VALUES (%s,%s,%s,%s,'existing_model',%s,%s) RETURNING id",
-                (
-                    self.ids["organization_id"], self.ids["design_group_id"], self.ids["family_id"],
-                    "1" * 64, self.working_path, self.ids["owner_id"],
-                ),
-            ).fetchone()
+            working = _insert_governed_working_copy(
+                connection,
+                self.ids,
+                working_path=self.working_path,
+            )
             self.ids["working_copy_id"] = str(working["id"])
             change = connection.execute(
                 "INSERT INTO design_change_sets(working_copy_id,status,change_phase,changes,rationale,created_by,"
@@ -199,8 +250,16 @@ class PostgresDesignLessonLifecycleConcurrencyTests(unittest.TestCase):
                 (self.ids["working_copy_id"],),
             )
             connection.execute(
+                "UPDATE design_jobs SET active_working_copy_id=NULL WHERE id=%s",
+                (self.ids["job_id"],),
+            )
+            connection.execute(
                 "DELETE FROM design_working_copies WHERE id=%s",
                 (self.ids["working_copy_id"],),
+            )
+            connection.execute(
+                "DELETE FROM design_jobs WHERE id=%s",
+                (self.ids["job_id"],),
             )
             connection.execute("DELETE FROM product_families WHERE id=%s", (self.ids["family_id"],))
             connection.execute("DELETE FROM actors WHERE id=%s", (self.ids["owner_id"],))
@@ -399,14 +458,11 @@ class PostgresDesignLessonRepositoryTests(unittest.TestCase):
             "INSERT INTO product_families(id,organization_id,design_group_id,canonical_name,status,config) VALUES (%s,%s,%s,%s,'active','{}'::jsonb)",
             (self.ids["family_id"], self.ids["organization_id"], self.ids["design_group_id"], "Integration family"),
         )
-        working = self.connection.execute(
-            "INSERT INTO design_working_copies(organization_id,design_group_id,family_id,source_sha256,source_kind,working_path,created_by) "
-            "VALUES (%s,%s,%s,%s,'existing_model',%s,%s) RETURNING id",
-            (
-                self.ids["organization_id"], self.ids["design_group_id"], self.ids["family_id"],
-                "1" * 64, "/tmp/design-lesson-integration.FCStd", self.ids["owner_id"],
-            ),
-        ).fetchone()
+        working = _insert_governed_working_copy(
+            self.connection,
+            self.ids,
+            working_path="/tmp/design-lesson-integration.FCStd",
+        )
         self.ids["working_copy_id"] = str(working["id"])
         change = self.connection.execute(
             "INSERT INTO design_change_sets(working_copy_id,status,change_phase,changes,rationale,created_by,resulting_sha256,applied_at) "
@@ -531,11 +587,11 @@ class PostgresDesignLessonRepositoryTests(unittest.TestCase):
             "VALUES (%s,%s,%s,'Other family','active','{}'::jsonb)",
             (ids["family_id"], ids["organization_id"], ids["design_group_id"]),
         )
-        working = self.connection.execute(
-            "INSERT INTO design_working_copies(organization_id,design_group_id,family_id,source_sha256,source_kind,working_path,created_by) "
-            "VALUES (%s,%s,%s,%s,'existing_model','/tmp/other-design.FCStd',%s) RETURNING id",
-            (ids["organization_id"], ids["design_group_id"], ids["family_id"], "1" * 64, ids["owner_id"]),
-        ).fetchone()
+        working = _insert_governed_working_copy(
+            self.connection,
+            ids,
+            working_path="/tmp/other-design.FCStd",
+        )
         ids["working_copy_id"] = str(working["id"])
         change = self.connection.execute(
             "INSERT INTO design_change_sets(working_copy_id,status,change_phase,changes,rationale,created_by,resulting_sha256,applied_at) "
@@ -647,7 +703,12 @@ class PostgresDesignLessonRepositoryTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(
             (lifecycle["aggregate_type"], lifecycle["aggregate_id"], lifecycle["event_type"], lifecycle["payload"]),
-            ("design_lesson", lesson["id"], "design_lesson.approved", {"lesson_id": lesson["id"]}),
+            (
+                "design_lesson",
+                lesson["id"],
+                "design_lesson.approved",
+                {"lesson_id": lesson["id"], "job_id": lesson["job_id"]},
+            ),
         )
         binding = self.connection.execute(
             "SELECT evidence_id,validation_kind,working_copy_id::text,change_set_id::text,working_sha256 "

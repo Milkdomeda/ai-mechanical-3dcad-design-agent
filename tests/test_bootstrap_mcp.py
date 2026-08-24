@@ -7,17 +7,22 @@ from mcp.server.fastmcp.exceptions import ToolError
 import pytest
 
 from mechanical_design_agent import server
-from mechanical_design_agent.bootstrap_diagnostics import CapabilityRequest
+from mechanical_design_agent import service as service_module
+from mechanical_design_agent.bootstrap_diagnostics import CapabilityRequest, DiagnosticGateError
 from mechanical_design_agent.bootstrap_runtime import (
     BootstrapRuntime,
     DoctorProbes,
     ProbeResult,
+    _default_freecadcmd_probe,
 )
 from mechanical_design_agent.server import (
     SERVICE_METHOD_CAPABILITIES,
     _LazyServiceProxy,
     create_mcp,
 )
+from mechanical_design_agent.config import JobCadSettings, JobSettings
+from mechanical_design_agent.jobs import JobFailure
+from mechanical_design_agent.secure_fs import read_managed_file
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
 
@@ -31,6 +36,7 @@ def clear_bootstrap_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "MECH_DESIGN_NEO4J_USER",
         "MECH_DESIGN_NEO4J_PASSWORD",
         "MECH_DESIGN_FREECADCMD",
+        "MECH_DESIGN_FREECADCMD_SHA256",
         "MECH_DESIGN_ARTIFACT_ROOT",
         "MECH_DESIGN_PRODUCT_FAMILY_ID",
     ):
@@ -65,6 +71,17 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "library_register": request("library_ingest"),
     "library_scan": request("library_ingest"),
     "library_ingest_changes": request("library_ingest"),
+    "design_job_create": request("design_job_workspace"),
+    "design_job_list": request("design_job_workspace"),
+    "design_job_get": request("design_job_workspace"),
+    "design_job_resolve": request("design_job_workspace"),
+    "design_job_close": request("design_job_workspace"),
+    "design_job_reopen": request("design_job_workspace"),
+    "product_family_onboarding_start": request("design_job_workspace"),
+    "product_family_onboarding_analyze": request("design_job_workspace"),
+    "product_family_onboarding_review": request("design_job_workspace"),
+    "product_family_onboarding_publish": request("design_job_workspace"),
+    "product_family_onboarding_status": request("design_job_workspace"),
     "job_get": request("library_ingest"),
     "model_get_analysis": request("library_ingest"),
     "model_identity_confirm": request("library_ingest"),
@@ -94,6 +111,12 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_retrieval_receipt_get": request("design_knowledge", "product_family"),
     "design_working_copy_create": request("cad_working_copy", "product_family"),
     "design_new_working_copy_create": request("cad_working_copy", "product_family"),
+    "design_job_working_copy_create": request(
+        "design_job_workspace", "freecadcmd"
+    ),
+    "design_job_new_working_copy_create": request(
+        "design_job_workspace", "freecadcmd"
+    ),
     "design_change_record": request("cad_working_copy", "product_family"),
     "design_change_review": request("cad_working_copy", "product_family"),
     "design_change_applied": request("cad_working_copy", "product_family"),
@@ -140,6 +163,8 @@ def test_uninitialized_mcp_registers_tools_without_constructing_service(
     assert "family_bootstrap_get" in mcp._tool_manager._tools
     assert "workspace_product_family_list" in mcp._tool_manager._tools
     assert "workspace_product_family_create" in mcp._tool_manager._tools
+    assert "product_family_onboarding_start" in mcp._tool_manager._tools
+    assert "product_family_onboarding_publish" in mcp._tool_manager._tools
     assert "workspace_product_family_set_default" in mcp._tool_manager._tools
     assert "workspace_product_family_active" in mcp._tool_manager._tools
     assert "standard_part_providers_get" in mcp._tool_manager._tools
@@ -227,11 +252,14 @@ def test_selected_family_mcp_constructs_normal_service_once(
     calls: list[object] = []
     runtime = BootstrapRuntime.from_process(
         cwd=workspace,
-        environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+        environ={
+            "MECH_DESIGN_DATABASE_URL":
+            "postgresql://user:super-secret@127.0.0.1/configured"
+        },
         probes=DoctorProbes(
             postgresql=lambda value: ProbeResult(available=True),
             neo4j=lambda uri, user, password: ProbeResult(available=True),
-            freecadcmd=lambda path: ProbeResult(available=True),
+            freecadcmd=lambda path, sha256, identity, controlled: ProbeResult(available=True),
             artifact_root=lambda path: ProbeResult(available=True),
         ),
     )
@@ -409,6 +437,192 @@ def test_injected_service_bypasses_bootstrap_for_existing_boundary_tests(
     assert result == {"family_id": "family-001"}
 
 
+def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identity(
+    tmp_path: Path,
+) -> None:
+    class JobService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def design_job_create(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("create", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": "job-1"}
+
+        def design_job_list(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("list", kwargs))
+            return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
+
+        def design_job_get(self, *, job_id: str) -> dict[str, object]:
+            self.calls.append(("get", {"job_id": job_id}))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": job_id}
+
+        def design_job_resolve(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("resolve", kwargs))
+            return {"schema_version": "MechanicalDesignJobResolution/v1", "candidates": []}
+
+        def design_job_close(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("close", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"]}
+
+        def design_job_reopen(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(("reopen", kwargs))
+            return {"schema_version": "MechanicalDesignJob/v1", "job_id": kwargs["job_id"]}
+
+    service = JobService()
+    mcp = create_mcp(
+        service=service,
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    names = {
+        "design_job_create",
+        "design_job_list",
+        "design_job_get",
+        "design_job_resolve",
+        "design_job_close",
+        "design_job_reopen",
+    }
+
+    assert names <= set(mcp._tool_manager._tools)
+    assert not {"design_job_doctor", "design_job_repair"} & set(mcp._tool_manager._tools)
+    for name in names:
+        description = mcp._tool_manager._tools[name].description
+        assert "do not create a Git worktree" in description
+    assert mcp._tool_manager._tools["design_job_create"].parameters == {
+        "type": "object",
+        "title": "design_job_createArguments",
+        "required": ["job_type", "title", "organization_id", "design_group_id", "idempotency_token"],
+        "properties": {
+            "job_type": {"title": "Job Type", "type": "string"},
+            "title": {"title": "Title", "type": "string"},
+            "organization_id": {"title": "Organization Id", "type": "string"},
+            "design_group_id": {"title": "Design Group Id", "type": "string"},
+            "idempotency_token": {"title": "Idempotency Token", "type": "string"},
+            "family_id": {"default": "", "title": "Family Id", "type": "string"},
+            "source_files": {"default": [], "items": {"type": "string"}, "title": "Source Files", "type": "array"},
+        },
+    }
+    created = json.loads(
+        tool(mcp, "design_job_create")(
+            "mechanical_design",
+            "Pump design",
+            "org-001",
+            "group-001",
+            "job-create-001",
+            "",
+        )
+    )
+    resolved = json.loads(tool(mcp, "design_job_resolve")("pump"))
+
+    assert created["schema_version"] == "MechanicalDesignJob/v1"
+    assert resolved["candidates"] == []
+    assert "path" not in tool(mcp, "design_job_get").__annotations__
+
+
+def test_design_job_mcp_uses_the_shared_redacted_error_contract(tmp_path: Path) -> None:
+    class FailingJobService:
+        def design_job_get(self, *, job_id: str) -> dict[str, object]:
+            raise PermissionError(f"unauthorized title at /private/{job_id}")
+
+    mcp = create_mcp(
+        service=FailingJobService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    with pytest.raises(ToolError) as captured:
+        tool(mcp, "design_job_get")("00000000-0000-4000-8000-000000000499")
+    response = json.loads(str(captured.value))
+    assert response["schema_version"] == "MechanicalDesignJobError/v1"
+    assert response["code"] == "JOB_REQUEST_FAILED"
+    assert response["next_action"]
+    assert "private" not in json.dumps(response)
+
+
+@pytest.mark.parametrize(
+    "code,method",
+    (
+        ("JOB_SOURCE_CHANGED", "existing"),
+        ("JOB_SOURCE_UNSAFE", "existing"),
+        ("JOB_REVISION_STALE", "new"),
+        ("JOB_ACTIVE_WORKING_COPY_EXISTS", "new"),
+        ("JOB_FCSTD_INVALID", "new"),
+        ("JOB_NORMALIZATION_FAILED", "existing"),
+        ("JOB_DATABASE_COMMIT_UNKNOWN", "new"),
+        ("JOB_ATTEMPT_RECOVERY_REQUIRED", "new"),
+    ),
+)
+def test_job_cad_mcp_exposes_code_specific_redacted_recovery(
+    tmp_path: Path,
+    code: str,
+    method: str,
+) -> None:
+    class FailingCadService:
+        def design_job_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure(code, "private source identity customer-model.FCStd")
+
+        def design_job_new_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure(code, "private source identity customer-model.FCStd")
+
+    mcp = create_mcp(
+        service=FailingCadService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+    job_id = "10000000-0000-4000-8000-000000000001"
+    with pytest.raises(ToolError) as captured:
+        if method == "existing":
+            tool(mcp, "design_job_working_copy_create")(
+                job_id, 3, "source.FCStd", "org-001", "group-001", "", ""
+            )
+        else:
+            tool(mcp, "design_job_new_working_copy_create")(
+                job_id, 3, "org-001", "group-001", "", False
+            )
+
+    response = json.loads(str(captured.value))
+    assert response["code"] == code
+    assert response["next_action"]
+    assert response["next_action"] != "Verify the Job reference and authorized scope, then retry."
+    assert "customer" not in json.dumps(response)
+
+
+@pytest.mark.parametrize(
+    "tool_name,args",
+    (
+        (
+            "design_working_copy_create",
+            ("private.FCStd", "org-001", "group-001", "", "", "request-001"),
+        ),
+        (
+            "design_new_working_copy_create",
+            ("org-001", "group-001", "", False, "request-001"),
+        ),
+    ),
+)
+def test_deprecated_working_copy_wrappers_use_redacted_typed_job_errors(
+    tmp_path: Path,
+    tool_name: str,
+    args: tuple[object, ...],
+) -> None:
+    class FailingCompatibilityService:
+        def design_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure("JOB_DATABASE_COMMIT_UNKNOWN", "/private/customer model")
+
+        def design_new_working_copy_create(self, **_kwargs: object) -> dict[str, object]:
+            raise JobFailure("JOB_DATABASE_COMMIT_UNKNOWN", "/private/customer model")
+
+    mcp = create_mcp(
+        service=FailingCompatibilityService(),
+        runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+    )
+
+    with pytest.raises(ToolError) as captured:
+        tool(mcp, tool_name)(*args)
+
+    response = json.loads(str(captured.value))
+    assert response["schema_version"] == "MechanicalDesignJobError/v1"
+    assert response["code"] == "JOB_DATABASE_COMMIT_UNKNOWN"
+    assert response["next_action"]
+    assert "private" not in json.dumps(response)
+
+
 def test_unmapped_proxy_member_is_blocked_without_constructing_service(
     tmp_path: Path,
 ) -> None:
@@ -425,3 +639,295 @@ def test_unmapped_proxy_member_is_blocked_without_constructing_service(
     response = json.loads(str(captured.value))
     assert response["status"] == "blocked"
     assert response["code"] == "CAPABILITY_MAPPING_MISSING"
+
+
+def test_job_proxy_uses_family_independent_job_operational_settings() -> None:
+    job_settings = object()
+
+    class JobRuntime:
+        def require_initialized(self, capability: str) -> None:
+            assert capability == "design_job_workspace"
+
+        def require_capability(self, request: object, *, probe: bool) -> None:
+            assert getattr(request, "capability", request) == "design_job_workspace"
+            assert probe is True
+
+        def job_operational_settings(self) -> object:
+            return job_settings
+
+        def operational_settings(self) -> object:
+            pytest.fail("Job operations must not require a selected product family")
+
+        def blocked_response(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+        def status(self) -> dict[str, object]:
+            return {}
+
+    class JobService:
+        def design_job_list(self) -> dict[str, object]:
+            return {"schema_version": "MechanicalDesignJobList/v1", "jobs": []}
+
+    constructed: list[object] = []
+    proxy = _LazyServiceProxy(
+        runtime=JobRuntime(),
+        service_factory=lambda settings: constructed.append(settings) or JobService(),
+    )
+    assert proxy.design_job_list()["jobs"] == []
+    assert constructed == [job_settings]
+
+
+def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    manifest_path = workspace / "config" / "mechanical_design.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["organization_id"] = "org-001"
+    manifest["identity"]["design_group_id"] = "group-001"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    freecadcmd = tmp_path / "FreeCAD Cmd"
+    freecadcmd.write_bytes(b"test executable boundary")
+    freecad_binding = read_managed_file(freecadcmd)
+    settings = JobCadSettings(
+        workspace=workspace,
+        package_root=workspace,
+        database_url="postgresql://unused",
+        actor_id="actor-001",
+        organization_id="org-001",
+        design_group_id="group-001",
+        freecadcmd=freecadcmd,
+        freecadcmd_sha256=freecad_binding.sha256,
+        freecadcmd_identity=freecad_binding.identity,
+        freecadcmd_version="1.1.3",
+    )
+    capability_calls: list[CapabilityRequest] = []
+
+    class JobCadRuntime:
+        def require_initialized(self, capability: str) -> None:
+            assert capability == "design_job_workspace"
+
+        def require_capability(self, request: CapabilityRequest, *, probe: bool) -> None:
+            capability_calls.append(request)
+            assert probe is True
+
+        def job_cad_operational_settings(self) -> JobCadSettings:
+            return settings
+
+        def job_operational_settings(self) -> object:
+            pytest.fail("Job CAD must use its FreeCAD-bearing settings path")
+
+        def operational_settings(self) -> object:
+            pytest.fail("Job CAD must not select a Product Family configuration")
+
+        def blocked_response(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+        def status(self) -> dict[str, object]:
+            return {}
+
+    workspace_calls: list[tuple[str, dict[str, object], Path]] = []
+    monkeypatch.setattr(
+        service_module.MechanicalDesignService,
+        "_require_database",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        service_module.DesignWorkspace,
+        "create_job_working_copy",
+        lambda self, **kwargs: workspace_calls.append(
+            ("existing", kwargs, self.settings.freecadcmd)
+        )
+        or {"kind": "existing"},
+    )
+    monkeypatch.setattr(
+        service_module.DesignWorkspace,
+        "create_job_new_working_copy",
+        lambda self, **kwargs: workspace_calls.append(
+            ("new", kwargs, self.settings.freecadcmd)
+        )
+        or {"kind": "new"},
+    )
+    mcp = create_mcp(runtime=JobCadRuntime())
+    job_id = "10000000-0000-4000-8000-000000000001"
+
+    existing = json.loads(
+        tool(mcp, "design_job_working_copy_create")(
+            job_id,
+            3,
+            str(tmp_path / "source.FCStd"),
+            "org-001",
+            "group-001",
+            "",
+            "",
+        )
+    )
+    new = json.loads(
+        tool(mcp, "design_job_new_working_copy_create")(
+            job_id,
+            3,
+            "org-001",
+            "group-001",
+            "",
+            False,
+        )
+    )
+
+    assert existing == {"kind": "existing"}
+    assert new == {"kind": "new"}
+    assert [call[0] for call in workspace_calls] == ["existing", "new"]
+    assert {call[2] for call in workspace_calls} == {freecadcmd}
+    assert capability_calls == [
+        request("design_job_workspace", "freecadcmd"),
+        request("design_job_workspace", "freecadcmd"),
+    ]
+
+
+def test_job_only_service_has_no_freecad_workspace_dependency(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    settings = JobSettings(
+        workspace=workspace,
+        package_root=workspace,
+        database_url="postgresql://secret@127.0.0.1/unused",
+        actor_id="actor-001",
+        organization_id="org-001",
+        design_group_id="group-001",
+    )
+
+    service = service_module.MechanicalDesignService(settings)
+
+    assert not hasattr(service, "design_workspace")
+    assert "secret" not in repr(service.bootstrap_config)
+
+
+def test_job_capability_works_without_certified_freecad_but_job_cad_rejects_111(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    freecadcmd = tmp_path / "FreeCADCmd 1.1.1"
+    freecadcmd.write_bytes(b"local executable probe boundary")
+    pinned = read_managed_file(freecadcmd)
+    monkeypatch.setattr(
+        "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
+        lambda path: __import__("subprocess").CompletedProcess(
+            [str(path), "--version"], 0, "FreeCAD 1.1.1\n", ""
+        ),
+    )
+    runtime = BootstrapRuntime.from_process(
+        cwd=workspace,
+        environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+        freecad_command=freecadcmd,
+        freecad_sha256=pinned.sha256,
+        probes=DoctorProbes(
+            postgresql=lambda value: ProbeResult(available=True),
+            neo4j=lambda uri, user, password: ProbeResult(available=True),
+            freecadcmd=lambda path, sha256, identity, controlled: ProbeResult(available=True),
+            artifact_root=lambda path: ProbeResult(available=True),
+        ),
+    )
+
+    runtime.require_capability(CapabilityRequest("design_job_workspace"), probe=True)
+    with pytest.raises(DiagnosticGateError) as captured:
+        runtime.require_capability(
+            request("design_job_workspace", "freecadcmd"),
+            probe=True,
+        )
+
+    assert captured.value.response["code"] == "FREECADCMD_VERSION_UNVALIDATED"
+
+
+def test_job_cad_requires_exact_reviewed_official_executable_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    manifest_path = workspace / "config" / "mechanical_design.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["organization_id"] = "org-001"
+    manifest["identity"]["design_group_id"] = "group-001"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    freecadcmd = tmp_path / "FreeCADCmd 1.1.3"
+    freecadcmd.write_bytes(b"official executable candidate")
+    pinned = read_managed_file(freecadcmd)
+    version_calls: list[Path] = []
+
+    def version_probe(path: Path):
+        version_calls.append(path)
+        return __import__("subprocess").CompletedProcess(
+            [str(path), "--version"], 0, "FreeCAD 1.1.3\n", ""
+        )
+
+    monkeypatch.setattr(
+        "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
+        version_probe,
+    )
+
+    def runtime(digest: str | None) -> BootstrapRuntime:
+        return BootstrapRuntime.from_process(
+            cwd=workspace,
+            environ={"MECH_DESIGN_DATABASE_URL": "postgresql://configured"},
+            freecad_command=freecadcmd,
+            freecad_sha256=digest,
+        )
+
+    for digest, code in (
+        (None, "FREECADCMD_SHA256_REQUIRED"),
+        ("0" * 64, "FREECADCMD_SHA256_MISMATCH"),
+    ):
+        with pytest.raises(DiagnosticGateError) as captured:
+            runtime(digest).require_capability(
+                request("design_job_workspace", "freecadcmd"), probe=False
+            )
+        assert captured.value.response["code"] == code
+    assert version_calls == []
+
+    settings = runtime(pinned.sha256).job_cad_operational_settings()
+    assert version_calls and set(version_calls) == {freecadcmd}
+    assert settings.freecadcmd_sha256 == pinned.sha256
+    assert settings.freecadcmd_identity == pinned.identity
+    assert settings.freecadcmd_version == "1.1.3"
+    assert "super-secret" not in json.dumps(captured.value.response)
+
+
+def test_default_freecad_probe_rechecks_reviewed_identity_and_scrubs_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "FreeCADCmd"
+    executable.write_bytes(b"reviewed official boundary")
+    controlled = tmp_path / "controlled"
+    controlled.mkdir()
+    pinned = read_managed_file(executable)
+    captured: dict[str, object] = {}
+
+    def substitute(argv, **kwargs):
+        captured.update(kwargs)
+        executable.unlink()
+        executable.write_bytes(b"substituted wrapper")
+        return __import__("subprocess").CompletedProcess(
+            argv, 0, "FreeCAD 1.1.3\n", ""
+        )
+
+    monkeypatch.setenv("MECH_DESIGN_DATABASE_URL", "postgresql://secret")
+    monkeypatch.setattr("mechanical_design_agent.bootstrap_runtime.subprocess.run", substitute)
+
+    result = _default_freecadcmd_probe(
+        executable, pinned.sha256, pinned.identity, controlled
+    )
+
+    assert result.available is False
+    assert result.error_type == "FreeCADExecutableTrustError"
+    assert captured["cwd"] == controlled
+    assert "MECH_DESIGN_DATABASE_URL" not in captured["env"]

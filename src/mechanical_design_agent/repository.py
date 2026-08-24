@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import hashlib
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Iterator
 import uuid
@@ -1439,6 +1441,10 @@ class PostgresRepository:
                 raise KeyError(f"unknown source working_copy_id: {source['working_copy_id']}")
             if working["organization_id"] != source["organization_id"] or working["design_group_id"] != source["design_group_id"]:
                 raise ValueError("source working copy organization/design-group relationship is invalid")
+            if working.get("job_id") is None:
+                raise ValueError(
+                    "JOB_MIGRATION_REQUIRED: source working copy is not bound to a Design Job"
+                )
             if working.get("family_id") != source.get("family_id"):
                 raise ValueError("source working copy family relationship is invalid")
             artifact_source_path = str(working_copy_artifact.get("source_path", ""))
@@ -1557,6 +1563,18 @@ class PostgresRepository:
                     raise RuntimeError("design lesson lineage changed while acquiring its lock")
                 if predecessor["organization_id"] != source["organization_id"]:
                     raise ValueError("replacement and predecessor must belong to the same organization")
+                predecessor_job = connection.execute(
+                    "SELECT job_id FROM design_working_copies WHERE id=%s FOR UPDATE",
+                    (predecessor["source_working_copy_id"],),
+                ).fetchone()
+                if (
+                    predecessor_job is None
+                    or predecessor_job.get("job_id") is None
+                    or str(predecessor_job["job_id"]) != str(working["job_id"])
+                ):
+                    raise ValueError(
+                        "replacement and predecessor must belong to the same Design Job"
+                    )
                 rows = connection.execute(
                     "SELECT a.*,l.assertion_key FROM design_lesson_assertions l "
                     "JOIN knowledge_assertions a ON a.id=l.assertion_id WHERE l.lesson_event_id=%s FOR UPDATE OF a",
@@ -2101,8 +2119,9 @@ class PostgresRepository:
                     "FROM design_lesson_assertions la JOIN knowledge_assertions a ON a.id=la.assertion_id "
                     "JOIN knowledge_search_documents d ON d.assertion_id=a.id WHERE a.status='approved' AND ("
                     "%s=ANY(d.exact_terms) OR d.search_vector @@ plainto_tsquery('simple',%s) OR similarity(d.search_text,%s)>=0.12) "
-                    "GROUP BY la.lesson_event_id) SELECT l.*,m.exact_match,m.text_rank,m.trigram_similarity "
-                    "FROM matches m JOIN design_lesson_events l ON l.id=m.lesson_event_id WHERE "
+                    "GROUP BY la.lesson_event_id) SELECT l.*,w.job_id,m.exact_match,m.text_rank,m.trigram_similarity "
+                    "FROM matches m JOIN design_lesson_events l ON l.id=m.lesson_event_id "
+                    "LEFT JOIN design_working_copies w ON w.id=l.source_working_copy_id WHERE "
                     + " AND ".join(filters)
                     + cursor_filter
                     + " ORDER BY m.exact_match DESC,m.text_rank DESC,m.trigram_similarity DESC,"
@@ -2132,7 +2151,8 @@ class PostgresRepository:
                         decoded_cursor["key"],
                     ]
                 rows = connection.execute(
-                    "SELECT l.* FROM design_lesson_events l WHERE "
+                    "SELECT l.*,w.job_id FROM design_lesson_events l "
+                    "LEFT JOIN design_working_copies w ON w.id=l.source_working_copy_id WHERE "
                     + " AND ".join(filters)
                     + cursor_filter
                     + " ORDER BY l.approved_at DESC,encode(digest(l.id::text,'sha256'),'hex') DESC"
@@ -2247,6 +2267,33 @@ class PostgresRepository:
         if not rows:
             return []
         lesson_ids = [row["id"] for row in rows]
+        jobs_by_lesson = {
+            str(row["id"]): (
+                str(row["job_id"]) if row.get("job_id") is not None else None
+            )
+            for row in rows
+            if "job_id" in row
+        }
+        missing_origin_ids = [
+            row["id"] for row in rows if "job_id" not in row
+        ]
+        if missing_origin_ids:
+            origin_rows = connection.execute(
+                "SELECT e.id AS lesson_event_id,w.job_id FROM design_lesson_events e "
+                "LEFT JOIN design_working_copies w ON w.id=e.source_working_copy_id "
+                "WHERE e.id = ANY(%s::uuid[])",
+                (missing_origin_ids,),
+            ).fetchall()
+            jobs_by_lesson.update(
+                {
+                    str(item["lesson_event_id"]): (
+                        str(item["job_id"])
+                        if item.get("job_id") is not None
+                        else None
+                    )
+                    for item in origin_rows
+                }
+            )
         assertion_rows = connection.execute(
             "SELECT l.lesson_event_id,a.*,l.assertion_key,l.sort_order,"
             "COALESCE((SELECT max(o.aggregate_version) FROM outbox_events o "
@@ -2283,6 +2330,7 @@ class PostgresRepository:
             record = dict(row)
             lesson_id = str(record["id"])
             record["id"] = lesson_id
+            record["job_id"] = jobs_by_lesson.get(lesson_id)
             if record.get("supersedes") is not None:
                 record["supersedes"] = str(record["supersedes"])
             record["assertions"] = assertions_by_lesson[lesson_id]
@@ -2619,8 +2667,17 @@ class PostgresRepository:
             if requested_model_revision_id:
                 row = connection.execute(
                     "SELECT m.*,a.sha256 AS artifact_sha256 FROM model_revisions m "
-                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s",
-                    (requested_model_revision_id,),
+                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s "
+                    "AND m.organization_id=%s AND m.design_group_id=%s AND a.sha256=%s "
+                    "AND (%s::text IS NULL OR m.family_id=%s)",
+                    (
+                        requested_model_revision_id,
+                        organization_id,
+                        design_group_id,
+                        source_sha256,
+                        requested_family_id,
+                        requested_family_id,
+                    ),
                 ).fetchone()
                 candidates = [row] if row is not None else []
             else:
@@ -2701,6 +2758,352 @@ class PostgresRepository:
                 ),
             ).fetchone()
         return dict(row)
+
+    def create_job_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        working_copy_id: str,
+        model_revision_id: str | None,
+        source_sha256: str,
+        source_kind: str,
+        design_origin: str,
+        working_path: str,
+        working_sha256: str,
+        working_size_bytes: int,
+        working_relative_path: str,
+        actor_id: str,
+        source_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Atomically bind verified on-disk CAD bytes to one active Job."""
+        for label, value in (
+            ("job_id", job_id),
+            ("organization_id", organization_id),
+            ("design_group_id", design_group_id),
+            ("working_copy_id", working_copy_id),
+            ("source_sha256", source_sha256),
+            ("working_path", working_path),
+            ("working_sha256", working_sha256),
+            ("working_relative_path", working_relative_path),
+            ("actor_id", actor_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} is required")
+        if type(expected_job_revision) is not int or expected_job_revision < 0:
+            raise ValueError("expected_job_revision must be a non-negative integer")
+        if not re.fullmatch(r"[0-9a-f]{64}", working_sha256):
+            raise ValueError("working_sha256 must be a lowercase SHA-256")
+        if type(working_size_bytes) is not int or working_size_bytes <= 0:
+            raise ValueError("working_size_bytes must be a positive integer")
+        if not re.fullmatch(
+            r"models/working/[^/]+/[^/]+[.]FCStd", working_relative_path
+        ):
+            raise ValueError("working_relative_path must be a controlled relative FCStd path")
+        if design_origin not in {"existing_model", "new_design"}:
+            raise ValueError("design_origin must be existing_model or new_design")
+        if design_origin == "existing_model":
+            if not model_revision_id or source_snapshot is None:
+                raise ValueError(
+                    "existing_model working copy requires a source revision and snapshot"
+                )
+        elif model_revision_id is not None or source_snapshot is not None:
+            raise ValueError("new_design working copy must not bind a source snapshot")
+
+        with self.connection() as connection, connection.transaction():
+            job = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+                "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+                "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id) "
+                "FOR UPDATE",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if job is None:
+                raise KeyError("unknown design_job_id or unauthorized")
+            if int(job["revision"]) != expected_job_revision:
+                raise ValueError("stale design job revision")
+            if (
+                job["job_type"] != "mechanical_design"
+                or job["status"] != "active"
+                or job["provisioning_state"] != "ready"
+            ):
+                raise ValueError(
+                    "working-copy creation requires an active ready mechanical_design Job"
+                )
+            if job.get("family_id") is not None and job.get("family_id") != family_id:
+                raise ValueError("working-copy family must match the design Job family")
+            if job.get("active_working_copy_id") is not None:
+                raise ValueError("design Job already has an active working copy")
+
+            if model_revision_id is not None:
+                source_model = connection.execute(
+                    "SELECT m.*,a.sha256 AS artifact_sha256 FROM model_revisions m "
+                    "JOIN artifacts a ON a.id=m.source_artifact_id WHERE m.id=%s "
+                    "AND m.organization_id=%s AND m.design_group_id=%s FOR SHARE OF m",
+                    (model_revision_id, organization_id, design_group_id),
+                ).fetchone()
+                if source_model is None:
+                    raise KeyError("unknown source model revision or unauthorized")
+                if source_model["artifact_sha256"] != source_sha256:
+                    raise ValueError(
+                        "working-copy source hash does not match the registered model artifact"
+                    )
+                if source_model.get("family_id") != family_id:
+                    raise ValueError(
+                        "working-copy family must match the confirmed source model family"
+                    )
+
+            snapshot_row = None
+            if source_snapshot is not None:
+                required_snapshot = {
+                    "id",
+                    "source_filename",
+                    "stored_path",
+                    "sha256",
+                    "size_bytes",
+                    "source_kind",
+                    "source_model_revision_id",
+                }
+                if set(source_snapshot) != required_snapshot:
+                    raise ValueError("source_snapshot fields are invalid")
+                if source_snapshot["sha256"] != source_sha256:
+                    raise ValueError("source snapshot hash must match the working-copy source")
+                if source_snapshot["source_model_revision_id"] != model_revision_id:
+                    raise ValueError("source snapshot revision must match the working copy")
+                snapshot_row = connection.execute(
+                    "INSERT INTO design_job_source_snapshots(id,job_id,organization_id,design_group_id,"
+                    "source_model_revision_id,source_filename,stored_path,sha256,size_bytes,source_kind,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                    (
+                        source_snapshot["id"],
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                        model_revision_id,
+                        source_snapshot["source_filename"],
+                        source_snapshot["stored_path"],
+                        source_snapshot["sha256"],
+                        source_snapshot["size_bytes"],
+                        source_snapshot["source_kind"],
+                        actor_id,
+                    ),
+                ).fetchone()
+
+            working = connection.execute(
+                "INSERT INTO design_working_copies(id,job_id,organization_id,design_group_id,family_id,"
+                "source_model_revision_id,source_snapshot_id,bound_job_revision,source_sha256,source_kind,"
+                "design_origin,working_path,working_sha256,working_size_bytes,working_relative_path,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                (
+                    working_copy_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    model_revision_id,
+                    snapshot_row["id"] if snapshot_row is not None else None,
+                    expected_job_revision,
+                    source_sha256,
+                    source_kind,
+                    design_origin,
+                    working_path,
+                    working_sha256,
+                    working_size_bytes,
+                    working_relative_path,
+                    actor_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET active_working_copy_id=%s,revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND organization_id=%s AND design_group_id=%s AND revision=%s "
+                "AND active_working_copy_id IS NULL RETURNING *",
+                (
+                    working_copy_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    expected_job_revision,
+                ),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("design Job active working-copy binding changed concurrently")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="working_copy_bound",
+                actor_id=actor_id,
+                reason=f"bound working copy {working_copy_id}",
+            )
+        return {
+            "working_copy": dict(working),
+            "source_snapshot": dict(snapshot_row) if snapshot_row is not None else None,
+            "job": dict(updated_job),
+        }
+
+    def reconcile_job_working_copy_publication(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        working_copy_id: str,
+        model_revision_id: str | None,
+        source_sha256: str | None,
+        source_kind: str,
+        design_origin: str,
+        working_path: str,
+        working_sha256: str | None,
+        working_size_bytes: int | None,
+        working_relative_path: str,
+        actor_id: str,
+        source_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Reconcile a commit-ambiguous Job binding on a fresh scoped connection."""
+        with self.connection() as connection:
+            job = connection.execute(
+                "SELECT job.* FROM design_jobs job WHERE job.id=%s "
+                "AND job.organization_id=%s AND job.design_group_id=%s "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=job.organization_id)",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if job is None:
+                return {"status": "unknown"}
+            working = connection.execute(
+                "SELECT * FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (working_copy_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            source_snapshot_id = (
+                str(source_snapshot["id"])
+                if isinstance(source_snapshot, dict) and source_snapshot.get("id")
+                else None
+            )
+            snapshot = None
+            if source_snapshot_id is not None:
+                snapshot = connection.execute(
+                    "SELECT * FROM design_job_source_snapshots WHERE id=%s AND job_id=%s "
+                    "AND organization_id=%s AND design_group_id=%s",
+                    (
+                        source_snapshot_id,
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                    ),
+                ).fetchone()
+            event = connection.execute(
+                "SELECT * FROM design_job_events WHERE job_id=%s AND revision=%s",
+                (job_id, expected_job_revision + 1),
+            ).fetchone()
+
+            if working is None and snapshot is None and event is None:
+                return {"status": "not_committed"}
+            if working is None or event is None or (
+                source_snapshot_id is not None and snapshot is None
+            ):
+                return {"status": "unknown"}
+
+            exact_working = (
+                str(working.get("job_id")) == job_id
+                and working.get("organization_id") == organization_id
+                and working.get("design_group_id") == design_group_id
+                and working.get("family_id") == family_id
+                and (
+                    str(working.get("source_model_revision_id"))
+                    if working.get("source_model_revision_id") is not None
+                    else None
+                )
+                == model_revision_id
+                and (
+                    str(working.get("source_snapshot_id"))
+                    if working.get("source_snapshot_id") is not None
+                    else None
+                )
+                == source_snapshot_id
+                and int(working.get("bound_job_revision"))
+                == expected_job_revision
+                and (
+                    working.get("source_sha256") == source_sha256
+                    if source_sha256 is not None
+                    else isinstance(working.get("source_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", working["source_sha256"])
+                    is not None
+                )
+                and working.get("source_kind") == source_kind
+                and working.get("design_origin") == design_origin
+                and working.get("working_path") == working_path
+                and (
+                    working.get("working_sha256") == working_sha256
+                    if working_sha256 is not None
+                    else isinstance(working.get("working_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", working["working_sha256"])
+                    is not None
+                )
+                and (
+                    int(working.get("working_size_bytes")) == working_size_bytes
+                    if working_size_bytes is not None
+                    else type(working.get("working_size_bytes")) is int
+                    and working["working_size_bytes"] > 0
+                )
+                and working.get("working_relative_path") == working_relative_path
+                and working.get("created_by") == actor_id
+            )
+            exact_job = (
+                str(job.get("active_working_copy_id")) == working_copy_id
+                and int(job.get("revision")) == expected_job_revision + 1
+                and job.get("job_type") == "mechanical_design"
+                and job.get("status") == "active"
+                and job.get("provisioning_state") == "ready"
+                and job.get("family_id") == family_id
+            )
+            exact_snapshot = source_snapshot is None or (
+                snapshot is not None
+                and str(snapshot.get("id")) == source_snapshot_id
+                and str(snapshot.get("job_id")) == job_id
+                and snapshot.get("organization_id") == organization_id
+                and snapshot.get("design_group_id") == design_group_id
+                and (
+                    str(snapshot.get("source_model_revision_id"))
+                    if snapshot.get("source_model_revision_id") is not None
+                    else None
+                )
+                == model_revision_id
+                and snapshot.get("source_filename")
+                == source_snapshot.get("source_filename")
+                and snapshot.get("stored_path") == source_snapshot.get("stored_path")
+                and int(snapshot.get("size_bytes"))
+                == int(source_snapshot.get("size_bytes"))
+                and snapshot.get("source_kind") == source_snapshot.get("source_kind")
+                and snapshot.get("sha256") == source_snapshot.get("sha256")
+                and snapshot.get("created_by") == actor_id
+            )
+            exact_event = (
+                str(event.get("job_id")) == job_id
+                and int(event.get("revision")) == expected_job_revision + 1
+                and event.get("event_type") == "working_copy_bound"
+                and event.get("actor_id") == actor_id
+                and event.get("reason") == f"bound working copy {working_copy_id}"
+                and event.get("status") == job.get("status")
+                and event.get("phase") == job.get("phase")
+                and event.get("provisioning_state") == job.get("provisioning_state")
+                and event.get("directory_name") == job.get("directory_name")
+                and event.get("blocked_reason") == job.get("blocked_reason")
+            )
+            if not (exact_working and exact_job and exact_snapshot and exact_event):
+                return {"status": "unknown"}
+            return {
+                "status": "committed",
+                "publication": {
+                    "working_copy": dict(working),
+                    "source_snapshot": dict(snapshot) if snapshot is not None else None,
+                    "job": dict(job),
+                },
+            }
 
     @staticmethod
     def _authorized_knowledge_ids(
@@ -2975,6 +3378,53 @@ class PostgresRepository:
         if row is None:
             raise KeyError(f"unknown working_copy_id: {working_copy_id}")
         return dict(row)
+
+    def list_legacy_working_copies(
+        self, *, organization_id: str, design_group_id: str
+    ) -> list[dict[str, Any]]:
+        """Inventory pre-Job rows without granting them governed write authority."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_working_copies WHERE job_id IS NULL "
+                "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id",
+                (organization_id, design_group_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_legacy_migration_bindings(
+        self,
+        *,
+        workspace_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return read-only source/target evidence for Legacy migration doctor."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT legacy.id AS legacy_working_copy_id,"
+                "legacy.family_id,legacy.working_path AS legacy_working_path,"
+                "job.id AS migration_job_id,job.status AS migration_job_status,"
+                "job.revision AS migration_job_revision,job.active_working_copy_id,"
+                "migrated.id AS migrated_working_copy_id,migrated.job_id AS migrated_job_id,"
+                "migrated.working_path AS migrated_working_path,"
+                "migrated.working_relative_path AS migrated_working_relative_path,"
+                "migrated.working_sha256 AS migrated_working_sha256,"
+                "migrated.working_size_bytes AS migrated_working_size_bytes "
+                "FROM design_working_copies legacy "
+                "LEFT JOIN design_jobs job ON job.workspace_id=%s "
+                "AND job.organization_id=legacy.organization_id "
+                "AND job.design_group_id=legacy.design_group_id "
+                "AND job.idempotency_token=concat('legacy-working-copy:',legacy.id::text) "
+                "LEFT JOIN design_working_copies migrated "
+                "ON migrated.id=job.active_working_copy_id "
+                "AND migrated.job_id=job.id "
+                "AND migrated.organization_id=job.organization_id "
+                "AND migrated.design_group_id=job.design_group_id "
+                "WHERE legacy.job_id IS NULL AND legacy.organization_id=%s "
+                "AND legacy.design_group_id=%s ORDER BY legacy.created_at,legacy.id",
+                (workspace_id, organization_id, design_group_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def record_design_lesson_summary(
         self,
@@ -3260,6 +3710,10 @@ class PostgresRepository:
             ).fetchone()
             if working_copy is None:
                 raise KeyError(f"unknown working_copy_id: {working_copy_id}")
+            if working_copy.get("job_id") is None:
+                raise ValueError(
+                    "JOB_MIGRATION_REQUIRED: working copy is not bound to a Design Job"
+                )
             design_group = connection.execute(
                 "SELECT * FROM design_groups WHERE id=%s FOR UPDATE",
                 (design_group_id,),
@@ -3362,7 +3816,10 @@ class PostgresRepository:
     def get_design_lesson_review(self, review_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM design_lesson_reviews WHERE id=%s", (review_id,)
+                "SELECT r.*,w.job_id FROM design_lesson_reviews r "
+                "JOIN design_working_copies w ON w.id=r.working_copy_id "
+                "WHERE r.id=%s",
+                (review_id,),
             ).fetchone()
         if row is None:
             raise KeyError(f"unknown design lesson review: {review_id}")
@@ -3620,6 +4077,953 @@ class PostgresRepository:
                 raise RuntimeError("outbox event is not leased by this worker")
 
     @staticmethod
+    def _require_onboarding_job(
+        connection: Any,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        job = connection.execute(
+            "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+            "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+            "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id) "
+            "FOR UPDATE",
+            (job_id, organization_id, design_group_id, actor_id),
+        ).fetchone()
+        if job is None:
+            raise KeyError("unknown product family onboarding Job or unauthorized")
+        if int(job["revision"]) != expected_job_revision:
+            raise ValueError("stale design job revision")
+        if (
+            job["job_type"] != "product_family_onboarding"
+            or job["status"] != "active"
+            or job["provisioning_state"] != "ready"
+            or job.get("family_id") != family_id
+        ):
+            raise ValueError(
+                "operation requires an active ready product_family_onboarding Job in the same family"
+            )
+        return dict(job)
+
+    def start_product_family_onboarding(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        input_manifest: dict[str, Any],
+        input_manifest_sha256: str,
+        snapshots: list[dict[str, Any]],
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            existing = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE job_id=%s FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["id"]) != run_id
+                    or existing["input_manifest_sha256"] != input_manifest_sha256
+                    or existing["input_manifest"] != input_manifest
+                ):
+                    raise ValueError("onboarding Job is already bound to different inputs")
+                return {"run": dict(existing), "job": job, "changed": False}
+            for snapshot in snapshots:
+                connection.execute(
+                    "INSERT INTO design_job_source_snapshots(id,job_id,organization_id,design_group_id,"
+                    "source_model_revision_id,source_filename,stored_path,sha256,size_bytes,source_kind,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'product_family_input',%s)",
+                    (
+                        snapshot["id"],
+                        job_id,
+                        organization_id,
+                        design_group_id,
+                        None,
+                        snapshot["source_filename"],
+                        snapshot["stored_path"],
+                        snapshot["sha256"],
+                        snapshot["size_bytes"],
+                        actor_id,
+                    ),
+                )
+            run = connection.execute(
+                "INSERT INTO product_family_onboarding_runs(id,job_id,organization_id,design_group_id,"
+                "family_id,status,input_manifest,input_manifest_sha256,started_job_revision,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,'started',%s::jsonb,%s,%s,%s) RETURNING *",
+                (
+                    run_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    json.dumps(input_manifest, ensure_ascii=False),
+                    input_manifest_sha256,
+                    expected_job_revision + 1,
+                    actor_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family onboarding inputs captured",
+            )
+        return {"run": dict(run), "job": dict(updated_job), "changed": True}
+
+    def analyze_product_family_onboarding(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        analysis: dict[str, Any],
+        analysis_sha256: str,
+        analysis_path: str,
+        candidate_knowledge: list[dict[str, Any]],
+        package_sha256: str,
+        package_path: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None:
+                raise KeyError("product family onboarding run is missing")
+            if run["status"] != "started":
+                if (
+                    run.get("analysis_sha256") == analysis_sha256
+                    and run.get("package_sha256") == package_sha256
+                    and run.get("analysis") == analysis
+                    and run.get("candidate_knowledge") == candidate_knowledge
+                ):
+                    return {"run": dict(run), "job": job, "changed": False}
+                raise ValueError("onboarding analysis is already immutable")
+            run = connection.execute(
+                "UPDATE product_family_onboarding_runs SET status='analyzed',analysis=%s::jsonb,"
+                "analysis_sha256=%s,analysis_path=%s,candidate_knowledge=%s::jsonb,"
+                "package_sha256=%s,package_path=%s,analyzed_job_revision=%s,analyzed_at=now() "
+                "WHERE id=%s RETURNING *",
+                (
+                    json.dumps(analysis, ensure_ascii=False),
+                    analysis_sha256,
+                    analysis_path,
+                    json.dumps(candidate_knowledge, ensure_ascii=False),
+                    package_sha256,
+                    package_path,
+                    expected_job_revision + 1,
+                    run_id,
+                ),
+            ).fetchone()
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET phase='analysis',revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family analysis and knowledge candidates recorded",
+            )
+        return {"run": dict(run), "job": dict(updated_job), "changed": True}
+
+    def review_product_family_onboarding(
+        self,
+        *,
+        review_id: str,
+        review_identity: str,
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        package_sha256: str,
+        decision: str,
+        reviewer_id: str,
+        reviewer_text: str,
+        review_path: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=reviewer_id,
+            )
+            actor = connection.execute(
+                "SELECT * FROM actors WHERE id=%s AND organization_id=%s FOR SHARE",
+                (reviewer_id, organization_id),
+            ).fetchone()
+            if actor is None or actor["role"] != "family_owner":
+                raise PermissionError("product family onboarding review requires family_owner")
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None or run["status"] != "analyzed":
+                existing = connection.execute(
+                    "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s",
+                    (run_id,),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["review_identity"] == review_identity
+                    and existing["package_sha256"] == package_sha256
+                    and existing["decision"] == decision
+                ):
+                    return {"review": dict(existing), "job": job, "changed": False}
+                raise ValueError("onboarding run is not awaiting review")
+            if run["package_sha256"] != package_sha256:
+                raise ValueError("review package identity does not match onboarding analysis")
+            review = connection.execute(
+                "INSERT INTO product_family_onboarding_reviews(id,run_id,job_id,organization_id,"
+                "design_group_id,family_id,package_sha256,review_identity,decision,reviewer_id,"
+                "reviewer_text,review_path,reviewed_job_revision) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                (
+                    review_id,
+                    run_id,
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    package_sha256,
+                    review_identity,
+                    decision,
+                    reviewer_id,
+                    reviewer_text,
+                    review_path,
+                    expected_job_revision + 1,
+                ),
+            ).fetchone()
+            run_status = "approved" if decision == "approve" else "rejected"
+            connection.execute(
+                "UPDATE product_family_onboarding_runs SET status=%s WHERE id=%s",
+                (run_status, run_id),
+            )
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET phase='knowledge_review',revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=reviewer_id,
+                reason=f"product family knowledge review {decision}",
+            )
+        return {"review": dict(review), "job": dict(updated_job), "changed": True}
+
+    def publish_product_family_onboarding(
+        self,
+        *,
+        publication_id: str,
+        publication_identity: str,
+        publication_receipt_sha256: str,
+        publication_path: str,
+        assertion_ids: list[str],
+        run_id: str,
+        job_id: str,
+        expected_job_revision: int,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str,
+        package_sha256: str,
+        review_identity: str,
+        candidates: list[dict[str, Any]],
+        actor_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            job = self._require_onboarding_job(
+                connection,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                family_id=family_id,
+                actor_id=actor_id,
+            )
+            existing = connection.execute(
+                "SELECT * FROM product_family_onboarding_publications WHERE run_id=%s FOR SHARE",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["publication_identity"] != publication_identity
+                    or existing["publication_receipt_sha256"]
+                    != publication_receipt_sha256
+                    or existing["package_sha256"] != package_sha256
+                ):
+                    raise ValueError("onboarding publication identity diverged")
+                return {"publication": dict(existing), "job": job, "changed": False}
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (run_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            review = connection.execute(
+                "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s "
+                "AND review_identity=%s FOR SHARE",
+                (run_id, review_identity),
+            ).fetchone()
+            if (
+                run is None
+                or run["status"] != "approved"
+                or run["package_sha256"] != package_sha256
+                or run["candidate_knowledge"] != candidates
+                or review is None
+                or review["decision"] != "approve"
+                or review["package_sha256"] != package_sha256
+            ):
+                raise ValueError("approved onboarding review does not match publication")
+            if len(assertion_ids) != len(candidates) or len(set(assertion_ids)) != len(assertion_ids):
+                raise ValueError("publication assertion identities are invalid")
+            for assertion_id, candidate in zip(assertion_ids, candidates, strict=True):
+                evidence = list(candidate["evidence"])
+                evidence.append(
+                    {
+                        "onboarding_job_id": job_id,
+                        "onboarding_run_id": run_id,
+                        "package_sha256": package_sha256,
+                        "review_identity": review_identity,
+                    }
+                )
+                connection.execute(
+                    "INSERT INTO knowledge_assertions(id,organization_id,design_group_id,family_id,"
+                    "subject_ref,predicate,object_value,unit,scope_kind,risk_level,status,source_kind,"
+                    "evidence,confidence,applicability,non_applicable_conditions,contradicts,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,'family',%s,'approved',%s,"
+                    "%s::jsonb,%s,%s::jsonb,%s::jsonb,'[]'::jsonb,%s)",
+                    (
+                        assertion_id,
+                        organization_id,
+                        design_group_id,
+                        family_id,
+                        candidate["subject_ref"],
+                        candidate["predicate"],
+                        json.dumps(candidate["object_value"], ensure_ascii=False),
+                        candidate.get("unit"),
+                        candidate["risk_level"],
+                        candidate["source_kind"],
+                        json.dumps(evidence, ensure_ascii=False),
+                        candidate["confidence"],
+                        json.dumps(candidate["applicability"], ensure_ascii=False),
+                        json.dumps(
+                            candidate["non_applicable_conditions"], ensure_ascii=False
+                        ),
+                        actor_id,
+                    ),
+                )
+                object_value = candidate["object_value"]
+                exact_terms = sorted(
+                    set(_search_terms(object_value))
+                    | {
+                        str(candidate["subject_ref"]).strip().lower(),
+                        str(candidate["predicate"]).strip().lower(),
+                    }
+                )
+                search_text = " ".join(
+                    [
+                        str(candidate["subject_ref"]),
+                        str(candidate["predicate"]),
+                        json.dumps(object_value, ensure_ascii=False, sort_keys=True),
+                    ]
+                )
+                connection.execute(
+                    "INSERT INTO knowledge_search_documents(assertion_id,organization_id,design_group_id,"
+                    "family_id,exact_terms,search_text) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        assertion_id,
+                        organization_id,
+                        design_group_id,
+                        family_id,
+                        exact_terms,
+                        search_text,
+                    ),
+                )
+                self._enqueue(
+                    connection,
+                    "knowledge_assertion",
+                    assertion_id,
+                    "knowledge_assertion.reviewed",
+                    {
+                        "assertion_id": assertion_id,
+                        "status": "approved",
+                        "onboarding_job_id": job_id,
+                        "onboarding_run_id": run_id,
+                        "publication_identity": publication_identity,
+                    },
+                )
+            publication = connection.execute(
+                "INSERT INTO product_family_onboarding_publications(id,run_id,review_id,job_id,"
+                "organization_id,design_group_id,family_id,package_sha256,publication_identity,"
+                "publication_receipt_sha256,publication_path,assertion_ids,published_job_revision,published_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) RETURNING *",
+                (
+                    publication_id,
+                    run_id,
+                    review["id"],
+                    job_id,
+                    organization_id,
+                    design_group_id,
+                    family_id,
+                    package_sha256,
+                    publication_identity,
+                    publication_receipt_sha256,
+                    publication_path,
+                    json.dumps(assertion_ids),
+                    expected_job_revision + 1,
+                    actor_id,
+                ),
+            ).fetchone()
+            connection.execute(
+                "UPDATE product_family_onboarding_runs SET status='published' WHERE id=%s",
+                (run_id,),
+            )
+            updated_job = connection.execute(
+                "UPDATE design_jobs SET status='completed',phase='completed',blocked_reason=NULL,"
+                "active_working_copy_id=NULL,revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s RETURNING *",
+                (job_id, expected_job_revision),
+            ).fetchone()
+            if updated_job is None:
+                raise ValueError("stale design job revision")
+            self._record_design_job_event(
+                connection,
+                job=dict(updated_job),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason="product family onboarding knowledge published",
+            )
+        return {
+            "publication": dict(publication),
+            "job": dict(updated_job),
+            "changed": True,
+        }
+
+    def get_product_family_onboarding(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection:
+            run = connection.execute(
+                "SELECT * FROM product_family_onboarding_runs WHERE job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (job_id, organization_id, design_group_id),
+            ).fetchone()
+            if run is None:
+                raise KeyError("product family onboarding run is missing or unauthorized")
+            review = connection.execute(
+                "SELECT * FROM product_family_onboarding_reviews WHERE run_id=%s",
+                (run["id"],),
+            ).fetchone()
+            publication = connection.execute(
+                "SELECT * FROM product_family_onboarding_publications WHERE run_id=%s",
+                (run["id"],),
+            ).fetchone()
+        result = dict(run)
+        result["review"] = dict(review) if review is not None else None
+        result["publication"] = dict(publication) if publication is not None else None
+        return result
+
+    def create_design_job(
+        self,
+        *,
+        job_id: str,
+        workspace_id: str,
+        display_date: str,
+        job_type: str,
+        title: str,
+        slug: str,
+        organization_id: str,
+        design_group_id: str,
+        family_id: str | None,
+        idempotency_token: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        initial_phases = {
+            "mechanical_design": "requirements",
+            "product_family_onboarding": "intake",
+        }
+        if job_type not in initial_phases:
+            raise ValueError("invalid design job type")
+        try:
+            parsed_display_date = date.fromisoformat(display_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("display_date must use YYYY-MM-DD") from exc
+        if parsed_display_date.isoformat() != display_date:
+            raise ValueError("display_date must use YYYY-MM-DD")
+        for field, value in (
+            ("job_id", job_id),
+            ("workspace_id", workspace_id),
+            ("title", title),
+            ("slug", slug),
+            ("organization_id", organization_id),
+            ("design_group_id", design_group_id),
+            ("idempotency_token", idempotency_token),
+            ("actor_id", actor_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} is required")
+        with self.connection() as connection, connection.transaction():
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                (f"design-job-token:{workspace_id}:{idempotency_token}",),
+            )
+            row = connection.execute(
+                "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (
+                    workspace_id,
+                    idempotency_token,
+                    organization_id,
+                    design_group_id,
+                ),
+            ).fetchone()
+            if row is None:
+                date_token = parsed_display_date.strftime("%Y%m%d")
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    (f"design-job-display:{workspace_id}:{date_token}",),
+                )
+                created = False
+                for _ in range(4):
+                    sequence_row = connection.execute(
+                        "SELECT COALESCE(MAX(CAST(substring(display_id FROM 14) AS integer)),0)+1 "
+                        "AS next_sequence FROM design_jobs WHERE workspace_id=%s "
+                        "AND display_id LIKE %s",
+                        (workspace_id, f"JOB-{date_token}-%"),
+                    ).fetchone()
+                    if sequence_row is None:
+                        raise RuntimeError("design Job display sequence allocation failed")
+                    display_id = (
+                        f"JOB-{date_token}-{int(sequence_row['next_sequence']):03d}"
+                    )
+                    row = connection.execute(
+                        "INSERT INTO design_jobs(id,workspace_id,display_id,job_type,title,slug,status,phase,"
+                        "organization_id,design_group_id,family_id,idempotency_token,created_by) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT DO NOTHING RETURNING *",
+                        (
+                            job_id,
+                            workspace_id,
+                            display_id,
+                            job_type,
+                            title.strip(),
+                            slug.strip(),
+                            "active",
+                            initial_phases[job_type],
+                            organization_id,
+                            design_group_id,
+                            family_id,
+                            idempotency_token,
+                            actor_id,
+                        ),
+                    ).fetchone()
+                    if row is not None:
+                        created = True
+                        break
+                    row = connection.execute(
+                        "SELECT * FROM design_jobs WHERE workspace_id=%s AND idempotency_token=%s "
+                        "AND organization_id=%s AND design_group_id=%s",
+                        (
+                            workspace_id,
+                            idempotency_token,
+                            organization_id,
+                            design_group_id,
+                        ),
+                    ).fetchone()
+                    if row is not None:
+                        break
+                if row is None:
+                    raise KeyError("unknown design_job_id or unauthorized")
+                if created:
+                    self._record_design_job_event(
+                        connection,
+                        job=dict(row),
+                        event_type="created",
+                        actor_id=actor_id,
+                    )
+        return dict(row)
+
+    def record_design_job_directory(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        expected_revision: int,
+        directory_name: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        if not isinstance(directory_name, str) or not directory_name.strip():
+            raise ValueError("directory_name is required")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError("actor_id is required")
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "UPDATE design_jobs SET directory_name=%s,provisioning_state='ready',"
+                "revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s AND provisioning_state='provisioning' "
+                "AND organization_id=%s AND design_group_id=%s AND directory_name IS NULL "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=design_jobs.organization_id) RETURNING *",
+                (
+                    directory_name.strip(),
+                    job_id,
+                    expected_revision,
+                    organization_id,
+                    design_group_id,
+                    actor_id,
+                ),
+            ).fetchone()
+            if row is None:
+                self._raise_design_job_write_failure(
+                    connection,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor_id,
+                    expected_revision=expected_revision,
+                    operation="directory",
+                )
+            self._record_design_job_event(
+                connection,
+                job=dict(row),
+                event_type="directory_recorded",
+                actor_id=actor_id,
+            )
+        return dict(row)
+
+    def transition_design_job(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        expected_revision: int,
+        status: str,
+        phase: str,
+        actor_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        if status not in {"active", "blocked", "completed", "cancelled", "archived"}:
+            raise ValueError("invalid design job status")
+        if not isinstance(phase, str) or not phase.strip():
+            raise ValueError("phase is required")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise ValueError("actor_id is required")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("design job transition reason is required")
+        reason_text = reason.strip()
+        blocked_reason = (
+            json.dumps({"reason": reason_text}, ensure_ascii=False)
+            if status == "blocked"
+            else None
+        )
+        active_working_copy_update = (
+            ",active_working_copy_id=NULL"
+            if status in {"completed", "cancelled", "archived"}
+            else ""
+        )
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "UPDATE design_jobs SET status=%s,phase=%s,blocked_reason=%s::jsonb"
+                + active_working_copy_update
+                + ","
+                "revision=revision+1,updated_at=now() WHERE id=%s AND revision=%s "
+                "AND organization_id=%s AND design_group_id=%s AND provisioning_state='ready' "
+                "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+                "AND actor.organization_id=design_jobs.organization_id) RETURNING *",
+                (
+                    status,
+                    phase.strip(),
+                    blocked_reason,
+                    job_id,
+                    expected_revision,
+                    organization_id,
+                    design_group_id,
+                    actor_id,
+                ),
+            ).fetchone()
+            if row is None:
+                self._raise_design_job_write_failure(
+                    connection,
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor_id,
+                    expected_revision=expected_revision,
+                    operation="transition",
+                )
+            self._record_design_job_event(
+                connection,
+                job=dict(row),
+                event_type="transitioned",
+                actor_id=actor_id,
+                reason=reason_text,
+            )
+        return dict(row)
+
+    def get_design_job(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+    ) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s AND design_group_id=%s",
+                (job_id, organization_id, design_group_id),
+            ).fetchone()
+            result = (
+                self._design_job_with_bindings(connection, dict(row))
+                if row is not None
+                else None
+            )
+        if row is None:
+            raise KeyError("unknown design_job_id or unauthorized")
+        assert result is not None
+        return result
+
+    def list_design_jobs(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        status: str | None,
+        job_type: str | None,
+        family_id: str | None,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_jobs WHERE organization_id=%s AND design_group_id=%s "
+                "AND (%s::text IS NULL OR status=%s) "
+                "AND (%s::text IS NULL OR job_type=%s) "
+                "AND (%s::text IS NULL OR family_id=%s) "
+                "ORDER BY updated_at DESC,id",
+                (
+                    organization_id,
+                    design_group_id,
+                    status,
+                    status,
+                    job_type,
+                    job_type,
+                    family_id,
+                    family_id,
+                ),
+            ).fetchall()
+            results = [
+                self._design_job_with_bindings(connection, dict(row)) for row in rows
+            ]
+        return results
+
+    def resolve_design_jobs(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        query: str,
+        job_type: str | None = None,
+        family_id: str | None = None,
+        statuses: tuple[str, ...] = ("active", "blocked"),
+    ) -> list[dict[str, Any]]:
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("design job resolve query is required")
+        if not statuses or any(
+            status not in {"active", "blocked", "completed", "cancelled", "archived"}
+            for status in statuses
+        ):
+            raise ValueError("design job resolver statuses are invalid")
+        phrase = f"%{query.strip()}%"
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_jobs WHERE organization_id=%s AND design_group_id=%s "
+                "AND status=ANY(%s::text[]) "
+                "AND (%s::text IS NULL OR job_type=%s) "
+                "AND (%s::text IS NULL OR family_id=%s) "
+                "AND (display_id ILIKE %s OR title ILIKE %s OR slug ILIKE %s) "
+                "ORDER BY updated_at DESC,id",
+                (
+                    organization_id,
+                    design_group_id,
+                    list(statuses),
+                    job_type,
+                    job_type,
+                    family_id,
+                    family_id,
+                    phrase,
+                    phrase,
+                    phrase,
+                ),
+            ).fetchall()
+            results = [
+                self._design_job_with_bindings(connection, dict(row)) for row in rows
+            ]
+        return results
+
+    @staticmethod
+    def _design_job_with_bindings(
+        connection: Any, row: dict[str, Any]
+    ) -> dict[str, Any]:
+        # Pre-011 compatibility rows used by migration tooling and narrow test
+        # doubles do not expose the additive authority column.
+        if "active_working_copy_id" not in row:
+            return row
+        snapshots = connection.execute(
+            "SELECT id AS snapshot_id,stored_path,sha256,source_kind,source_model_revision_id "
+            "FROM design_job_source_snapshots WHERE job_id=%s ORDER BY created_at,id",
+            (row["id"],),
+        ).fetchall()
+        row["source_snapshots"] = [dict(snapshot) for snapshot in snapshots]
+        governed_working = connection.execute(
+            "SELECT id::text FROM design_working_copies WHERE job_id=%s "
+            "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id",
+            (row["id"], row["organization_id"], row["design_group_id"]),
+        ).fetchall()
+        row["working_copy_ids"] = [str(item["id"]) for item in governed_working]
+        row["active_working_path"] = None
+        if row.get("active_working_copy_id") is not None:
+            active = connection.execute(
+                "SELECT working_path,working_sha256,working_size_bytes,working_relative_path "
+                "FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s",
+                (
+                    row["active_working_copy_id"],
+                    row["id"],
+                    row["organization_id"],
+                    row["design_group_id"],
+                ),
+            ).fetchone()
+            if active is not None:
+                row["active_working_path"] = active["working_path"]
+                row["active_working_sha256"] = active.get("working_sha256")
+                row["active_working_size_bytes"] = active.get("working_size_bytes")
+                row["active_working_relative_path"] = active.get("working_relative_path")
+        return row
+
+    @staticmethod
+    def _raise_design_job_write_failure(
+        connection: Any,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+        expected_revision: int,
+        operation: str,
+    ) -> None:
+        diagnostic = connection.execute(
+            "SELECT id,revision,provisioning_state,directory_name FROM design_jobs "
+            "WHERE id=%s AND organization_id=%s AND design_group_id=%s "
+            "AND EXISTS (SELECT 1 FROM actors actor WHERE actor.id=%s "
+            "AND actor.organization_id=design_jobs.organization_id)",
+            (job_id, organization_id, design_group_id, actor_id),
+        ).fetchone()
+        if diagnostic is None:
+            raise KeyError("unknown design_job_id or unauthorized")
+        if int(diagnostic["revision"]) != expected_revision:
+            raise ValueError("stale design job revision")
+        if operation == "directory" and diagnostic["directory_name"] is not None:
+            raise ValueError("design job directory already recorded")
+        if diagnostic["provisioning_state"] != "ready":
+            raise ValueError("design job provisioning is incomplete")
+        if operation == "directory":
+            raise ValueError("design job directory already recorded")
+        raise RuntimeError("design job update failed without a matching diagnostic")
+
+    @staticmethod
+    def _record_design_job_event(
+        connection: Any,
+        *,
+        job: dict[str, Any],
+        event_type: str,
+        actor_id: str,
+        reason: str | None = None,
+    ) -> None:
+        blocked_reason = job.get("blocked_reason")
+        connection.execute(
+            "INSERT INTO design_job_events(job_id,revision,event_type,status,phase,provisioning_state,"
+            "directory_name,blocked_reason,actor_id,reason) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)",
+            (
+                job["id"],
+                job["revision"],
+                event_type,
+                job["status"],
+                job["phase"],
+                job["provisioning_state"],
+                job.get("directory_name"),
+                (
+                    json.dumps(blocked_reason, ensure_ascii=False)
+                    if blocked_reason is not None
+                    else None
+                ),
+                actor_id,
+                reason,
+            ),
+        )
+
+    @staticmethod
     def _enqueue(connection: Any, aggregate_type: str, aggregate_id: str, event_type: str, payload: dict[str, Any]) -> None:
         connection.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
@@ -3639,12 +5043,22 @@ class PostgresRepository:
     @staticmethod
     def _enqueue_design_lesson_event(connection: Any, *, event_type: str, lesson_id: str) -> None:
         """Enqueue a lesson lifecycle event inside the caller's PostgreSQL transaction."""
+        origin = connection.execute(
+            "SELECT w.job_id FROM design_lesson_events e "
+            "JOIN design_working_copies w ON w.id=e.source_working_copy_id "
+            "WHERE e.id::text=%s",
+            (lesson_id,),
+        ).fetchone()
+        if origin is None or origin.get("job_id") is None:
+            raise ValueError(
+                "JOB_MIGRATION_REQUIRED: design lesson has no originating Design Job"
+            )
         PostgresRepository._enqueue(
             connection,
             "design_lesson",
             lesson_id,
             event_type,
-            {"lesson_id": lesson_id},
+            {"lesson_id": lesson_id, "job_id": str(origin["job_id"])},
         )
 
     @staticmethod
@@ -3655,12 +5069,21 @@ class PostgresRepository:
         review: dict[str, Any],
         superseded_by_review_id: str | None = None,
     ) -> None:
+        origin = connection.execute(
+            "SELECT job_id FROM design_working_copies WHERE id=%s",
+            (review["working_copy_id"],),
+        ).fetchone()
+        if origin is None or origin.get("job_id") is None:
+            raise ValueError(
+                "JOB_MIGRATION_REQUIRED: design lesson review has no originating Design Job"
+            )
         payload = {
             "review_id": str(review["id"]),
             "organization_id": review["organization_id"],
             "design_group_id": review["design_group_id"],
             "status": review["status"],
             "working_copy_id": str(review["working_copy_id"]),
+            "job_id": str(origin["job_id"]),
             "lesson_id": review["lesson_id"],
             "package_sha256": review["package_sha256"],
             "review_card_sha256": review["review_card_sha256"],

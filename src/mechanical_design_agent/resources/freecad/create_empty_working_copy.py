@@ -15,7 +15,8 @@ def create(output_path):
         raise FileExistsError(output)
     document = App.newDocument("MechanicalDesignWorkingCopy")
     try:
-        audit = document.addObject("App::FeaturePython", "DesignAudit")
+        # Native inert geometry metadata cannot persist executable Python proxies.
+        audit = document.addObject("Part::Feature", "DesignAudit")
         audit.addProperty("App::PropertyString", "KnowledgeContext", "DesignAudit")
         audit.KnowledgeContext = "DesignContext/v2: no specialized knowledge unless explicitly authorized"
         document.saveAs(str(output))

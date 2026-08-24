@@ -43,6 +43,14 @@ EXPECTED_MCP_TOOL_NAMES = {
     "design_context_build",
     "design_delivery_approve",
     "design_group_register",
+    "design_job_close",
+    "design_job_create",
+    "design_job_get",
+    "design_job_list",
+    "design_job_new_working_copy_create",
+    "design_job_reopen",
+    "design_job_resolve",
+    "design_job_working_copy_create",
     "design_knowledge_retrieve",
     "design_lesson_approve",
     "design_lesson_audit_get",
@@ -87,6 +95,11 @@ EXPECTED_MCP_TOOL_NAMES = {
     "model_identity_confirm",
     "projection_rebuild",
     "projection_sync",
+    "product_family_onboarding_analyze",
+    "product_family_onboarding_publish",
+    "product_family_onboarding_review",
+    "product_family_onboarding_start",
+    "product_family_onboarding_status",
     "standard_part_catalog_disable",
     "standard_part_catalog_enable",
     "standard_part_download_register",
@@ -112,6 +125,7 @@ CLEAN_ENVIRONMENT_KEYS = {
     "MECH_DESIGN_FREECADCMD",
     "MECH_DESIGN_ARTIFACT_ROOT",
     "MECH_DESIGN_PRODUCT_FAMILY_ID",
+    "MECH_DESIGN_JOB_ID",
     "MECH_DESIGN_FAMILY_CONFIG",
 }
 
@@ -167,7 +181,7 @@ def test_public_metadata_and_license_contract() -> None:
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert project["name"] == "ai-mechanical-3dcad-design-agent"
-    assert project["version"] == "0.2.0"
+    assert project["version"] == "0.3.0"
     assert project["description"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -180,6 +194,36 @@ def test_public_metadata_and_license_contract() -> None:
 
     license_bytes = (PROJECT_ROOT / "LICENSE").read_bytes()
     assert hashlib.sha256(license_bytes).hexdigest() == LICENSE_SHA256
+
+
+def test_release_version_is_exactly_0_3_0_everywhere() -> None:
+    expected = "0.3.0"
+    project = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    lock = tomllib.loads((PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    package = next(
+        item
+        for item in lock["package"]
+        if item["name"] == "ai-mechanical-3dcad-design-agent"
+    )
+    third_party = tomllib.loads(
+        (PROJECT_ROOT / "third-party-components.toml").read_text(encoding="utf-8")
+    )
+    init_text = (
+        PROJECT_ROOT / "src" / "mechanical_design_agent" / "__init__.py"
+    ).read_text(encoding="utf-8")
+
+    assert project["version"] == expected
+    assert package["version"] == expected
+    assert third_party["project_version"] == expected
+    assert f'__version__ = "{expected}"' in init_text
+    assert f"Version {expected}" in (PROJECT_ROOT / "README.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"## {expected} -" in (PROJECT_ROOT / "CHANGELOG.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def _normalized_sdist_members(sdist: Path) -> tuple[str, ...]:
@@ -212,6 +256,7 @@ def test_sdist_has_strict_public_release_contents(
         "third-party-components.toml",
         "docs/ARCHITECTURE.md",
         "docs/DATABASE_DEPLOYMENT.md",
+        "docs/DESIGN_JOB_WORKSPACES.md",
         "docs/ENGINEER_LEARNING_PLAYBOOK.md",
         "docs/FREECAD_GUI_MCP_INTEGRATION.md",
         "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
@@ -275,7 +320,7 @@ def test_wheel_metadata_license_and_entrypoints(
         assert "third-party-components.toml" not in names
 
     assert metadata["Name"] == "ai-mechanical-3dcad-design-agent"
-    assert metadata["Version"] == "0.2.0"
+    assert metadata["Version"] == "0.3.0"
     assert metadata["Summary"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -306,6 +351,7 @@ def test_artifacts_exclude_vendor_and_third_party_payloads(
         assert not any("freecad.gears" in member for member in lowered)
         assert not any("freecad-mcp" in member for member in lowered)
         assert not any(member.endswith((".fcstd", ".step", ".stp", ".stl")) for member in lowered)
+        assert not any("/jobs/" in f"/{member.strip('/').lower()}/" for member in members)
 
 
 async def installed_mcp_tool_names(
@@ -396,7 +442,7 @@ def test_sdist_rebuilds_and_installs_without_repository_access(
     )
     assert imported.returncode == 0, imported.stderr
     version, module_path = imported.stdout.splitlines()
-    assert version == "0.2.0"
+    assert version == "0.3.0"
     assert Path(module_path).is_relative_to(venv)
 
     help_result = run([str(cli), "--help"], cwd=outside, environment=environment)

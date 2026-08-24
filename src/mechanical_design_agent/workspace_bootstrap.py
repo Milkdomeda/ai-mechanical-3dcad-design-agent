@@ -6,7 +6,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterator
@@ -26,6 +26,7 @@ _SAFE_ACTOR_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 MANIFEST_RELATIVE_PATH = Path("config/mechanical_design.json")
 DEFAULT_ARTIFACT_ROOT = "data/artifacts"
+DEFAULT_JOBS_ROOT = "jobs"
 DEFAULT_STANDARD_PART_SOURCES = "config/standard_parts_sources.json"
 DEFAULT_PRODUCT_FAMILIES = "config/product_families"
 
@@ -101,7 +102,22 @@ class WorkspaceManifest:
     product_families: Path
     default_product_family_id: str | None
     freecad_command: str | None
+    freecad_sha256: str | None
     raw: Mapping[str, object]
+    jobs_root: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        paths = self.raw.get("paths")
+        jobs_value = (
+            paths.get("jobs_root", DEFAULT_JOBS_ROOT)
+            if isinstance(paths, Mapping)
+            else DEFAULT_JOBS_ROOT
+        )
+        object.__setattr__(
+            self,
+            "jobs_root",
+            _workspace_owned_path(self.workspace, jobs_value, "jobs_root"),
+        )
 
 
 @dataclass(frozen=True)
@@ -502,6 +518,10 @@ def read_workspace_manifest(workspace: Path) -> WorkspaceManifest:
             freecad.get("command"),
             "freecad.command",
         ),
+        freecad_sha256=_optional_string(
+            freecad.get("sha256"),
+            "freecad.sha256",
+        ),
         raw=MappingProxyType(raw),
     )
 
@@ -533,11 +553,12 @@ def _manifest_template(
         },
         "paths": {
             "artifact_root": DEFAULT_ARTIFACT_ROOT,
+            "jobs_root": DEFAULT_JOBS_ROOT,
             "standard_parts_sources": DEFAULT_STANDARD_PART_SOURCES,
             "product_families": DEFAULT_PRODUCT_FAMILIES,
         },
         "default_product_family_id": None,
-        "freecad": {"command": None},
+        "freecad": {"command": None, "sha256": None},
     }
 
 
@@ -685,6 +706,7 @@ def _validate_initialized_managed_state(manifest: WorkspaceManifest) -> None:
     for label, path in (
         ("product_families", manifest.product_families),
         ("artifact_root", manifest.artifact_root),
+        ("jobs_root", manifest.jobs_root),
     ):
         try:
             managed = validate_managed_path(path, allow_missing_leaf=True)
@@ -806,18 +828,29 @@ def initialize_workspace(
                 "ACTOR_ID_CONFLICT",
                 "explicit actor differs from initialized workspace default",
             )
+        jobs_created = False
+        relative_jobs_root = manifest.jobs_root.relative_to(canonical).as_posix()
+        if not manifest.jobs_root.exists():
+            with _initialization_lock(canonical):
+                _ensure_managed_directory(canonical, relative_jobs_root)
+                jobs_created = True
         _validate_initialized_managed_state(manifest)
+        managed_names = (
+            "config/mechanical_design.json",
+            "config/standard_parts_sources.json",
+            "config/product_families",
+            "data/artifacts",
+            relative_jobs_root,
+        )
         return InitResult(
             status="ok",
             result="already_initialized",
             workspace=canonical,
             manifest_path=manifest_path,
-            created=(),
-            reused=(
-                "config/mechanical_design.json",
-                "config/standard_parts_sources.json",
-                "config/product_families",
-                "data/artifacts",
+            created=(relative_jobs_root,) if jobs_created else (),
+            reused=tuple(
+                path for path in managed_names
+                if path != relative_jobs_root or not jobs_created
             ),
             next_steps=(),
         )
@@ -829,6 +862,7 @@ def initialize_workspace(
         "config/standard_parts_sources.json",
         "data",
         "data/artifacts",
+        "jobs",
         "config/mechanical_design.json",
     )
     if dry_run:
@@ -867,6 +901,7 @@ def initialize_workspace(
         canonical / "config/standard_parts_sources.json",
         canonical / "data",
         canonical / "data/artifacts",
+        canonical / "jobs",
         manifest_path,
     ]
     existed_before = {path for path in managed_paths if path.exists()}
@@ -874,6 +909,7 @@ def initialize_workspace(
         config = _ensure_managed_directory(canonical, "config")
         _ensure_managed_directory(canonical, "config/product_families")
         _ensure_managed_directory(canonical, "data/artifacts")
+        _ensure_managed_directory(canonical, "jobs")
         sources_path = config / "standard_parts_sources.json"
         _reuse_exact_or_publish(
             sources_path,

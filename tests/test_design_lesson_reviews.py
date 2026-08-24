@@ -19,6 +19,7 @@ from mechanical_design_agent.config import Settings
 from mechanical_design_agent.design_lessons import DesignLessonStagingStore
 from mechanical_design_agent.hashing import file_sha256
 from mechanical_design_agent.lesson_reviews import DesignLessonReviewStore
+from mechanical_design_agent.jobs import JobFailure
 from mechanical_design_agent.repository import PostgresRepository
 from mechanical_design_agent.server import create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
@@ -72,6 +73,7 @@ class _TrackedConnection:
         self.working_copies: dict[str, dict] = {
             "working-001": {
                 "id": "working-001",
+                "job_id": "job-001",
                 "organization_id": "org-001",
                 "design_group_id": "group-001",
                 "status": "approved_for_delivery",
@@ -82,7 +84,8 @@ class _TrackedConnection:
         self.lesson_summaries: dict[str, dict] = {
             "working-001": {
                 "id": "summary-001",
-                "working_copy_id": "working-001",
+            "working_copy_id": "working-001",
+            "job_id": "job-001",
                 "summary_status": "completed",
                 "publication_status": "blocked",
                 "publication_blocker": "working copy is not approved_for_delivery",
@@ -177,6 +180,11 @@ class _TrackedConnection:
         if sql.startswith("SELECT * FROM design_working_copies WHERE id=%s FOR UPDATE"):
             working_copy = self.working_copies.get(str(parameters[0]))
             return _Rows([working_copy] if working_copy else [])
+        if sql.startswith("SELECT job_id FROM design_working_copies WHERE id=%s"):
+            working_copy = self.working_copies.get(str(parameters[0]))
+            return _Rows(
+                [{"job_id": working_copy["job_id"]}] if working_copy else []
+            )
         if sql.startswith("SELECT * FROM design_groups WHERE id=%s FOR UPDATE"):
             design_group = self.design_groups.get(str(parameters[0]))
             return _Rows([design_group] if design_group else [])
@@ -189,6 +197,14 @@ class _TrackedConnection:
         if sql.startswith("SELECT * FROM design_lesson_reviews WHERE id=%s FOR UPDATE"):
             review = self.reviews.get(str(parameters[0]))
             return _Rows([review] if review else [])
+        if sql.startswith(
+            "SELECT r.*,w.job_id FROM design_lesson_reviews r JOIN design_working_copies w"
+        ):
+            review = self.reviews.get(str(parameters[0]))
+            if review is None:
+                return _Rows()
+            working = self.working_copies[str(review["working_copy_id"])]
+            return _Rows([{**review, "job_id": working["job_id"]}])
         if sql == "SELECT * FROM design_lesson_reviews WHERE id=%s":
             review = self.reviews.get(str(parameters[0]))
             return _Rows([review] if review else [])
@@ -382,6 +398,7 @@ def _review(review_id: str, *, status: str = "awaiting-engineer-review") -> dict
         "organization_id": "org-001",
         "design_group_id": "group-001",
         "working_copy_id": "working-001",
+        "job_id": "job-001",
         "lesson_id": "DL-001",
         "package_sha256": "1" * 64,
         "review_card_sha256": "2" * 64,
@@ -580,6 +597,7 @@ class _ReviewPreparationRepository:
             row = {
                 **kwargs,
                 "id": kwargs["review_id"],
+                "job_id": str(self.context["working_copy"]["job_id"]),
                 "status": "awaiting-engineer-review",
             }
             self.reviews[kwargs["review_id"]] = row
@@ -766,6 +784,22 @@ class _ReviewPreparationWorkspace:
         finally:
             self.locked = False
 
+    @contextmanager
+    def locked_job_working_copy(self, working_copy_id: str):
+        working = self.repository.get_working_copy(working_copy_id)
+        assert working.get("job_id")
+        with self.locked_working_copy_path(working_copy_id) as path:
+            yield (
+                self.working_path.parent.resolve(),
+                path,
+                working,
+                {
+                    "id": working["job_id"],
+                    "revision": 7,
+                    "active_working_copy_id": working_copy_id,
+                },
+            )
+
 
 def _review_preparation_fixture() -> tuple[
     tempfile.TemporaryDirectory, MechanicalDesignService, dict, list[dict]
@@ -837,6 +871,7 @@ def _review_preparation_fixture() -> tuple[
     context = {
         "working_copy": {
             "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
             "organization_id": "org-001",
             "design_group_id": "group-001",
             "family_id": "family-001",
@@ -864,8 +899,18 @@ def _review_preparation_fixture() -> tuple[
     service.design_workspace = _ReviewPreparationWorkspace(
         final_sha256, working_path, repository
     )
-    service.design_lesson_staging = DesignLessonStagingStore(workspace)
-    service.design_lesson_reviews = DesignLessonReviewStore(workspace)
+    service.design_lesson_staging = DesignLessonStagingStore(
+        workspace,
+        staging_parts=("knowledge", "design-lessons", "staging"),
+    )
+    service.design_lesson_reviews = DesignLessonReviewStore(
+        workspace,
+        review_parts=("knowledge", "design-lessons", "reviews"),
+    )
+    service._job_design_lesson_stores = lambda _job_root: (
+        service.design_lesson_staging,
+        service.design_lesson_reviews,
+    )
     service._require_database = lambda: None
     def explicit_review_projection():
         review_id = next(iter(repository.reviews), "review-not-prepared")
@@ -1129,6 +1174,73 @@ def test_service_review_preparation_creates_one_hash_free_immutable_review():
         temporary.cleanup()
 
 
+def test_service_review_preparation_is_contained_under_originating_job_knowledge():
+    temporary, service, package, evidence_items = _review_preparation_fixture()
+    try:
+        prepared = service.design_lesson_review_prepare(
+            package["source"]["working_copy_id"],
+            package,
+            evidence_items,
+            job_id="00000000-0000-0000-0000-000000000010",
+            expected_job_revision=7,
+        )
+
+        inserted = service.repository.create_calls[0]
+        expected_root = (
+            service.settings.workspace / "knowledge" / "design-lessons"
+        ).resolve()
+        assert Path(inserted["package_path"]).is_relative_to(expected_root)
+        assert Path(inserted["review_path"]).is_relative_to(expected_root)
+        assert prepared["job_id"] == "00000000-0000-0000-0000-000000000010"
+        assert prepared["job_revision"] == 7
+    finally:
+        temporary.cleanup()
+
+
+def test_service_review_preparation_rejects_foreign_job_evidence():
+    temporary, service, package, evidence_items = _review_preparation_fixture()
+    with tempfile.TemporaryDirectory() as foreign_temporary:
+        try:
+            foreign_evidence = Path(foreign_temporary) / "validation.json"
+            foreign_evidence.write_text('{"status":"passed"}\n', encoding="utf-8")
+            evidence_items[0]["path"] = str(foreign_evidence)
+
+            with pytest.raises(ValueError, match="originating Design Job"):
+                service.design_lesson_review_prepare(
+                    package["source"]["working_copy_id"],
+                    package,
+                    evidence_items,
+                )
+        finally:
+            temporary.cleanup()
+
+
+def test_service_review_preparation_rejects_foreign_or_stale_job_request():
+    temporary, service, package, evidence_items = _review_preparation_fixture()
+    try:
+        with pytest.raises(JobFailure) as foreign:
+            service.design_lesson_review_prepare(
+                package["source"]["working_copy_id"],
+                package,
+                evidence_items,
+                job_id="00000000-0000-0000-0000-000000000099",
+                expected_job_revision=7,
+            )
+        assert foreign.value.code == "JOB_BINDING_MISMATCH"
+
+        with pytest.raises(JobFailure) as stale:
+            service.design_lesson_review_prepare(
+                package["source"]["working_copy_id"],
+                package,
+                evidence_items,
+                job_id="00000000-0000-0000-0000-000000000010",
+                expected_job_revision=6,
+            )
+        assert stale.value.code == "JOB_STALE_REVISION"
+    finally:
+        temporary.cleanup()
+
+
 def test_service_review_card_exposes_complete_learning_scope_without_hashes_or_paths():
     temporary, service, package, evidence_items = _review_preparation_fixture()
     try:
@@ -1351,7 +1463,9 @@ def test_service_review_preparation_uses_immutable_evidence_when_original_change
         assert prepared["status"] == "awaiting-engineer-review"
         assert inspection["status"] == "verified-local-only"
         staged_evidence_path = inspection["package"]["evidence_manifest"][0]["path"]
-        assert staged_evidence_path.startswith("artifacts/")
+        assert staged_evidence_path.startswith(
+            "knowledge/design-lessons/evidence/"
+        )
         assert staged_evidence_path != evidence_items[0]["path"]
     finally:
         temporary.cleanup()
@@ -1802,6 +1916,7 @@ def test_repository_preparation_inserts_awaiting_review_and_enqueues_event():
         "organization_id": "org-001",
         "design_group_id": "group-001",
         "working_copy_id": "working-001",
+        "job_id": "job-001",
         "lesson_id": "DL-001",
         "package_sha256": "4" * 64,
         "review_card_sha256": "5" * 64,
@@ -1963,6 +2078,7 @@ def test_repository_preparation_rejects_incoherent_tenant_scope(
 ):
     connection = _TrackedConnection()
     connection.design_groups = {design_group["id"]: design_group}
+    working_copy["job_id"] = "job-cross"
     connection.working_copies[working_copy["id"]] = working_copy
     with _repository_with(connection) as repository:
         with pytest.raises(ValueError, match=error):
@@ -3898,8 +4014,8 @@ def test_live_confirmed_to_retrievable_flow_is_atomic_projected_and_searchable()
                     "WHERE id=%s",
                     (sentinel_lesson_id,),
                 ).fetchone()
-            assert [int(row["version"]) for row in migration_rows] == list(range(1, 10))
-            assert migration_rows[-1]["filename"] == "009_design_lifecycle_closure.sql"
+            assert [int(row["version"]) for row in migration_rows] == list(range(1, 13))
+            assert migration_rows[-1]["filename"] == "014_design_job_knowledge.sql"
             assert sentinel_before is not None
             sentinel_before = dict(sentinel_before)
 

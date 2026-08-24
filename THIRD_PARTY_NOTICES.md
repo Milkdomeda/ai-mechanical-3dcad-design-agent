@@ -760,6 +760,21 @@ External service and catalog terms apply independently and do not grant rights t
 - Evidence: https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz
 - Audited: `2026-08-16`
 
+### PyYAML
+
+- ID: `pyyaml`
+- Identity: version `6.0.3`
+- SPDX: `MIT`
+- Attribution: Kirill Simonov and PyYAML contributors
+- Relationship: `installed_dependency`
+- Distribution: `not_distributed_by_project`
+- Scope: `test`
+- Purpose: Parses project Skill frontmatter and Agent metadata as YAML in the release test suite.
+- Official source: https://pypi.org/project/PyYAML/6.0.3/
+- License or terms: https://github.com/yaml/pyyaml/blob/6.0.3/LICENSE
+- Evidence: https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz
+- Audited: `2026-08-23`
+
 ## External integrations
 
 ### GitHub Actions checkout

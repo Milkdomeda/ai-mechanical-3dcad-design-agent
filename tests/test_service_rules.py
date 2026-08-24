@@ -19,7 +19,13 @@ from unittest.mock import patch
 from mechanical_design_agent.artifacts import ArtifactStore
 from mechanical_design_agent.design import DesignWorkspace
 from mechanical_design_agent.design_lessons import DesignLessonStagingStore
+from mechanical_design_agent.lesson_reviews import DesignLessonReviewStore
 from mechanical_design_agent.hashing import file_sha256
+from mechanical_design_agent.jobs import (
+    DesignJobRepairResult,
+    JobFailure,
+    locked_job_root,
+)
 from mechanical_design_agent.server import build_server, create_mcp
 from mechanical_design_agent.service import MechanicalDesignService
 
@@ -83,15 +89,43 @@ class FakeDesignLessonRepository:
         self.calls.append(("audit_get", kwargs))
         return {**(self.raw_lesson or {}), "review_history": [{"decision": "approve-design-lesson"}]}
 
+    def get_working_copy(self, working_copy_id: str):
+        return {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+            "working_path": "/workspace/current.working.FCStd",
+        }
+
 
 class FakeDesignWorkspace:
-    def __init__(self, current_sha256: str) -> None:
+    def __init__(self, current_sha256: str, job_root: Path | None = None) -> None:
         self.current_sha256 = current_sha256
+        self.job_root = job_root
         self.requested_working_copy_ids: list[str] = []
 
     def current_hash(self, working_copy_id: str) -> str:
         self.requested_working_copy_ids.append(working_copy_id)
         return self.current_sha256
+
+    @contextmanager
+    def locked_job_working_copy(self, working_copy_id: str):
+        working = {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+        }
+        root = (self.job_root or Path("/workspace")).resolve()
+        yield (
+            root,
+            root / "current.working.FCStd",
+            working,
+            {"id": working["job_id"], "revision": 1},
+        )
 
     def current_snapshot(self, working_copy_id: str, artifact_store: ArtifactStore) -> dict:
         self.requested_working_copy_ids.append(working_copy_id)
@@ -119,7 +153,22 @@ class LockingApprovalRepository(FakeDesignLessonRepository):
         self.approved_working_copy_artifact: dict | None = None
 
     def get_working_copy(self, working_copy_id: str) -> dict:
-        return {"id": working_copy_id, "working_path": str(self.working_path)}
+        return {
+            "id": working_copy_id,
+            "job_id": "00000000-0000-0000-0000-000000000010",
+            "organization_id": "org-001",
+            "design_group_id": "group-001",
+            "family_id": "family-001",
+            "working_path": str(self.working_path.resolve()),
+            "working_relative_path": self.working_path.name,
+        }
+
+    def get_design_job(self, **_scope) -> dict:
+        return {
+            "id": "00000000-0000-0000-0000-000000000010",
+            "revision": 1,
+            "active_working_copy_id": "00000000-0000-0000-0000-000000000011",
+        }
 
     def approve_design_lesson(self, **kwargs):
         self.approved_working_copy_artifact = kwargs["working_copy_artifact"]
@@ -127,6 +176,20 @@ class LockingApprovalRepository(FakeDesignLessonRepository):
         if not self.allow_commit.wait(timeout=5):
             raise TimeoutError("approval test did not release the repository commit")
         return {"id": "00000000-0000-0000-0000-000000000101", "status": "approved"}
+
+
+class _LockingJobManager:
+    def __init__(self, job_root: Path) -> None:
+        self.job_root = job_root
+
+    @contextmanager
+    def locked_active_mechanical_design_job(self, **_scope):
+        with locked_job_root(job_root=self.job_root) as locked:
+            yield locked, {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "revision": 1,
+                "active_working_copy_id": "00000000-0000-0000-0000-000000000011",
+            }
 
 
 def design_lesson_package() -> dict:
@@ -210,9 +273,22 @@ def make_service_with_staged_lesson():
         "organization_id": "org-001",
         "design_group_id": "group-001",
     }
-    service.design_lesson_staging = DesignLessonStagingStore(workspace)
+    service.design_lesson_staging = DesignLessonStagingStore(
+        workspace,
+        staging_parts=("knowledge", "design-lessons", "staging"),
+    )
+    service.design_lesson_reviews = DesignLessonReviewStore(
+        workspace,
+        review_parts=("knowledge", "design-lessons", "reviews"),
+    )
     service.artifacts = ArtifactStore(workspace / "artifacts")
-    service.design_workspace = FakeDesignWorkspace(package["source"]["after_model_sha256"])
+    service.design_workspace = FakeDesignWorkspace(
+        package["source"]["after_model_sha256"], workspace
+    )
+    service._job_design_lesson_stores = lambda _job_root: (
+        service.design_lesson_staging,
+        service.design_lesson_reviews,
+    )
     service._require_database = lambda: None
     service._safe_projection = lambda: {"status": "deferred"}
     staged = service.design_lesson_stage(
@@ -817,9 +893,24 @@ class ServiceDesignLessonBoundaryTests(unittest.TestCase):
                 "organization_id": "org-001",
                 "design_group_id": "group-001",
             }
-            service.design_lesson_staging = DesignLessonStagingStore(workspace)
+            service.design_lesson_staging = DesignLessonStagingStore(
+                workspace,
+                staging_parts=("knowledge", "design-lessons", "staging"),
+            )
+            service.design_lesson_reviews = DesignLessonReviewStore(
+                workspace,
+                review_parts=("knowledge", "design-lessons", "reviews"),
+            )
             service.artifacts = ArtifactStore(workspace / "artifacts")
-            service.design_workspace = DesignWorkspace(settings, repository)
+            service.design_workspace = DesignWorkspace(
+                settings,
+                repository,
+                _LockingJobManager(workspace),
+            )
+            service._job_design_lesson_stores = lambda _job_root: (
+                service.design_lesson_staging,
+                service.design_lesson_reviews,
+            )
             service._require_database = lambda: None
             service._safe_projection = lambda: {"status": "deferred"}
             staged = service.design_lesson_stage(package, [evidence_item])
@@ -1113,12 +1204,14 @@ class FakeLessonMcpService:
         self.search_results: list[dict] = []
         self.search_next_cursor: str | None = None
 
-    def design_lesson_stage(self, package: dict, evidence_items: list[dict]) -> dict:
-        self.calls.append(("stage", {"package": package, "evidence_items": evidence_items}))
+    def design_lesson_stage(
+        self, package: dict, evidence_items: list[dict], **job_binding
+    ) -> dict:
+        self.calls.append(("stage", {"package": package, "evidence_items": evidence_items, **job_binding}))
         return {"status": "staged-local-only"}
 
-    def design_lesson_staged_get(self, lesson_id: str) -> dict:
-        self.calls.append(("staged_get", {"lesson_id": lesson_id}))
+    def design_lesson_staged_get(self, lesson_id: str, **job_binding) -> dict:
+        self.calls.append(("staged_get", {"lesson_id": lesson_id, **job_binding}))
         return {"lesson_id": lesson_id}
 
     def design_lesson_approve(self, **kwargs) -> dict:
@@ -1158,6 +1251,7 @@ class FakeLessonMcpService:
         package: dict,
         evidence_items: list[dict],
         supersedes_review_id: str | None = None,
+        **job_binding,
     ) -> dict:
         self.calls.append(
             (
@@ -1167,6 +1261,7 @@ class FakeLessonMcpService:
                     "package": package,
                     "evidence_items": evidence_items,
                     "supersedes_review_id": supersedes_review_id,
+                    **job_binding,
                 },
             )
         )
@@ -1217,7 +1312,13 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
         ).parameters
         self.assertEqual(
             list(approval_parameters),
-            ["review_id", "reviewer_text", "confirmation"],
+            [
+                "review_id",
+                "reviewer_text",
+                "confirmation",
+                "job_id",
+                "expected_job_revision",
+            ],
         )
 
     def test_lesson_review_prepare_parses_payloads_and_optional_predecessor(self) -> None:
@@ -1588,6 +1689,480 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
                     },
                 )
             ],
+        )
+
+class _JobManifestForService:
+    def __init__(
+        self,
+        job_id: str = "00000000-0000-4000-8000-000000000401",
+        *,
+        active_working_copy_id: str | None = None,
+    ) -> None:
+        self.job_id = job_id
+        self.revision = 4
+        self.active_working_copy_id = active_working_copy_id
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "MechanicalDesignJob/v1",
+            "job_id": self.job_id,
+            "display_id": "JOB-20260823-401",
+            "job_type": "mechanical_design",
+            "workspace_id": "20000000-0000-4000-8000-000000000001",
+            "title": "Authorized pump",
+            "slug": "authorized-pump",
+            "status": "active",
+            "phase": "requirements",
+            "revision": 4,
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "family_id": None,
+            "directory_name": "JOB-20260823-401-authorized-pump",
+            "active_working_copy_id": self.active_working_copy_id,
+            "source_snapshots": [],
+            "created_at": "2026-08-23T08:15:30.000000Z",
+            "created_by": "configured-actor",
+            "updated_at": "2026-08-23T08:15:30.000000Z",
+        }
+
+
+class _JobRepairForService:
+    def __init__(self, manifest: _JobManifestForService, reason: str) -> None:
+        self.manifest = manifest
+        self.reason = reason
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "MechanicalDesignJobRepair/v1",
+            "job": self.manifest.as_dict(),
+            "audit": {
+                "action": "repair",
+                "reason": self.reason,
+                "actor_id": "configured-actor",
+                "authoritative_revision": 4,
+                "quarantined_attempts": [],
+            },
+        }
+
+
+class _JobManagerForService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.manifest = _JobManifestForService()
+
+    def create(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("create", kwargs))
+        return self.manifest
+
+    def get(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("get", kwargs))
+        return self.manifest
+
+    def list(self, **kwargs: object) -> list[_JobManifestForService]:
+        self.calls.append(("list", kwargs))
+        return [self.manifest]
+
+    def resolve(self, **kwargs: object) -> list[_JobManifestForService]:
+        self.calls.append(("resolve", kwargs))
+        return [self.manifest]
+
+    def close(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("close", kwargs))
+        return self.manifest
+
+    def reopen(self, **kwargs: object) -> _JobManifestForService:
+        self.calls.append(("reopen", kwargs))
+        return self.manifest
+
+    def doctor(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("doctor", kwargs))
+        return {
+            "schema_version": "MechanicalDesignJobDoctor/v1",
+            "job_id": self.manifest.job_id,
+            "authoritative_revision": 4,
+            "receipt_sha256": "a" * 64,
+            "status": "blocked",
+            "issues": [],
+        }
+
+    def repair(self, **kwargs: object) -> _JobRepairForService:
+        self.calls.append(("repair", kwargs))
+        return _JobRepairForService(self.manifest, str(kwargs["reason"]))
+
+
+class ServiceDesignJobFacadeTests(unittest.TestCase):
+    def _service(self, manager: _JobManagerForService | None = None) -> MechanicalDesignService:
+        service = MechanicalDesignService.__new__(MechanicalDesignService)
+        service.settings = SimpleNamespace(actor_id="configured-actor")
+        service.bootstrap_config = {
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+        }
+        service.design_jobs = manager or _JobManagerForService()
+        service._require_database = lambda: None
+        return service
+
+    def test_design_job_create_uses_only_configured_scope_and_actor(self) -> None:
+        service = self._service()
+
+        result = service.design_job_create(
+            job_type="mechanical_design",
+            title="Pump design",
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id="family-001",
+            idempotency_token="job-create-001",
+        )
+
+        self.assertEqual(result["schema_version"], "MechanicalDesignJob/v1")
+        name, call = service.design_jobs.calls[-1]
+        self.assertEqual(name, "create")
+        self.assertEqual(call["organization_id"], "org-configured")
+        self.assertEqual(call["design_group_id"], "group-configured")
+        self.assertEqual(call["actor_id"], "configured-actor")
+        with self.assertRaisesRegex(PermissionError, "configured organization"):
+            service.design_job_create(
+                job_type="mechanical_design",
+                title="Foreign",
+                organization_id="other-org",
+                design_group_id="group-configured",
+                family_id=None,
+                idempotency_token="job-create-foreign",
+            )
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["create"])
+
+    def test_design_job_get_authorizes_before_manifest_access_and_redacts_failure(self) -> None:
+        private_title = "PRIVATE foreign job title"
+
+        class UnauthorizedManager(_JobManagerForService):
+            def get(self, **kwargs: object) -> _JobManifestForService:
+                self.calls.append(("get", kwargs))
+                raise JobFailure(
+                    "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                    "Job identity is unknown or outside the authorized scope",
+                )
+
+        manager = UnauthorizedManager()
+        service = self._service(manager)
+        with self.assertRaises(JobFailure) as captured:
+            service.design_job_get(job_id="00000000-0000-4000-8000-000000000499")
+
+        self.assertNotIn(private_title, str(captured.exception))
+        self.assertEqual([name for name, _ in manager.calls], ["get"])
+        self.assertEqual(manager.calls[0][1]["organization_id"], "org-configured")
+        with self.assertRaisesRegex(ValueError, "filesystem path"):
+            service.design_job_get(job_id="../private/job.json")
+        self.assertEqual([name for name, _ in manager.calls], ["get"])
+
+    def test_design_job_resolve_returns_candidates_without_selecting_one(self) -> None:
+        service = self._service()
+
+        result = service.design_job_resolve(query="pump")
+
+        self.assertEqual(result["schema_version"], "MechanicalDesignJobResolution/v1")
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(service.design_jobs.calls[-1][0], "resolve")
+
+    def test_close_reopen_and_repair_require_revision_reason_and_user_confirmation(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        with self.assertRaisesRegex(ValueError, "reason"):
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=4,
+                status="completed",
+                phase="completed",
+                reason=" ",
+                confirmation=f"关闭 {job_id}",
+            )
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            service.design_job_close(
+                job_id=job_id,
+                expected_revision=4,
+                status="completed",
+                phase="completed",
+                reason="delivered",
+                confirmation=f"重开 {job_id}",
+            )
+        self.assertEqual(service.design_jobs.calls, [])
+
+        closed = service.design_job_close(
+            job_id=job_id,
+            expected_revision=4,
+            status="completed",
+            phase="completed",
+            reason="delivered",
+            confirmation=f"关闭 {job_id}",
+        )
+        reopened = service.design_job_reopen(
+            job_id=job_id,
+            expected_revision=4,
+            phase="requirements",
+            reason="follow-up",
+            confirmation=f"重开 {job_id}",
+        )
+        repaired = service.design_job_repair(
+            job_id=job_id,
+            expected_revision=4,
+            doctor_receipt_sha256="a" * 64,
+            reason="republish manifest",
+            confirmation=f"修复 {job_id}",
+        )
+
+        self.assertEqual(closed["schema_version"], "MechanicalDesignJob/v1")
+        self.assertEqual(reopened["schema_version"], "MechanicalDesignJob/v1")
+        self.assertEqual(repaired["schema_version"], "MechanicalDesignJobRepair/v1")
+        self.assertEqual(
+            DesignJobRepairResult.from_dict(repaired).as_dict(), repaired
+        )
+        repair = [item for item in service.design_jobs.calls if item[0] == "repair"]
+        self.assertEqual(repair[0][1]["expected_revision"], 4)
+        self.assertEqual([name for name, _ in service.design_jobs.calls], [
+            "close", "reopen", "repair"
+        ])
+
+    def test_job_confirmation_is_one_exact_canonical_phrase(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        for confirmation in (
+            f"不关闭 {job_id}",
+            f"关闭 {job_id} now",
+            f"关闭 {job_id} {job_id}",
+            f"关闭 {job_id}x",
+            f"关闭 JOB-20260823-401",
+        ):
+            with self.assertRaisesRegex(ValueError, "canonical"):
+                service.design_job_close(
+                    job_id=job_id,
+                    expected_revision=4,
+                    status="completed",
+                    phase="completed",
+                    reason="delivered",
+                    confirmation=confirmation,
+                )
+        service.design_job_close(
+            job_id=job_id.upper(),
+            expected_revision=4,
+            status="completed",
+            phase="completed",
+            reason="delivered",
+            confirmation=f"关闭\t{job_id.upper()}",
+        )
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["close"])
+
+    def test_source_files_return_a_stable_governed_next_action(self) -> None:
+        service = self._service()
+        response = service.design_job_create(
+            job_type="mechanical_design", title="Pump", organization_id="org-configured",
+            design_group_id="group-configured", family_id=None, idempotency_token="source-001",
+            source_files=["input.FCStd"],
+        )
+        self.assertEqual(response["schema_version"], "MechanicalDesignJobSourceBinding/v1")
+        self.assertEqual(response["status"], "staged")
+        self.assertEqual(response["job"]["job_id"], service.design_jobs.manifest.job_id)
+        self.assertEqual(response["source_file_count"], 1)
+        self.assertEqual(response["next_action"], "design_job_working_copy_create")
+        self.assertEqual(
+            response["next_action_arguments"],
+            {
+                "job_id": service.design_jobs.manifest.job_id,
+                "expected_job_revision": 4,
+                "organization_id": "org-configured",
+                "design_group_id": "group-configured",
+                "family_id": None,
+                "model_revision_id": None,
+            },
+        )
+        self.assertEqual(response["required_arguments"], ["source_path"])
+        self.assertNotIn("input.FCStd", str(response))
+        self.assertEqual([name for name, _ in service.design_jobs.calls], ["create"])
+
+    def test_source_files_reject_unsupported_job_type_count_and_shape_before_create(self) -> None:
+        cases = (
+            ("product_family_onboarding", ["input.FCStd"], "JOB_SOURCE_FILES_UNSUPPORTED_JOB_TYPE"),
+            ("mechanical_design", ["one.FCStd", "two.step"], "JOB_SOURCE_FILES_COUNT_INVALID"),
+            ("mechanical_design", [""], "JOB_SOURCE_FILE_INVALID"),
+            ("mechanical_design", ["not-cad.txt"], "JOB_SOURCE_FILE_INVALID"),
+        )
+        for job_type, source_files, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                service = self._service()
+                with self.assertRaises(JobFailure) as captured:
+                    service.design_job_create(
+                        job_type=job_type,
+                        title="Source validation",
+                        organization_id="org-configured",
+                        design_group_id="group-configured",
+                        family_id=None,
+                        idempotency_token=f"source-{expected_code}",
+                        source_files=source_files,
+                    )
+                self.assertEqual(captured.exception.code, expected_code)
+                self.assertEqual(service.design_jobs.calls, [])
+
+    def test_v2_working_copy_methods_require_job_revision_and_configured_scope(self) -> None:
+        service = self._service()
+        calls: list[tuple[str, dict[str, object]]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(("existing", kwargs)) or {"ok": True},
+            create_job_new_working_copy=lambda **kwargs: calls.append(("new", kwargs)) or {"ok": True},
+        )
+        job_id = "00000000-0000-4000-8000-000000000401"
+
+        service.design_job_working_copy_create(
+            job_id=job_id,
+            expected_job_revision=4,
+            source_path="source.FCStd",
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id=None,
+            model_revision_id=None,
+        )
+        service.design_job_new_working_copy_create(
+            job_id=job_id,
+            expected_job_revision=4,
+            organization_id="org-configured",
+            design_group_id="group-configured",
+            family_id=None,
+        )
+
+        self.assertEqual([name for name, _ in calls], ["existing", "new"])
+        self.assertEqual(calls[0][1]["job_id"], job_id)
+        self.assertEqual(calls[0][1]["expected_job_revision"], 4)
+        self.assertEqual(calls[0][1]["actor_id"], "configured-actor")
+        with self.assertRaisesRegex(PermissionError, "configured organization"):
+            service.design_job_new_working_copy_create(
+                job_id=job_id,
+                expected_job_revision=4,
+                organization_id="foreign",
+                design_group_id="group-configured",
+            )
+
+    def test_v02_compatibility_job_identity_is_scoped_request_bound_and_not_global(self) -> None:
+        manager = _JobManagerForService()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(kwargs) or {"ok": True}
+        )
+        common = {
+            "source_path": "models/Unicode pump.FCStd",
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "family_id": "family-a",
+            "model_revision_id": "revision-a",
+        }
+        service.design_working_copy_create(**common, compatibility_request_id="request-a")
+        token_a = manager.calls[-1][1]["idempotency_token"]
+        service.design_working_copy_create(**common, compatibility_request_id="request-b")
+        token_b = manager.calls[-1][1]["idempotency_token"]
+        service.design_working_copy_create(
+            **{**common, "family_id": "family-b"},
+            compatibility_request_id="request-a",
+        )
+        token_family = manager.calls[-1][1]["idempotency_token"]
+
+        self.assertNotEqual(token_a, token_b)
+        self.assertNotEqual(token_a, token_family)
+        self.assertNotIn(str(common["source_path"]), str(token_a))
+        self.assertEqual(len(calls), 3)
+
+        foreign_manager = _JobManagerForService()
+        foreign = self._service(foreign_manager)
+        foreign.bootstrap_config = {
+            "organization_id": "org-other",
+            "design_group_id": "group-other",
+        }
+        foreign.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: {"ok": True}
+        )
+        foreign.design_working_copy_create(
+            source_path=str(common["source_path"]),
+            organization_id="org-other",
+            design_group_id="group-other",
+            family_id="family-a",
+            model_revision_id="revision-a",
+            compatibility_request_id="request-a",
+        )
+        self.assertNotEqual(
+            token_a,
+            foreign_manager.calls[-1][1]["idempotency_token"],
+        )
+
+    def test_v02_new_design_uses_distinct_jobs_unless_explicit_retry_identity_matches(self) -> None:
+        manager = _JobManagerForService()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_new_working_copy=lambda **kwargs: calls.append(kwargs) or {"ok": True}
+        )
+        common = {
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+        }
+        service.design_new_working_copy_create(**common)
+        first = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(**common)
+        second = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(
+            **common, compatibility_request_id="safe-retry"
+        )
+        retry_one = manager.calls[-1][1]["idempotency_token"]
+        service.design_new_working_copy_create(
+            **common, compatibility_request_id="safe-retry"
+        )
+        retry_two = manager.calls[-1][1]["idempotency_token"]
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(retry_one, retry_two)
+        self.assertEqual(len(calls), 4)
+
+    def test_v02_retry_returns_the_scoped_existing_binding_without_rebinding(self) -> None:
+        working_id = "50000000-0000-4000-8000-000000000001"
+
+        class RetryManager(_JobManagerForService):
+            def create(self, **kwargs: object) -> _JobManifestForService:
+                self.calls.append(("create", kwargs))
+                if len(self.calls) == 1:
+                    return _JobManifestForService()
+                return _JobManifestForService(
+                    active_working_copy_id=working_id
+                )
+
+        manager = RetryManager()
+        service = self._service(manager)
+        calls: list[dict[str, object]] = []
+        service.design_workspace = SimpleNamespace(
+            create_job_working_copy=lambda **kwargs: calls.append(kwargs) or {"id": working_id}
+        )
+        kwargs = {
+            "source_path": "source.FCStd",
+            "organization_id": "org-configured",
+            "design_group_id": "group-configured",
+            "model_revision_id": "revision-a",
+            "compatibility_request_id": "retry-a",
+        }
+        service.design_working_copy_create(**kwargs)
+        retried = service.design_working_copy_create(**kwargs)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(retried["id"], working_id)
+        self.assertEqual(retried["status"], "already_bound")
+
+    def test_repair_returns_only_the_exact_repair_wrapper(self) -> None:
+        service = self._service()
+        job_id = "00000000-0000-4000-8000-000000000401"
+        response = service.design_job_repair(
+            job_id=job_id, expected_revision=4, doctor_receipt_sha256="a" * 64,
+            reason="exact service wrapper", confirmation=f"修复 {job_id}",
+        )
+
+        self.assertEqual(set(response), {"schema_version", "job", "audit"})
+        self.assertEqual(response["schema_version"], "MechanicalDesignJobRepair/v1")
+        self.assertEqual(response["job"]["schema_version"], "MechanicalDesignJob/v1")
+        self.assertNotIn("repair_audit", response["job"])
+        self.assertEqual(
+            DesignJobRepairResult.from_dict(response).as_dict(), response
         )
 
 

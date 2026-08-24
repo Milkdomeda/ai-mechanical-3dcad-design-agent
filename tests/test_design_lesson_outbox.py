@@ -17,6 +17,8 @@ class RecordingConnection:
 
     def execute(self, query: str, parameters: tuple):
         self.calls.append((query, parameters))
+        if "SELECT w.job_id FROM design_lesson_events" in query:
+            return QueryRows([{"job_id": "job-42"}])
         if "COALESCE(max(aggregate_version),0)+1" in query:
             return QueryRows([{"aggregate_version": 1}])
         return QueryRows()
@@ -144,13 +146,17 @@ class DesignLessonOutboxTests(unittest.TestCase):
             lesson_id="lesson-42",
         )
 
-        self.assertEqual(len(connection.calls), 3)
-        self.assertIn("pg_advisory_xact_lock", connection.calls[0][0])
-        self.assertIn("max(aggregate_version)", connection.calls[1][0])
-        query, parameters = connection.calls[2]
+        self.assertEqual(len(connection.calls), 4)
+        self.assertIn("SELECT w.job_id", connection.calls[0][0])
+        self.assertIn("pg_advisory_xact_lock", connection.calls[1][0])
+        self.assertIn("max(aggregate_version)", connection.calls[2][0])
+        query, parameters = connection.calls[3]
         self.assertIn("INSERT INTO outbox_events", query)
         self.assertEqual(parameters[:3], ("design_lesson", "lesson-42", "design_lesson.superseded"))
-        self.assertEqual(json.loads(parameters[3]), {"lesson_id": "lesson-42"})
+        self.assertEqual(
+            json.loads(parameters[3]),
+            {"lesson_id": "lesson-42", "job_id": "job-42"},
+        )
         self.assertEqual(parameters[4], 1)
 
     def test_produced_lesson_payload_is_consumed_by_authoritative_projection_read(self) -> None:

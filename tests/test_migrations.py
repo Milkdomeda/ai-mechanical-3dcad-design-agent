@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import os
+import shutil
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import unittest
@@ -75,6 +77,172 @@ def test_snapshot_compatibility_migration_drops_round2_constraints():
     sql = _migration_text("008_drop_legacy_snapshot_constraints.sql")
     assert "DROP CONSTRAINT IF EXISTS design_working_copies_delivery_artifact_check" in sql
     assert "DROP CONSTRAINT IF EXISTS design_lesson_reviews_approved_artifact_check" in sql
+
+
+def test_design_jobs_migration_has_authoritative_lifecycle_and_event_history():
+    sql = _migration_text("010_design_jobs.sql")
+    normalized = " ".join(sql.split())
+
+    assert "CREATE TABLE IF NOT EXISTS design_jobs" in sql
+    assert "id uuid PRIMARY KEY" in sql
+    assert "workspace_id uuid NOT NULL" in sql
+    assert "UNIQUE(workspace_id,idempotency_token)" in sql
+    assert "UNIQUE(workspace_id,display_id)" in sql
+    assert "revision integer NOT NULL DEFAULT 0" in sql
+    assert "job_type IN ('mechanical_design','product_family_onboarding')" in sql
+    assert "status IN ('active','blocked','completed','cancelled','archived')" in sql
+    assert "phase IN ( 'requirements','design','validation','delivery','lesson_capture','completed' )" in normalized
+    assert "phase IN ( 'intake','analysis','knowledge_review','database_publication','completed' )" in normalized
+    assert "provisioning_state text NOT NULL DEFAULT 'provisioning'" in sql
+    assert "provisioning_state IN ('provisioning','ready')" in sql
+    assert "directory_name IS NOT NULL OR provisioning_state = 'provisioning'" in sql
+    assert "UNIQUE(id,organization_id)" in sql
+    assert "UNIQUE(id,organization_id,design_group_id)" in sql
+    assert "FOREIGN KEY (design_group_id,organization_id)" in sql
+    assert "FOREIGN KEY (family_id,organization_id,design_group_id)" in sql
+    assert "FOREIGN KEY (created_by,organization_id)" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_jobs_scope_idx" in sql
+    assert "CREATE TABLE IF NOT EXISTS design_job_events" in sql
+    assert "job_id uuid NOT NULL REFERENCES design_jobs(id)" in sql
+    assert "UNIQUE(job_id,revision)" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_job_events_job_idx" in sql
+    assert "CREATE TRIGGER design_job_events_append_only" in sql
+    assert "BEFORE UPDATE OR DELETE ON design_job_events" in sql
+
+
+def test_design_jobs_migration_keeps_the_task2_immutable_digest():
+    migration = _migration_bytes("010_design_jobs.sql")
+
+    assert hashlib.sha256(migration).hexdigest() == (
+        "9e6782549cb7292ec2367541bb51e393db1dffda1193f53fadb71e4bcdf1e154"
+    )
+    assert b"display_id ~" not in migration
+
+
+def test_design_job_working_copy_migration_is_additive_scoped_and_authoritative():
+    sql = _migration_text("011_design_job_working_copies.sql")
+    normalized = " ".join(sql.split())
+
+    assert "ALTER TABLE design_working_copies ADD COLUMN IF NOT EXISTS job_id uuid" in normalized
+    assert "ALTER TABLE design_jobs ADD COLUMN IF NOT EXISTS active_working_copy_id uuid" in normalized
+    assert "CREATE TABLE IF NOT EXISTS design_job_source_snapshots" in sql
+    assert "job_id uuid NOT NULL" in sql
+    assert "source_filename text NOT NULL" in sql
+    assert "stored_path text NOT NULL" in sql
+    assert "source_model_revision_id uuid" in sql
+    assert "sha256 char(64) NOT NULL" in sql
+    assert "FOREIGN KEY (job_id,organization_id,design_group_id)" in normalized
+    assert "CONSTRAINT design_working_copies_model_scope_fk" in normalized
+    assert "CONSTRAINT design_working_copies_family_scope_fk" in normalized
+    assert "CONSTRAINT design_working_copies_creator_scope_fk" in normalized
+    assert "FOREIGN KEY (active_working_copy_id,id,organization_id,design_group_id)" in normalized
+    assert "CREATE INDEX IF NOT EXISTS design_working_copies_job_idx" in sql
+    assert "CREATE INDEX IF NOT EXISTS design_job_source_snapshots_job_idx" in sql
+    assert "reject_legacy_null_job_working_copy_insert" in sql
+    assert "design_job_source_snapshots_append_only" in sql
+    assert "BEFORE UPDATE OR DELETE ON design_job_source_snapshots" in normalized
+
+
+def test_design_job_working_copy_migration_has_the_task6_immutable_digest():
+    migration = _migration_bytes("011_design_job_working_copies.sql")
+
+    assert hashlib.sha256(migration).hexdigest() == (
+        "3017f69d5f55efb325ff2b1baca281a072a69f8054708fbb499cd3cc5c19cb52"
+    )
+
+
+def test_design_job_binding_hardening_migration_binds_exact_snapshot_and_revision():
+    sql = _migration_text("012_design_job_binding_hardening.sql")
+    normalized = " ".join(sql.split())
+
+    assert "ADD COLUMN IF NOT EXISTS source_snapshot_id uuid" in normalized
+    assert "ADD COLUMN IF NOT EXISTS bound_job_revision integer" in normalized
+    assert "design_job_source_snapshots_binding_scope_unique" in sql
+    assert (
+        "FOREIGN KEY (source_snapshot_id,job_id,organization_id,design_group_id)"
+        in normalized
+    )
+    assert "design_working_copies_governed_binding_check" in sql
+    assert "design_origin = 'existing_model' AND source_snapshot_id IS NOT NULL" in normalized
+    assert "design_origin = 'new_design' AND source_snapshot_id IS NULL" in normalized
+    assert "reject_governed_working_copy_job_rebinding" in sql
+    assert "mechanical_design.allow_legacy_working_copy_binding" in sql
+    assert "OLD.job_id IS DISTINCT FROM NEW.job_id" in normalized
+    assert "conrelid = 'public.design_working_copies'::regclass" in normalized
+    assert hashlib.sha256(sql.encode("utf-8")).hexdigest() == (
+        "be0c9bf1f13568c9f30ae1ef49d7813e59660e4189c736a98aa83581a0d02bb0"
+    )
+
+
+def test_design_job_binding_security_migration_persists_working_evidence_and_immutability():
+    sql = _migration_text("013_design_job_binding_security.sql")
+    normalized = " ".join(sql.split())
+
+    for column in (
+        "working_sha256 char(64)",
+        "working_size_bytes bigint",
+        "working_relative_path text",
+    ):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in normalized
+    assert "mechanical_design.allow_legacy_working_copy_binding" not in sql
+    assert "legacy working-copy Job binding is immutable" in sql
+    for field in (
+        "id",
+        "organization_id",
+        "design_group_id",
+        "family_id",
+        "source_kind",
+        "design_origin",
+        "working_path",
+        "created_by",
+        "working_sha256",
+        "working_size_bytes",
+        "working_relative_path",
+        "created_at",
+        "source_snapshot_id",
+        "bound_job_revision",
+    ):
+        assert f"OLD.{field} IS DISTINCT FROM NEW.{field}" in normalized
+    assert "VALIDATE CONSTRAINT design_working_copies_job_scope_fk_v2" in normalized
+    assert "VALIDATE CONSTRAINT design_working_copies_model_scope_fk_v2" in normalized
+    for constraint in (
+        "design_working_copies_job_scope_fk_v2",
+        "design_working_copies_model_scope_fk_v2",
+        "design_working_copies_family_scope_fk_v2",
+        "design_working_copies_creator_scope_fk_v2",
+        "design_jobs_active_working_copy_scope_fk_v2",
+    ):
+        assert constraint in sql
+    assert hashlib.sha256(sql.encode("utf-8")).hexdigest() == (
+        "13ec0b965d0ec7f8c372edebc1c54194a9523d7fb42a4c2ade602f5289e33eba"
+    )
+
+
+def test_design_job_binding_hardening_migration_has_the_committed_task6_digest():
+    migration = _migration_bytes("012_design_job_binding_hardening.sql")
+
+    assert hashlib.sha256(migration).hexdigest() == (
+        "be0c9bf1f13568c9f30ae1ef49d7813e59660e4189c736a98aa83581a0d02bb0"
+    )
+
+
+def test_database_with_task2_010_digest_skips_the_unchanged_migration():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        name = "010_design_jobs.sql"
+        (root / name).write_bytes(_migration_bytes(name))
+        connection = _Connection()
+        connection.migrations[10] = {
+            "filename": name,
+            "sha256": "9e6782549cb7292ec2367541bb51e393db1dffda1193f53fadb71e4bcdf1e154",
+        }
+        repository = PostgresRepository("postgresql://unused")
+        repository.connection = lambda: connection  # type: ignore[method-assign]
+
+        result = repository.apply_migrations(root)
+
+    assert result == {"applied": [], "skipped": [name]}
+    assert connection.executed_sql == []
 
 
 def test_database_with_round2_007_digest_skips_it_and_applies_008():
@@ -223,6 +391,11 @@ class MigrationTests(unittest.TestCase):
                     "007_review_immutable_snapshots.sql",
                     "008_drop_legacy_snapshot_constraints.sql",
                     "009_design_lifecycle_closure.sql",
+                    "010_design_jobs.sql",
+                    "011_design_job_working_copies.sql",
+                    "012_design_job_binding_hardening.sql",
+                    "013_design_job_binding_security.sql",
+                    "014_design_job_knowledge.sql",
                 ],
             )
 
@@ -477,6 +650,159 @@ class MigrationTests(unittest.TestCase):
 
 
 class LiveMigrationConcurrencyTests(unittest.TestCase):
+    @unittest.skipUnless(
+        os.environ.get("MECH_DESIGN_DATABASE_URL"),
+        "MECH_DESIGN_DATABASE_URL is not configured; live 010-013 upgrade skipped",
+    )
+    def test_upgrade_010_legacy_rows_through_011_012_013_preserves_and_hardens_bindings(self) -> None:
+        import psycopg
+        from psycopg import sql
+        from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+        admin_dsn = os.environ["MECH_DESIGN_DATABASE_URL"]
+        database_name = f"task6_upgrade_{uuid.uuid4().hex}"
+        config = conninfo_to_dict(admin_dsn)
+        database_dsn = make_conninfo(**{**config, "dbname": database_name})
+        with psycopg.connect(admin_dsn, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+            )
+        try:
+            repository = PostgresRepository(database_dsn)
+            with tempfile.TemporaryDirectory() as temporary:
+                first = Path(temporary) / "through-010"
+                later = Path(temporary) / "011-013"
+                first.mkdir()
+                later.mkdir()
+                with postgres_migrations_directory() as migrations:
+                    paths = discover_postgres_migrations(migrations)
+                    for path in paths[:10]:
+                        shutil.copy2(path, first / path.name)
+                    for path in paths[10:13]:
+                        shutil.copy2(path, later / path.name)
+                repository.apply_migrations(first)
+
+                legacy_id = str(uuid.uuid4())
+                with repository.connection() as connection, connection.transaction():
+                    connection.execute(
+                        "INSERT INTO organizations(id,name) VALUES ('upgrade-org','Upgrade')"
+                    )
+                    connection.execute(
+                        "INSERT INTO design_groups(id,organization_id,name) "
+                        "VALUES ('upgrade-group','upgrade-org','Upgrade group')"
+                    )
+                    connection.execute(
+                        "INSERT INTO actors(id,organization_id,display_name,role) "
+                        "VALUES ('upgrade-owner','upgrade-org','Owner','family_owner')"
+                    )
+                    connection.execute(
+                        "INSERT INTO design_working_copies(id,organization_id,design_group_id,"
+                        "source_sha256,source_kind,design_origin,working_path,created_by) "
+                        "VALUES (%s,'upgrade-org','upgrade-group',%s,'legacy','existing_model',"
+                        "'legacy/working.FCStd','upgrade-owner')",
+                        (legacy_id, "a" * 64),
+                    )
+
+                repository.apply_migrations(later)
+                with repository.connection() as connection:
+                    legacy = connection.execute(
+                        "SELECT job_id,source_snapshot_id,bound_job_revision FROM "
+                        "design_working_copies WHERE id=%s",
+                        (legacy_id,),
+                    ).fetchone()
+                self.assertEqual(dict(legacy), {
+                    "job_id": None,
+                    "source_snapshot_id": None,
+                    "bound_job_revision": None,
+                })
+
+                with self.assertRaises(Exception) as null_insert:
+                    with repository.connection() as connection, connection.transaction():
+                        connection.execute(
+                            "INSERT INTO design_working_copies(organization_id,design_group_id,"
+                            "source_sha256,source_kind,design_origin,working_path,created_by) "
+                            "VALUES ('upgrade-org','upgrade-group',%s,'new_design_seed','new_design',"
+                            "'new/null.FCStd','upgrade-owner')",
+                            ("b" * 64,),
+                        )
+                self.assertIn("require job_id", str(null_insert.exception))
+
+                job_ids = (str(uuid.uuid4()), str(uuid.uuid4()))
+                ready_jobs = []
+                for index, job_id in enumerate(job_ids):
+                    created = repository.create_design_job(
+                        job_id=job_id,
+                        workspace_id=str(uuid.uuid4()),
+                        display_date="2026-08-23",
+                        job_type="mechanical_design",
+                        title=f"Upgrade governed {index}",
+                        slug=f"upgrade-governed-{index}",
+                        organization_id="upgrade-org",
+                        design_group_id="upgrade-group",
+                        family_id=None,
+                        idempotency_token=f"upgrade-{index}",
+                        actor_id="upgrade-owner",
+                    )
+                    ready_jobs.append(repository.record_design_job_directory(
+                        job_id=job_id,
+                        organization_id="upgrade-org",
+                        design_group_id="upgrade-group",
+                        expected_revision=int(created["revision"]),
+                        directory_name=f"{created['display_id']}-{created['slug']}",
+                        actor_id="upgrade-owner",
+                    ))
+                with self.assertRaises(Exception) as bypassed_legacy_binding:
+                    with repository.connection() as connection, connection.transaction():
+                        connection.execute(
+                            "SET LOCAL mechanical_design.allow_legacy_working_copy_binding = 'on'"
+                        )
+                        connection.execute(
+                            "UPDATE design_working_copies SET job_id=%s WHERE id=%s",
+                            (job_ids[0], legacy_id),
+                        )
+                self.assertIn(
+                    "legacy working-copy Job binding is immutable",
+                    str(bypassed_legacy_binding.exception),
+                )
+                working_id = str(uuid.uuid4())
+                published = repository.create_job_working_copy(
+                    job_id=job_ids[0],
+                    expected_job_revision=int(ready_jobs[0]["revision"]),
+                    organization_id="upgrade-org",
+                    design_group_id="upgrade-group",
+                    family_id=None,
+                    working_copy_id=working_id,
+                    model_revision_id=None,
+                    source_sha256="c" * 64,
+                    source_kind="new_design_seed",
+                    design_origin="new_design",
+                    working_path=f"models/working/{working_id}/working.FCStd",
+                    working_sha256="d" * 64,
+                    working_size_bytes=101,
+                    working_relative_path=f"models/working/{working_id}/working.FCStd",
+                    actor_id="upgrade-owner",
+                    source_snapshot=None,
+                )
+                self.assertEqual(
+                    int(published["working_copy"]["bound_job_revision"]),
+                    int(ready_jobs[0]["revision"]),
+                )
+                self.assertIsNone(published["working_copy"]["source_snapshot_id"])
+                with self.assertRaises(Exception) as rebound:
+                    with repository.connection() as connection, connection.transaction():
+                        connection.execute(
+                            "UPDATE design_working_copies SET job_id=%s WHERE id=%s",
+                            (job_ids[1], working_id),
+                        )
+                self.assertIn("provenance is immutable", str(rebound.exception))
+        finally:
+            with psycopg.connect(admin_dsn, autocommit=True) as connection:
+                connection.execute(
+                    sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                        sql.Identifier(database_name)
+                    )
+                )
+
     @unittest.skipUnless(
         os.environ.get("MECH_DESIGN_DATABASE_URL"),
         "MECH_DESIGN_DATABASE_URL is not configured; live migration race skipped",

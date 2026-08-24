@@ -2,22 +2,25 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+import os
 from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
+import tempfile
 from typing import Protocol
 
 from .secure_fs import (
     FileIdentity,
     SecureFilesystemError,
+    read_managed_file,
     validate_managed_path,
 )
 
 
 _FREECAD_VERSION = re.compile(r"\bFreeCAD(?:Cmd)?\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b", re.IGNORECASE)
 _AMD64_MACHINE = 0x8664
-CERTIFIED_FREECADCMD_VERSIONS = frozenset({"1.1.1", "1.1.3"})
+CERTIFIED_FREECADCMD_VERSIONS = frozenset({"1.1.3"})
 
 
 class FreeCADDiscoveryError(ValueError):
@@ -44,6 +47,7 @@ class FreeCADCandidate:
     source: str
     identity: FileIdentity
     version: str
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,7 +143,7 @@ def _candidate_paths(
     if program_files_value:
         program_files = Path(program_files_value)
         if _windows_absolute(program_files):
-            for directory in ("FreeCAD 1.1", "FreeCAD 1.1.1", "FreeCAD 1.1.3"):
+            for directory in ("FreeCAD 1.1.3",):
                 result.append(
                     (
                         program_files / directory / "bin" / "FreeCADCmd.exe",
@@ -185,22 +189,42 @@ def _require_x64_pe(path: Path) -> None:
 
 
 def run_freecad_version(path: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(path), "--version"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=5,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="mechanical-design-freecad-probe-") as temporary:
+        controlled = Path(temporary)
+        environment = {
+            "HOME": str(controlled),
+            "TMPDIR": str(controlled),
+            "TMP": str(controlled),
+            "TEMP": str(controlled),
+            "USERPROFILE": str(controlled),
+            "PATH": os.defpath,
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
+            value = os.environ.get(key)
+            if value:
+                environment[key] = value
+        return subprocess.run(
+            [str(path), "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+            check=False,
+            cwd=controlled,
+            env=environment,
+        )
 
 
-def validate_freecadcmd(
+def _validate_freecadcmd_candidate(
     path: Path,
     *,
     source: str,
     run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+    require_x64_pe: bool,
+    expected_sha256: str,
 ) -> FreeCADCandidate:
     requested = Path(path).expanduser()
     if not requested.is_absolute():
@@ -213,14 +237,43 @@ def validate_freecadcmd(
     except (OSError, SecureFilesystemError) as exc:
         raise FreeCADDiscoveryError(
             getattr(exc, "code", "FREECADCMD_PATH_INVALID"),
-            "FreeCADCmd path is not a safe local fixed NTFS executable",
+            "FreeCADCmd path is not a safe local fixed executable",
         ) from exc
     if managed.identity is None or not managed.path.is_file():
         raise FreeCADDiscoveryError(
             "FREECADCMD_EXECUTABLE_INVALID",
-            "FreeCADCmd must be a regular 64-bit Windows PE executable",
+            "FreeCADCmd must be a regular local executable",
         )
-    _require_x64_pe(managed.path)
+    try:
+        before = read_managed_file(managed.path)
+    except SecureFilesystemError as exc:
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd must be an exclusively owned regular executable",
+        ) from exc
+    if (
+        before.identity != managed.identity
+        or before.link_count != 1
+        or before.sha256 != expected_sha256
+    ):
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd identity or ownership is unsafe",
+        )
+    if require_x64_pe:
+        _require_x64_pe(managed.path)
+    try:
+        invocation_pin = read_managed_file(managed.path)
+    except SecureFilesystemError as exc:
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd changed before its version probe",
+        ) from exc
+    if invocation_pin != before:
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd changed before its version probe",
+        )
     try:
         result = run_version(managed.path)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -240,11 +293,58 @@ def validate_freecadcmd(
             "FREECADCMD_VERSION_INVALID",
             "FreeCADCmd returned no parseable version",
         )
+    try:
+        after = read_managed_file(managed.path)
+    except SecureFilesystemError as exc:
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd changed during its version probe",
+        ) from exc
+    if after.identity != before.identity or after.sha256 != before.sha256:
+        raise FreeCADDiscoveryError(
+            "FREECADCMD_EXECUTABLE_INVALID",
+            "FreeCADCmd changed during its version probe",
+        )
     return FreeCADCandidate(
         path=managed.path,
         source=source,
         identity=managed.identity,
         version=match.group(1),
+        sha256=before.sha256,
+    )
+
+
+def validate_freecadcmd(
+    path: Path,
+    *,
+    source: str,
+    run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+    expected_sha256: str,
+) -> FreeCADCandidate:
+    """Validate the Windows FreeCADCmd executable and capture its exact version."""
+    return _validate_freecadcmd_candidate(
+        path,
+        source=source,
+        run_version=run_version,
+        require_x64_pe=True,
+        expected_sha256=expected_sha256,
+    )
+
+
+def validate_local_freecadcmd(
+    path: Path,
+    *,
+    source: str,
+    run_version: Callable[[Path], subprocess.CompletedProcess[str]],
+    expected_sha256: str,
+) -> FreeCADCandidate:
+    """Validate a non-Windows local FreeCADCmd and capture its exact version."""
+    return _validate_freecadcmd_candidate(
+        path,
+        source=source,
+        run_version=run_version,
+        require_x64_pe=False,
+        expected_sha256=expected_sha256,
     )
 
 
@@ -259,19 +359,29 @@ def discover_freecadcmd(
     inspect_candidate: Callable[
         [Path, str, Callable[[Path], subprocess.CompletedProcess[str]]],
         FreeCADCandidate,
-    ] = lambda path, source, runner: validate_freecadcmd(
-        path, source=source, run_version=runner
-    ),
+    ] | None = None,
 ) -> FreeCADDiscoveryResult:
     candidates: list[FreeCADCandidate] = []
     identities: set[FileIdentity] = set()
+    expected_sha256 = environ.get("MECH_DESIGN_FREECADCMD_SHA256", "").strip().lower()
+    if inspect_candidate is None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        return FreeCADDiscoveryResult(selected=None, candidates=(), conflict=False)
     for path, source in _candidate_paths(
         environ=environ,
         registry=registry,
         find_on_path=find_on_path,
     ):
         try:
-            inspected = inspect_candidate(path, source, run_version)
+            inspected = (
+                inspect_candidate(path, source, run_version)
+                if inspect_candidate is not None
+                else validate_freecadcmd(
+                    path,
+                    source=source,
+                    run_version=run_version,
+                    expected_sha256=expected_sha256,
+                )
+            )
         except (FreeCADDiscoveryError, OSError):
             continue
         if inspected.identity in identities:

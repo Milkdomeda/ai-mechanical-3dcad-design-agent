@@ -580,6 +580,7 @@ class Neo4jProjection:
             "WITH l WHERE $force OR coalesce(l.aggregate_version,-1) < $aggregate_version "
             "SET l.lesson_key=$lesson_key,l.title=$title,l.status=$status,"
             "l.organization_id=$organization_id,l.package_sha256=$package_sha256,"
+            "l.job_id=$job_id,"
             "l.aggregate_version=CASE "
             "WHEN coalesce(l.aggregate_version,-1) > $aggregate_version "
             "THEN l.aggregate_version ELSE $aggregate_version END,"
@@ -591,6 +592,7 @@ class Neo4jProjection:
             status=lesson["status"],
             organization_id=lesson["organization_id"],
             package_sha256=lesson["package_sha256"],
+            job_id=lesson.get("job_id"),
             aggregate_version=aggregate_version,
             force=force,
             owner=owner,
@@ -655,7 +657,8 @@ class Neo4jProjection:
             "ON CREATE SET r.aggregate_version=-1 "
             "WITH r WHERE $force OR coalesce(r.aggregate_version,-1) < $aggregate_version "
             "SET r.status=$status,r.working_copy_id=$working_copy_id,"
-            "r.lesson_id=$lesson_id,r.updated_at=datetime($occurred_at),"
+            "r.lesson_id=$lesson_id,r.job_id=$job_id,"
+            "r.updated_at=datetime($occurred_at),"
             "r.aggregate_version=CASE "
             "WHEN coalesce(r.aggregate_version,-1) > $aggregate_version "
             "THEN r.aggregate_version ELSE $aggregate_version END,"
@@ -664,6 +667,7 @@ class Neo4jProjection:
             status=review["status"],
             working_copy_id=str(review["working_copy_id"]),
             lesson_id=str(review["lesson_id"]),
+            job_id=(str(review["job_id"]) if review.get("job_id") else None),
             occurred_at=occurred_at,
             aggregate_version=aggregate_version,
             force=force,

@@ -370,7 +370,12 @@ def _reject_non_finite_json_numbers(value: Any) -> None:
 class DesignLessonStagingStore:
     """Filesystem-only review queue for immutable design-lesson packages."""
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        staging_parts: tuple[str, ...] = _STAGING_PARTS,
+    ) -> None:
         candidate = Path(workspace)
         if candidate.is_symlink():
             raise ValueError("workspace must not be a symlink")
@@ -380,11 +385,21 @@ class DesignLessonStagingStore:
             candidate,
             allow_missing_leaf=False,
         ).path
+        if not staging_parts or any(
+            not isinstance(part, str)
+            or not part
+            or part in {".", ".."}
+            or "/" in part
+            or "\\" in part
+            for part in staging_parts
+        ):
+            raise ValueError("staging_parts must contain safe path components")
+        self._staging_parts = tuple(staging_parts)
 
     @property
     def staging_root(self) -> Path:
         current = self.workspace
-        for part in _STAGING_PARTS:
+        for part in self._staging_parts:
             current = current / part
             if current.exists() and current.is_symlink():
                 raise ValueError("staging path must not be a symlink")

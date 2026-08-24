@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -9,16 +10,57 @@ from pathlib import Path
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 from typing import Iterator
 
-from .secure_fs import FileIdentity, ManagedPath, SecureFilesystemError
+from .secure_fs import (
+    FileIdentity,
+    ManagedDirectoryEntry,
+    ManagedFileRead,
+    ManagedPath,
+    SecureFilesystemError,
+)
 
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
     os, "O_NOFOLLOW", 0
 )
 _RMTREE_AVOIDS_SYMLINK_ATTACKS = shutil.rmtree.avoids_symlink_attacks
+
+
+def _rename_directory_noreplace(
+    source_parent_fd: int,
+    source_name: str,
+    target_parent_fd: int,
+    target_name: str,
+) -> None:
+    """Use the platform's atomic no-replace rename or fail closed."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source_name)
+    target_bytes = os.fsencode(target_name)
+    if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+        rename = libc.renameatx_np
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_fd, source_bytes, target_parent_fd, target_bytes, 0x00000004
+        )
+    elif hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_fd, source_bytes, target_parent_fd, target_bytes, 0x00000001
+        )
+    else:
+        raise SecureFilesystemError(
+            "MANAGED_ATOMIC_MOVE_UNAVAILABLE",
+            "atomic no-replace directory quarantine is unavailable",
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), target_name)
 
 
 def open_directory_chain(root: Path, parts: tuple[str, ...] = ()) -> int:
@@ -68,6 +110,55 @@ def directory_entry_matches_fd(
         return (pinned.st_dev, pinned.st_ino) == (current.st_dev, current.st_ino)
     finally:
         os.close(current_descriptor)
+
+
+def _entry_matches_fd(
+    parent_fd: int,
+    name: str,
+    expected_descriptor: int,
+    *,
+    directory: bool,
+) -> bool:
+    flags = _DIRECTORY_FLAGS if directory else os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        current_descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError:
+        return False
+    try:
+        pinned = os.fstat(expected_descriptor)
+        current = os.fstat(current_descriptor)
+        return (pinned.st_dev, pinned.st_ino) == (current.st_dev, current.st_ino)
+    finally:
+        os.close(current_descriptor)
+
+
+def _open_pinned_directory_chain(path: Path) -> tuple[Path, list[int]]:
+    canonical = _normalize_top_level_alias(_absolute(path))
+    descriptors = [os.open(os.sep, _DIRECTORY_FLAGS)]
+    try:
+        for component in canonical.parts[1:]:
+            descriptors.append(
+                os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+            )
+        return canonical, descriptors
+    except Exception:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
+def _verify_pinned_directory_chain(canonical: Path, descriptors: list[int]) -> None:
+    for index, component in enumerate(canonical.parts[1:]):
+        if not _entry_matches_fd(
+            descriptors[index],
+            component,
+            descriptors[index + 1],
+            directory=True,
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed directory ancestor changed during pinned operation",
+            )
 
 
 def remove_tree_at(parent_fd: int, child_name: str, *, label: str) -> None:
@@ -185,6 +276,136 @@ def validate_external_read_path(path: Path) -> Path:
         raise SecureFilesystemError(
             "EXTERNAL_PATH_INVALID", "external path cannot be resolved"
         ) from exc
+
+
+def read_managed_file(path: Path) -> ManagedFileRead:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(target.parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed file ancestors cannot be pinned",
+        ) from exc
+    leaf_fd: int | None = None
+    try:
+        leaf_fd = os.open(
+            target.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=descriptors[-1],
+        )
+        metadata = os.fstat(leaf_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT", "managed read target must be a regular file"
+            )
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(leaf_fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, leaf_fd, directory=False
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed file changed during pinned read",
+            )
+        _verify_pinned_directory_chain(parent, descriptors)
+        return ManagedFileRead(
+            content=b"".join(chunks),
+            sha256=digest.hexdigest(),
+            size_bytes=size,
+            identity=FileIdentity(metadata.st_dev, metadata.st_ino),
+            link_count=metadata.st_nlink,
+        )
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed file cannot be read safely",
+        ) from exc
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
+    try:
+        canonical, descriptors = _open_pinned_directory_chain(path)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed directory cannot be pinned for enumeration",
+        ) from exc
+    children: list[tuple[str, bool, int, os.stat_result]] = []
+    owned_child_descriptors: list[int] = []
+    try:
+        for name in sorted(os.listdir(descriptors[-1])):
+            metadata = os.stat(
+                name, dir_fd=descriptors[-1], follow_symlinks=False
+            )
+            if stat.S_ISLNK(metadata.st_mode):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_SYMLINK",
+                    "managed directory entry must not be a symlink",
+                )
+            is_directory = stat.S_ISDIR(metadata.st_mode)
+            if not is_directory and not stat.S_ISREG(metadata.st_mode):
+                raise SecureFilesystemError(
+                    "MANAGED_FILE_CONFLICT",
+                    "managed directory contains an unsupported file type",
+                )
+            flags = (
+                _DIRECTORY_FLAGS
+                if is_directory
+                else os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            child_fd = os.open(name, flags, dir_fd=descriptors[-1])
+            owned_child_descriptors.append(child_fd)
+            opened_metadata = os.fstat(child_fd)
+            if is_directory != stat.S_ISDIR(opened_metadata.st_mode) or (
+                not is_directory and not stat.S_ISREG(opened_metadata.st_mode)
+            ):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    "managed directory entry type changed during enumeration",
+                )
+            children.append((name, is_directory, child_fd, opened_metadata))
+        result: list[ManagedDirectoryEntry] = []
+        for name, is_directory, child_fd, metadata in children:
+            if not _entry_matches_fd(
+                descriptors[-1], name, child_fd, directory=is_directory
+            ):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    "managed directory entry changed during enumeration",
+                )
+            result.append(
+                ManagedDirectoryEntry(
+                    name=name,
+                    is_directory=is_directory,
+                    identity=FileIdentity(metadata.st_dev, metadata.st_ino),
+                )
+            )
+        _verify_pinned_directory_chain(canonical, descriptors)
+        return tuple(result)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed directory cannot be enumerated safely",
+        ) from exc
+    finally:
+        for child_fd in reversed(owned_child_descriptors):
+            os.close(child_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def ensure_managed_directory(
@@ -399,14 +620,63 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
     source_parent_fd = open_directory_chain(staged.parent)
     target_parent_fd = open_directory_chain(target.parent)
     try:
+        _rename_directory_noreplace(
+            source_parent_fd,
+            staged.name,
+            target_parent_fd,
+            target.name,
+        )
+        os.fsync(target_parent_fd)
+    finally:
+        os.close(target_parent_fd)
+        os.close(source_parent_fd)
+
+
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    staged = _absolute(source)
+    target = _managed_target(destination)
+    source_parent_fd = open_directory_chain(staged.parent)
+    target_parent_fd = open_directory_chain(target.parent)
+    source_fd: int | None = None
+    try:
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(target)
+        source_fd = os.open(
+            staged.name,
+            _DIRECTORY_FLAGS,
+            dir_fd=source_parent_fd,
+        )
+        metadata = os.fstat(source_fd)
+        identity = FileIdentity(metadata.st_dev, metadata.st_ino)
+        if identity != expected_identity or not _entry_matches_fd(
+            source_parent_fd, staged.name, source_fd, directory=True
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "pinned directory changed before quarantine",
+            )
         os.rename(
             staged.name,
             target.name,
             src_dir_fd=source_parent_fd,
             dst_dir_fd=target_parent_fd,
         )
+        moved = os.stat(target.name, dir_fd=target_parent_fd, follow_symlinks=False)
+        if FileIdentity(moved.st_dev, moved.st_ino) != expected_identity:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "quarantined directory identity changed",
+            )
+        os.fsync(source_parent_fd)
         os.fsync(target_parent_fd)
     finally:
+        if source_fd is not None:
+            os.close(source_fd)
         os.close(target_parent_fd)
         os.close(source_parent_fd)
 
@@ -429,6 +699,152 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
         remove_tree_at(parent_fd, target.name, label=label)
     finally:
         os.close(parent_fd)
+
+
+def remove_owned_directory_exact(
+    path: Path,
+    *,
+    expected_parent: Path,
+    allowed_files: frozenset[str],
+    label: str,
+) -> None:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(expected_parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            f"{label} cleanup parent cannot be pinned",
+        ) from exc
+    target_fd: int | None = None
+    child_descriptors: list[tuple[str, int, os.stat_result]] = []
+    try:
+        if target.parent != parent:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup target has an unexpected parent",
+            )
+        target_fd = os.open(target.name, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+        target_metadata = os.fstat(target_fd)
+        names = sorted(os.listdir(target_fd))
+        unexpected = [name for name in names if name not in allowed_files]
+        if unexpected:
+            raise SecureFilesystemError(
+                "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                f"{label} has unexpected inventory",
+            )
+        for name in names:
+            metadata = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise SecureFilesystemError(
+                    "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                    f"{label} inventory is not an exclusively owned regular file",
+                )
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=target_fd,
+            )
+            child_descriptors.append((name, child_fd, metadata))
+        for name, child_fd, metadata in child_descriptors:
+            opened = os.fstat(child_fd)
+            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    f"{label} inventory changed during cleanup",
+                )
+            current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise SecureFilesystemError(
+                    "MANAGED_PATH_IDENTITY_CHANGED",
+                    f"{label} inventory changed during cleanup",
+                )
+        for name, _child_fd, _metadata in child_descriptors:
+            os.unlink(name, dir_fd=target_fd)
+        os.fsync(target_fd)
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, target_fd, directory=True
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup root changed",
+            )
+        if os.fstat(target_fd).st_ino != target_metadata.st_ino:
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                f"{label} cleanup root changed",
+            )
+        os.close(target_fd)
+        target_fd = None
+        os.rmdir(target.name, dir_fd=descriptors[-1])
+        os.fsync(descriptors[-1])
+    except FileNotFoundError:
+        return
+    except SecureFilesystemError:
+        raise
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            f"{label} exact cleanup could not complete safely",
+        ) from exc
+    finally:
+        for _name, child_fd, _metadata in reversed(child_descriptors):
+            os.close(child_fd)
+        if target_fd is not None:
+            os.close(target_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def set_managed_file_readonly(path: Path) -> None:
+    target = _normalize_top_level_alias(_absolute(path))
+    try:
+        parent, descriptors = _open_pinned_directory_chain(target.parent)
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_PATH_IDENTITY_CHANGED",
+            "managed read-only target ancestors cannot be pinned",
+        ) from exc
+    leaf_fd: int | None = None
+    try:
+        leaf_fd = os.open(
+            target.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=descriptors[-1],
+        )
+        metadata = os.fstat(leaf_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT",
+                "managed read-only target must be an exclusively owned regular file",
+            )
+        os.fchmod(leaf_fd, stat.S_IMODE(metadata.st_mode) & ~0o222)
+        updated = os.fstat(leaf_fd)
+        if updated.st_mode & 0o222:
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT",
+                "managed file could not be made read-only",
+            )
+        if not _entry_matches_fd(
+            descriptors[-1], target.name, leaf_fd, directory=False
+        ):
+            raise SecureFilesystemError(
+                "MANAGED_PATH_IDENTITY_CHANGED",
+                "managed read-only target changed during mutation",
+            )
+        _verify_pinned_directory_chain(parent, descriptors)
+    except SecureFilesystemError:
+        raise
+    except OSError as exc:
+        raise SecureFilesystemError(
+            "MANAGED_FILE_CONFLICT",
+            "managed file could not be made read-only safely",
+        ) from exc
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _open_source(source: Path, allowed_root: Path | None) -> tuple[int, Path]:

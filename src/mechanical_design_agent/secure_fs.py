@@ -5,6 +5,7 @@ import importlib
 import os
 from pathlib import Path
 from types import ModuleType
+from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,22 @@ class ManagedPath:
     path: Path
     identity: FileIdentity | None
     volume_root: Path
+
+
+@dataclass(frozen=True)
+class ManagedFileRead:
+    content: bytes
+    sha256: str
+    size_bytes: int
+    identity: FileIdentity
+    link_count: int
+
+
+@dataclass(frozen=True)
+class ManagedDirectoryEntry:
+    name: str
+    is_directory: bool
+    identity: FileIdentity
 
 
 class SecureFilesystemError(ValueError, RuntimeError):
@@ -82,6 +99,16 @@ def same_managed_path(left: Path, right: Path) -> bool:
     return managed_left.path == managed_right.path
 
 
+def read_managed_file(path: Path) -> ManagedFileRead:
+    """Read a regular managed file while its ancestors and leaf stay pinned."""
+    return _get_backend().read_managed_file(path)
+
+
+def list_managed_directory(path: Path) -> Sequence[ManagedDirectoryEntry]:
+    """Enumerate one managed directory with stable ancestor and child identities."""
+    return _get_backend().list_managed_directory(path)
+
+
 def ensure_managed_directory(
     path: Path,
     *,
@@ -128,10 +155,43 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
     _get_backend().atomic_publish_directory(source, destination)
 
 
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    """Atomically move one directory only while its receipt-pinned identity matches."""
+    _get_backend().atomic_move_pinned_directory(
+        source, destination, expected_identity=expected_identity
+    )
+
+
 def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
     _get_backend().remove_owned_tree(
         path, expected_parent=expected_parent, label=label
     )
+
+
+def remove_owned_directory_exact(
+    path: Path,
+    *,
+    expected_parent: Path,
+    allowed_files: set[str] | frozenset[str],
+    label: str,
+) -> None:
+    """Remove a flat owned directory only when every descendant is expected."""
+    _get_backend().remove_owned_directory_exact(
+        path,
+        expected_parent=expected_parent,
+        allowed_files=frozenset(allowed_files),
+        label=label,
+    )
+
+
+def set_managed_file_readonly(path: Path) -> None:
+    """Remove write permissions while the regular file and ancestors stay pinned."""
+    _get_backend().set_managed_file_readonly(path)
 
 
 def ingest_cas_file(

@@ -26,6 +26,7 @@ class _SearchConnection:
             {
                 "id": uuid.UUID(int=index + 1),
                 "organization_id": "org",
+                "job_id": uuid.UUID(int=10_000 + index),
                 "lesson_key": f"DL-PAGE-{index:03d}",
                 "revision": 1,
                 "status": "approved",
@@ -38,7 +39,7 @@ class _SearchConnection:
     def execute(self, query: str, parameters=()):
         normalized = " ".join(query.split())
         self.queries.append(normalized)
-        if normalized.startswith("SELECT l.* FROM design_lesson_events l"):
+        if normalized.startswith("SELECT l.*,w.job_id FROM design_lesson_events l"):
             return _Rows(self.candidates)
         if "FROM design_lesson_assertions l JOIN knowledge_assertions a" in normalized:
             return _Rows()

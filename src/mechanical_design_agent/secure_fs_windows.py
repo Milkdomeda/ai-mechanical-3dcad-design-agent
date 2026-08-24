@@ -9,7 +9,13 @@ from pathlib import Path
 import tempfile
 from typing import Any, Iterator
 
-from .secure_fs import FileIdentity, ManagedPath, SecureFilesystemError
+from .secure_fs import (
+    FileIdentity,
+    ManagedDirectoryEntry,
+    ManagedFileRead,
+    ManagedPath,
+    SecureFilesystemError,
+)
 
 
 @dataclass(frozen=True)
@@ -189,6 +195,17 @@ def _handle_facts(handle: Any, api: Win32Api) -> tuple[FileIdentity, int]:
     volume = int(information[4])
     file_index = (int(information[8]) << 32) | int(information[9])
     return FileIdentity(volume, file_index), attributes
+
+
+def _handle_link_count(handle: Any, api: Win32Api) -> int:
+    try:
+        information = api.win32file.GetFileInformationByHandle(handle)
+        return int(information[7])
+    except Exception as exc:
+        raise SecureFilesystemError(
+            "WINDOWS_PATH_IDENTITY_CHANGED",
+            "managed path link count could not be inspected",
+        ) from exc
 
 
 def _close_handle(handle: Any) -> None:
@@ -612,6 +629,37 @@ def atomic_publish_directory(source: Path, destination: Path) -> None:
         _move(staged, target, replace=False, api=api)
 
 
+def atomic_move_pinned_directory(
+    source: Path,
+    destination: Path,
+    *,
+    expected_identity: FileIdentity,
+) -> None:
+    api = load_win32_api()
+    source_lexical = _absolute(source)
+    target_lexical = _absolute(destination)
+    with _pinned_path(
+        source_lexical.parent, allow_missing_leaf=False
+    ) as source_parent, _pinned_path(
+        target_lexical.parent, allow_missing_leaf=False
+    ) as target_parent:
+        staged = source_parent.path / source_lexical.name
+        target = target_parent.path / target_lexical.name
+        if target.exists():
+            raise FileExistsError(target)
+        if _identity(staged, api, directory=True) != expected_identity:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "pinned directory changed before quarantine",
+            )
+        _move(staged, target, replace=False, api=api)
+        if _identity(target, api, directory=True) != expected_identity:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "quarantined directory identity changed",
+            )
+
+
 def _clear_readonly(path: Path, api: Win32Api) -> None:
     attributes = int(api.win32file.GetFileAttributes(str(path)))
     readonly = getattr(api.win32con, "FILE_ATTRIBUTE_READONLY", 0x1)
@@ -619,7 +667,13 @@ def _clear_readonly(path: Path, api: Win32Api) -> None:
         api.win32file.SetFileAttributes(str(path), attributes & ~readonly)
 
 
-def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
+def remove_owned_tree(
+    path: Path,
+    *,
+    expected_parent: Path,
+    label: str,
+    _allowed_files: frozenset[str] | None = None,
+) -> None:
     api = load_win32_api()
     target_lexical = _absolute(path)
     parent_lexical = _absolute(expected_parent)
@@ -646,6 +700,15 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
         ):
             current = Path(current_root)
             _identity(current, api, directory=True)
+            if _allowed_files is not None and (
+                current != target
+                or directory_names
+                or any(name not in _allowed_files for name in file_names)
+            ):
+                raise SecureFilesystemError(
+                    "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                    f"{label} has unexpected inventory",
+                )
             for name in list(directory_names):
                 child = current / name
                 identity, attributes = _entry_facts(
@@ -671,11 +734,29 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
                     directory=False,
                 )
                 is_reparse = bool(attributes & reparse_flag)
+                if _allowed_files is not None and is_reparse:
+                    raise SecureFilesystemError(
+                        "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                        f"{label} inventory contains a reparse point",
+                    )
                 if not is_reparse and _require_regular(child, api) != identity:
                     raise SecureFilesystemError(
                         "WINDOWS_PATH_IDENTITY_CHANGED",
                         f"{label} cleanup target changed",
                     )
+                if not is_reparse:
+                    child_handle, opened_identity, _ = _open_regular_handle(child, api)
+                    try:
+                        if (
+                            opened_identity != identity
+                            or _handle_link_count(child_handle, api) != 1
+                        ):
+                            raise SecureFilesystemError(
+                                "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+                                f"{label} inventory is not exclusively owned",
+                            )
+                    finally:
+                        _close_handle(child_handle)
                 entries.append((child, False, identity, is_reparse))
         for child, is_directory, expected, was_reparse in reversed(entries):
             current_identity, current_attributes = _entry_facts(
@@ -700,6 +781,83 @@ def remove_owned_tree(path: Path, *, expected_parent: Path, label: str) -> None:
                 "WINDOWS_PATH_IDENTITY_CHANGED", f"{label} cleanup root changed"
             )
         target.rmdir()
+
+
+def remove_owned_directory_exact(
+    path: Path,
+    *,
+    expected_parent: Path,
+    allowed_files: frozenset[str],
+    label: str,
+) -> None:
+    target_lexical = _absolute(path)
+    parent_lexical = _absolute(expected_parent)
+    if os.path.normcase(str(target_lexical.parent)) != os.path.normcase(
+        str(parent_lexical)
+    ):
+        raise SecureFilesystemError(
+            "WINDOWS_PATH_IDENTITY_CHANGED",
+            f"{label} cleanup target has an unexpected parent",
+        )
+    try:
+        entries = list_managed_directory(target_lexical)
+    except SecureFilesystemError as exc:
+        cause = exc.__cause__
+        if getattr(cause, "winerror", None) in {2, 3}:
+            return
+        raise
+    if any(entry.is_directory for entry in entries) or any(
+        entry.name not in allowed_files for entry in entries
+    ):
+        raise SecureFilesystemError(
+            "MANAGED_CLEANUP_INVENTORY_MISMATCH",
+            f"{label} has unexpected inventory",
+        )
+    # The Windows backend re-pins every descendant and rejects reparse points
+    # again during removal. Exact inventory is checked before any mutation.
+    remove_owned_tree(
+        target_lexical,
+        expected_parent=parent_lexical,
+        label=label,
+        _allowed_files=allowed_files,
+    )
+
+
+def set_managed_file_readonly(path: Path) -> None:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
+        target = parent.path / lexical.name
+        handle, identity, attributes = _open_regular_handle(target, api)
+        try:
+            if _handle_link_count(handle, api) != 1:
+                raise SecureFilesystemError(
+                    "MANAGED_FILE_CONFLICT",
+                    "managed read-only target must be exclusively owned",
+                )
+            readonly = getattr(api.win32con, "FILE_ATTRIBUTE_READONLY", 0x1)
+            api.win32file.SetFileAttributes(str(target), attributes | readonly)
+            current_identity, current_attributes = _handle_facts(handle, api)
+            _assert_not_reparse(current_attributes, api)
+            if current_identity != identity or _require_regular(target, api) != identity:
+                raise SecureFilesystemError(
+                    "WINDOWS_PATH_IDENTITY_CHANGED",
+                    "managed read-only target changed during mutation",
+                )
+            if not int(api.win32file.GetFileAttributes(str(target))) & readonly:
+                raise SecureFilesystemError(
+                    "MANAGED_FILE_CONFLICT",
+                    "managed file could not be made read-only",
+                )
+        except SecureFilesystemError:
+            raise
+        except Exception as exc:
+            raise SecureFilesystemError(
+                "MANAGED_FILE_CONFLICT",
+                "managed file could not be made read-only safely",
+            ) from exc
+        finally:
+            _close_handle(handle)
 
 
 def _source_path(source: Path, allowed_root: Path | None) -> Path:
@@ -774,6 +932,111 @@ def _open_regular_handle(path: Path, api: Win32Api) -> tuple[Any, FileIdentity, 
     except Exception:
         _close_handle(handle)
         raise
+
+
+def read_managed_file(path: Path) -> ManagedFileRead:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
+        target = parent.path / lexical.name
+        handle, identity, _ = _open_regular_handle(target, api)
+        try:
+            chunks: list[bytes] = []
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                try:
+                    _, chunk = api.win32file.ReadFile(handle, 1024 * 1024)
+                except Exception as exc:
+                    raise SecureFilesystemError(
+                        "WINDOWS_PATH_IDENTITY_CHANGED",
+                        "managed file could not be read through its pinned handle",
+                    ) from exc
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            if _require_regular(target, api) != identity:
+                raise SecureFilesystemError(
+                    "WINDOWS_PATH_IDENTITY_CHANGED",
+                    "managed file changed during pinned read",
+                )
+            return ManagedFileRead(
+                content=b"".join(chunks),
+                sha256=digest.hexdigest(),
+                size_bytes=size,
+                identity=identity,
+                link_count=_handle_link_count(handle, api),
+            )
+        finally:
+            _close_handle(handle)
+
+
+def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical, allow_missing_leaf=False) as pinned:
+        if pinned.identity is None:
+            raise SecureFilesystemError(
+                "WINDOWS_PATH_IDENTITY_CHANGED",
+                "managed directory is missing during enumeration",
+            )
+        held: list[tuple[str, bool, Any, FileIdentity]] = []
+        owned_handles: list[Any] = []
+        reparse_flag = getattr(api.win32con, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        directory_flag = getattr(api.win32con, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+        try:
+            with os.scandir(pinned.path) as discovered:
+                for entry in sorted(discovered, key=lambda item: item.name):
+                    metadata = entry.stat(follow_symlinks=False)
+                    attributes = int(getattr(metadata, "st_file_attributes", 0))
+                    if attributes & reparse_flag:
+                        raise SecureFilesystemError(
+                            "WINDOWS_REPARSE_POINT_BLOCKED",
+                            "managed paths must not contain a reparse point",
+                        )
+                    is_directory = bool(attributes & directory_flag)
+                    child = pinned.path / entry.name
+                    handle = _open_handle(child, api, directory=is_directory)
+                    owned_handles.append(handle)
+                    identity, opened_attributes = _handle_facts(handle, api)
+                    _assert_not_reparse(opened_attributes, api)
+                    if bool(opened_attributes & directory_flag) != is_directory:
+                        raise SecureFilesystemError(
+                            "WINDOWS_PATH_IDENTITY_CHANGED",
+                            "managed directory entry type changed during enumeration",
+                        )
+                    held.append((entry.name, is_directory, handle, identity))
+            result: list[ManagedDirectoryEntry] = []
+            for name, is_directory, _, identity in held:
+                current, attributes = _entry_facts(
+                    pinned.path / name,
+                    api,
+                    directory=is_directory,
+                )
+                _assert_not_reparse(attributes, api)
+                if current != identity:
+                    raise SecureFilesystemError(
+                        "WINDOWS_PATH_IDENTITY_CHANGED",
+                        "managed directory entry changed during enumeration",
+                    )
+                result.append(
+                    ManagedDirectoryEntry(
+                        name=name,
+                        is_directory=is_directory,
+                        identity=identity,
+                    )
+                )
+            if _identity(pinned.path, api, directory=True) != pinned.identity:
+                raise SecureFilesystemError(
+                    "WINDOWS_PATH_IDENTITY_CHANGED",
+                    "managed directory changed during enumeration",
+                )
+            return tuple(result)
+        finally:
+            for handle in reversed(owned_handles):
+                _close_handle(handle)
 
 
 def verify_cas_file(path: Path, expected_sha256: str) -> tuple[str, int]:

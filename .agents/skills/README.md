@@ -1,8 +1,9 @@
 # Project-owned agent skills
 
-This directory contains the agent skills maintained and released by the AI
-Mechanical 3DCAD Design Agent project:
+This directory contains exactly three agent skills maintained and released by
+the AI Mechanical 3DCAD Design Agent project:
 
+- `mechanical-design-job-workspace`
 - `freecad-standard-parts`
 - `freecad-model-validation`
 

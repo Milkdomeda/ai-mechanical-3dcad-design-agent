@@ -346,6 +346,7 @@ def approved_lesson() -> dict:
         "title": "Preserve bearing clearance",
         "status": "approved",
         "organization_id": "organization-1",
+        "job_id": "job-1",
         "package_sha256": "a" * 64,
         "source_model_revision_id": "model-1",
         "assertions": [{
@@ -372,6 +373,7 @@ def review_event(
         "review_id": review_id,
         "status": status,
         "working_copy_id": "working-copy-1",
+        "job_id": "job-1",
         "lesson_id": "lesson-1",
     }
     if published_design_lesson_id is not None:
@@ -567,6 +569,7 @@ class DesignLessonProjectionTests(unittest.TestCase):
                         "review_id": "review-1",
                         "status": status,
                         "working_copy_id": "working-copy-1",
+                        "job_id": "job-1",
                         "lesson_id": "lesson-1",
                         "occurred_at": "2026-08-11T12:00:00Z",
                         "aggregate_version": 1,

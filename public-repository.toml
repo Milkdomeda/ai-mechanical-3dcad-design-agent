@@ -16,8 +16,10 @@ root_files = [
 ]
 
 public_docs = [
+  ".agents/skills/README.md",
   "docs/ARCHITECTURE.md",
   "docs/DATABASE_DEPLOYMENT.md",
+  "docs/DESIGN_JOB_WORKSPACES.md",
   "docs/ENGINEER_LEARNING_PLAYBOOK.md",
   "docs/FREECAD_GUI_MCP_INTEGRATION.md",
   "docs/OPTIONAL_AGENT_WORKFLOWS.md",
@@ -27,7 +29,9 @@ public_docs = [
 ]
 
 source_trees = [
-  ".agents/skills",
+  ".agents/skills/freecad-model-validation",
+  ".agents/skills/freecad-standard-parts",
+  ".agents/skills/mechanical-design-job-workspace",
   "examples/product_families",
   "src/mechanical_design_agent",
 ]
@@ -45,6 +49,7 @@ public_tests = [
   "tests/test_database_deployment.py",
   "tests/test_database_deployment_live.py",
   "tests/test_design.py",
+  "tests/test_design_job_freecad_live.py",
   "tests/test_design_lesson_outbox.py",
   "tests/test_design_lesson_projection.py",
   "tests/test_design_lesson_repository.py",

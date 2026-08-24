@@ -37,11 +37,16 @@ CAD_OR_REPORT_SUFFIXES = {
     ".gif",
     ".pdf",
 }
-PRIVATE_PATH_PARTS = {"output", "knowledge", "vendor", ".env" + ".local"}
+PRIVATE_PATH_PARTS = {"output", "jobs", "knowledge", "vendor", ".env" + ".local"}
 EXPECTED_PUBLIC_CI = (".github/workflows/windows.yml",)
 EXPECTED_PUBLIC_SCRIPTS = (
     "scripts/windows_database_deployment_acceptance.ps1",
     "scripts/windows_release_acceptance.ps1",
+)
+EXPECTED_PROJECT_SKILL_SOURCE_TREES = (
+    ".agents/skills/freecad-model-validation",
+    ".agents/skills/freecad-standard-parts",
+    ".agents/skills/mechanical-design-job-workspace",
 )
 REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/database_deployment_helpers.py",
@@ -69,7 +74,9 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "third-party-components.toml" in manifest.root_files
     assert "compose.yaml" in manifest.root_files
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
+    assert "docs/DESIGN_JOB_WORKSPACES.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
+    assert ".agents/skills/README.md" in manifest.public_docs
     assert all(
         asset.as_posix() in manifest.public_docs
         for asset in PUBLIC_README_ASSETS
@@ -78,9 +85,10 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "tests/test_third_party_licensing.py" in manifest.public_tests
     assert "tests/freecad_gui_mcp_live_helpers.py" in manifest.public_tests
     assert "tests/test_freecad_gui_mcp_integration_live.py" in manifest.public_tests
+    assert "tests/test_design_job_freecad_live.py" in manifest.public_tests
     assert "tests/test_agent_skills.py" in manifest.public_tests
     assert manifest.source_trees == (
-        ".agents/skills",
+        *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
         "examples/product_families",
         "src/mechanical_design_agent",
     )
@@ -96,6 +104,15 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert Path("public-repository.toml") in files
     assert Path("examples/product_families/example-family.json") in files
     assert Path("src/mechanical_design_agent/__init__.py") in files
+    assert Path(".agents/skills/mechanical-design-job-workspace/SKILL.md") in files
+    assert (
+        Path(".agents/skills/mechanical-design-job-workspace/agents/openai.yaml")
+        in files
+    )
+    assert (
+        Path(".agents/skills/mechanical-design-job-workspace/references/job-contract.md")
+        in files
+    )
     assert Path("compose.yaml") in files
     binary_assets = {
         path for path in files if path.suffix.lower() in CAD_OR_REPORT_SUFFIXES
@@ -145,6 +162,23 @@ def test_manifest_explicitly_excludes_private_development_content() -> None:
         "tests/test_runtime_hardcode_packaging.py",
     ):
         assert path in excluded
+
+
+def test_repository_ignores_runtime_job_and_release_artifacts() -> None:
+    rules = {
+        line.strip()
+        for line in (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert {"/jobs/", "/output/", "/dist/"} <= rules
+    tracked = subprocess.run(
+        ["git", "ls-files", "jobs", "output", "dist"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.stdout == ""
 
 
 def test_projection_contains_only_materialized_allowlist(
@@ -255,7 +289,7 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "pytest -q",
         "--junitxml=windows-public-offline.xml",
         "--junitxml=windows-public-boundary.xml",
-        "$expectedSkipped = 58",
+        "$expectedSkipped = 59",
         "$expectedSkipped = 3",
         "$failed -ne 0 -or $skipped -ne $expectedSkipped",
         "uv build --offline",

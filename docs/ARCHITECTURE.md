@@ -7,11 +7,12 @@ flowchart LR
   Agent --> GUI["External FreeCAD GUI MCP<br/>interactive CAD"]
   MD --> CMD["FreeCADCmd<br/>headless extraction"]
   MD --> PG["PostgreSQL + pgvector<br/>authoritative state"]
-  MD --> CAS["Workspace content-addressed store<br/>copies and evidence"]
+  MD --> Jobs["Design Job workspaces<br/>copies and evidence"]
+  Jobs --> CAS["Workspace content-addressed store"]
   PG --> Outbox["Transactional outbox"]
   Outbox --> Neo["Neo4j<br/>rebuildable projection"]
-  GUI --> WC["FCStd working copies"]
-  MD --> WC
+  GUI --> WC["Job-bound FCStd working copies"]
+  Jobs --> WC
   WC --> GV["FreeCAD model validation"]
   WC --> MIV["Mechanical-interface validation"]
   GV --> ACV["AssemblyCompleteness/v2"]
@@ -24,11 +25,12 @@ requests, extracts geometry, stores audit state, retrieves approved knowledge,
 and projects relationships. Semantic reasoning belongs to the connected coding
 agent or MCP client.
 
-The certified Windows integration boundary is Windows 11 x64 with CPython
-3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit documented in
-[Windows release acceptance](WINDOWS_RELEASE_ACCEPTANCE.md). Protected release
-acceptance requires two distinct fixed local NTFS volumes; public CI covers
-only the non-interactive boundary.
+The previously recorded Windows integration boundary is Windows 11 x64 with
+CPython 3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit documented
+in [Windows release acceptance](WINDOWS_RELEASE_ACCEPTANCE.md). The v0.3 Design
+Job live workflow requires a new protected-host run before release
+certification. Protected acceptance requires two distinct fixed local NTFS
+volumes; public CI covers only the non-interactive boundary.
 
 A compatible external FreeCAD GUI MCP is required for the recommended
 interactive workflow: viewing, selection, measurement, modeling, and
@@ -51,11 +53,33 @@ Runtime configuration precedence is final override, process environment,
 workspace manifest, then package default. Explicit env-file compatibility is
 parsed into an isolated mapping and never mutates the process environment.
 
+## Design Job boundary
+
+Every product operation is routed through one authoritative Design Job. A new,
+existing, or resumed mechanical design uses `mechanical_design`; Product Family
+intake, analysis, review, and publication use the same
+`product_family_onboarding` Job. Design Lessons remain in the originating
+mechanical Job. Product work never creates a Git worktree.
+
+PostgreSQL owns Job identity, status, phase, optimistic revision, lifecycle
+events, source and working-copy bindings, and knowledge provenance. The
+workspace projects that state under `jobs/<job-directory>/`. Each Job contains
+its requirements, immutable sources, FCStd working and revision files,
+standard components, analysis, validation, knowledge, previews, delivery,
+provenance, and logs. `job.json` is checked against PostgreSQL; a directory path
+alone never grants identity or authority.
+
+Same-design continuation reuses its active or blocked Job. An independent
+requirement creates a new Job. A missing or ambiguous resume is resolved in the
+conversation rather than guessed. See [Design Job workspaces](DESIGN_JOB_WORKSPACES.md)
+for routing, storage, migration, and repair contracts.
+
 ## Authoritative state
 
 PostgreSQL owns identity, model revisions, source hashes, extracted manifests,
 geometry/structure vectors, questions, engineer answers, assertion versions,
-reviews, family profiles, design changes, lesson events, and validation reports.
+reviews, family profiles, Design Jobs and revisions, source and working-copy
+bindings, design changes, lesson events, and validation reports.
 pgvector stores deterministic geometry and structure descriptors, not semantic
 embeddings produced by a hidden model.
 
@@ -70,7 +94,7 @@ provision loopback-only PostgreSQL/pgvector and Neo4j services for local and
 evaluation use, but it never owns, mounts, or executes migrations. The
 installed package owns PostgreSQL and Neo4j migration resources and the
 installed `mechanical-design database bootstrap` command applies and verifies
-them. Production provisioning remains outside the version 0.1.0 boundary. See
+them. Production provisioning remains outside the version 0.3.0 boundary. See
 [Database deployment](DATABASE_DEPLOYMENT.md).
 
 ## Model analysis and working copies
@@ -86,7 +110,16 @@ An existing STEP/FCStd model must resolve one unique
 `source_model_revision_id` before a working copy is created. New designs may
 start from a neutral source-less FCStd seed. Working-copy mutations are
 serialized by a workspace-owned lock, and important records bind the current
-FCStd SHA-256.
+FCStd SHA-256. Before FreeCAD opens a governed FCStd, the Agent inspects its
+ZIP/XML structure without executing document objects and rejects encrypted,
+ambiguous, oversized, or path-unsafe archives. Scripted FreeCAD documents,
+including `App::FeaturePython`, Python proxies, and Python-object properties,
+are intentionally unsupported by the governed working-copy boundary.
+Every XML member is parsed as strict UTF-8 without DTDs, entities, or
+namespaces before the pinned official FreeCADCmd 1.1.3 process may reopen the
+archive. Embedded Python or other executable persistence is never executed.
+The executable must match its reviewed configured SHA-256 and file identity
+immediately before and after every isolated, secret-scrubbed invocation.
 
 ## Design-context gate
 
@@ -122,6 +155,12 @@ package atomically. Staging does not publish. Approval re-verifies the immutable
 package, evidence, source revision, authorization, and current FCStd hash before
 the PostgreSQL transaction. Supersession and revocation retain audit history and
 update the graph through the outbox.
+
+The staging package, immutable evidence copy, review card, and publication
+receipt remain under `knowledge/design-lessons/` in the originating mechanical
+Job. PostgreSQL records that `job_id` on the authoritative review and lesson;
+Neo4j receives it only as a rebuildable projection. Supersession cannot cross
+Job boundaries.
 
 ## Standard-part acquisition
 

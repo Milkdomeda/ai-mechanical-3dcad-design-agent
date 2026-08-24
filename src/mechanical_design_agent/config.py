@@ -14,6 +14,7 @@ from .workspace_bootstrap import (
     parse_selected_env_file,
     validate_actor_id,
 )
+from .secure_fs import FileIdentity
 
 
 DEFAULT_DATABASE_URL = (
@@ -77,6 +78,9 @@ class Settings:
     actor_id: str
     artifact_root: Path
     family_config_path: Path
+    freecadcmd_sha256: str = ""
+    freecadcmd_identity: FileIdentity | None = None
+    freecadcmd_version: str = ""
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -252,6 +256,28 @@ class Settings:
             return True
         except ValueError:
             return False
+
+
+@dataclass(frozen=True)
+class JobSettings:
+    """Minimal runtime configuration for family-independent Job operations."""
+
+    workspace: Path
+    package_root: Path
+    database_url: str
+    actor_id: str
+    organization_id: str
+    design_group_id: str
+
+
+@dataclass(frozen=True)
+class JobCadSettings(JobSettings):
+    """Family-independent Job authority plus the certified FreeCAD boundary."""
+
+    freecadcmd: Path
+    freecadcmd_sha256: str
+    freecadcmd_identity: FileIdentity
+    freecadcmd_version: str
 
 
 def resolve_workspace_output(settings: Settings, requested: str | Path) -> Path:
