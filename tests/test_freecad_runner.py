@@ -46,8 +46,8 @@ def test_runner_scrubs_environment_and_isolates_process_inside_attempt(
     assert isinstance(environment, dict)
     assert "MECH_DESIGN_DATABASE_URL" not in environment
     assert "NEO4J_PASSWORD" not in environment
-    assert environment["HOME"] == str(attempt)
-    assert environment["TMPDIR"] == str(attempt)
+    assert same_managed_path(Path(environment["HOME"]), attempt)
+    assert same_managed_path(Path(environment["TMPDIR"]), attempt)
     assert same_managed_path(Path(captured["cwd"]), attempt)
 
 
