@@ -100,6 +100,8 @@ EXPECTED_MCP_TOOL_NAMES = {
     "product_family_onboarding_review",
     "product_family_onboarding_start",
     "product_family_onboarding_status",
+    "product_family_inventory",
+    "product_family_match",
     "standard_part_catalog_disable",
     "standard_part_catalog_enable",
     "standard_part_download_register",

@@ -265,6 +265,42 @@ class PostgresRepository:
                 )
         return self.get_family(config["family_id"])
 
+    def initialize_runtime_identity(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+    ) -> None:
+        """Initialize the family-independent authority required by Design Jobs."""
+        with self.connection() as connection, connection.transaction():
+            connection.execute(
+                "INSERT INTO organizations(id,name) VALUES (%s,%s) ON CONFLICT(id) DO NOTHING",
+                (organization_id, organization_id),
+            )
+            connection.execute(
+                "INSERT INTO design_groups(id,organization_id,name) VALUES (%s,%s,%s) "
+                "ON CONFLICT(id) DO NOTHING",
+                (design_group_id, organization_id, design_group_id),
+            )
+            connection.execute(
+                "INSERT INTO actors(id,organization_id,display_name,role) VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT(id) DO NOTHING",
+                (actor_id, organization_id, actor_id, "design_owner"),
+            )
+            group = connection.execute(
+                "SELECT organization_id FROM design_groups WHERE id=%s",
+                (design_group_id,),
+            ).fetchone()
+            actor = connection.execute(
+                "SELECT organization_id FROM actors WHERE id=%s",
+                (actor_id,),
+            ).fetchone()
+            if group is None or str(group["organization_id"]) != organization_id:
+                raise ValueError("configured design group belongs to another organization")
+            if actor is None or str(actor["organization_id"]) != organization_id:
+                raise ValueError("configured actor belongs to another organization")
+
     def get_family(self, family_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM product_families WHERE id=%s", (family_id,)).fetchone()
@@ -2497,6 +2533,117 @@ class PostgresRepository:
         with self.connection() as connection:
             rows = connection.execute("SELECT * FROM product_families ORDER BY id").fetchall()
         return [dict(row) for row in rows]
+
+    def product_family_inventory(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return authorized discovery metadata without specialized family content."""
+        with self.connection() as connection:
+            families = connection.execute(
+                "SELECT id,canonical_name,aliases,status,config,revision,created_at,updated_at "
+                "FROM product_families WHERE organization_id=%s AND design_group_id=%s "
+                "ORDER BY canonical_name,id",
+                (organization_id, design_group_id),
+            ).fetchall()
+            products = connection.execute(
+                "SELECT family_id,canonical_name,aliases,status FROM products "
+                "WHERE organization_id=%s AND design_group_id=%s AND family_id IS NOT NULL "
+                "ORDER BY family_id,canonical_name,id",
+                (organization_id, design_group_id),
+            ).fetchall()
+        products_by_family: dict[str, list[dict[str, Any]]] = {}
+        for row in products:
+            value = dict(row)
+            family_id = str(value.pop("family_id"))
+            products_by_family.setdefault(family_id, []).append(value)
+        result: list[dict[str, Any]] = []
+        for row in families:
+            value = dict(row)
+            config = value.pop("config", {})
+            if not isinstance(config, dict):
+                config = {}
+            discovery = config.get("discovery", {})
+            if not isinstance(discovery, dict):
+                discovery = {}
+            descriptors: list[str] = []
+            for source in (
+                config.get("discovery_descriptors", []),
+                discovery.get("descriptors", []),
+                config.get("component_classes", []),
+            ):
+                if not isinstance(source, list):
+                    continue
+                for item in source:
+                    normalized = str(item).strip()
+                    if normalized and normalized not in descriptors:
+                        descriptors.append(normalized)
+            family_id = str(value.pop("id"))
+            result.append(
+                {
+                    "family_id": family_id,
+                    **value,
+                    "discovery_descriptors": descriptors,
+                    "products": products_by_family.get(family_id, []),
+                    "database_registered": True,
+                }
+            )
+        return result
+
+    def record_product_family_match(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+        query: str,
+        request_features: dict[str, Any],
+        result: dict[str, Any],
+        job_id: str | None,
+        working_copy_id: str | None,
+    ) -> dict[str, Any]:
+        candidates = list(result.get("candidates") or [])
+        first_kind = str(candidates[0].get("match_kind") or "") if candidates else ""
+        decision_source = {
+            "existing_job_binding": "existing_job_binding",
+            "source_model_binding": "source_model_binding",
+            "explicit_family_id": "explicit_family",
+            "canonical_name": "explicit_family",
+            "approved_alias": "explicit_family",
+            "approved_product_identifier": "approved_product_identifier",
+            "semantic_candidate": "semantic_candidate",
+        }.get(first_kind)
+        if result.get("status") == "conflict":
+            decision_source = "conflict"
+        elif result.get("status") == "unbound_no_match":
+            decision_source = "no_match"
+        if decision_source is None:
+            raise ValueError("product-family match result has no auditable decision source")
+        digest = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "INSERT INTO product_family_match_decisions(organization_id,design_group_id,job_id,"
+                "working_copy_id,query_sha256,request_features,status,binding_family_id,candidates,"
+                "decision_source,specialized_knowledge_authorized,created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s) RETURNING *",
+                (
+                    organization_id,
+                    design_group_id,
+                    job_id,
+                    working_copy_id,
+                    digest,
+                    json.dumps(request_features, ensure_ascii=False),
+                    result["status"],
+                    result.get("binding_family_id"),
+                    json.dumps(candidates, ensure_ascii=False),
+                    decision_source,
+                    bool(result.get("specialized_knowledge_authorized")),
+                    actor_id,
+                ),
+            ).fetchone()
+        return dict(row)
 
     def projection_models(self) -> list[dict[str, Any]]:
         with self.connection() as connection:

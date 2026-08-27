@@ -77,7 +77,7 @@ class Settings:
     freecadcmd: Path
     actor_id: str
     artifact_root: Path
-    family_config_path: Path
+    family_config_path: Path | None
     freecadcmd_sha256: str = ""
     freecadcmd_identity: FileIdentity | None = None
     freecadcmd_version: str = ""
@@ -242,7 +242,7 @@ class Settings:
     def validate(self) -> None:
         if not self.workspace.is_dir():
             raise ValueError(f"MECH_DESIGN_WORKSPACE does not exist: {self.workspace}")
-        if not self.family_config_path.is_file():
+        if self.family_config_path is not None and not self.family_config_path.is_file():
             raise ValueError(f"family bootstrap config does not exist: {self.family_config_path}")
         if not self._is_under(self.artifact_root, self.workspace):
             raise ValueError("MECH_DESIGN_ARTIFACT_ROOT must remain inside the workspace")

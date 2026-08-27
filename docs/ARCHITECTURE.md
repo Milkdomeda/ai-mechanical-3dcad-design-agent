@@ -47,11 +47,24 @@ standard-part source bindings, and the artifact root. Package defaults are
 values, not paths into the package filesystem.
 
 Workspace initialization is explicit and idempotent. A newly initialized
-workspace may contain zero product families. Operational commands report
-`setup_required` until the required family is created and explicitly selected.
+workspace may contain zero product families. Organization and design-group
+identity are independent workspace scope; ordinary Design Job, change,
+retrieval, validation, and delivery operations do not require a Product Family.
+Family onboarding and family-specific knowledge operations still require an
+explicit family selection.
 Runtime configuration precedence is final override, process environment,
 workspace manifest, then package default. Explicit env-file compatibility is
 parsed into an isolated mapping and never mutates the process environment.
+
+PostgreSQL is authoritative for the authorized Product Family inventory.
+`workspace_product_family_list` is intentionally limited to bootstrap JSON and
+labels itself `source=workspace_config`; it cannot prove that a database family
+does or does not exist. `product_family_inventory` returns only discovery-safe
+identity, aliases, descriptors, and approved product identifiers. The
+deterministic `product_family_match` records an append-only decision: an
+existing Job/source binding or exact approved identifier may authorize a family,
+semantic candidates require confirmation, and a non-match remains unbound.
+Specialized family knowledge is inaccessible until that authorization exists.
 
 ## Design Job boundary
 

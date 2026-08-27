@@ -1524,6 +1524,8 @@ class BootstrapRuntime:
         return {
             "schema_version": "MechanicalDesignProductFamilyList/v1",
             "status": "ok",
+            "source": "workspace_config",
+            "authority": "bootstrap_configuration_only",
             "state": inspection.product_families.state,
             "families": [
                 {
@@ -1615,18 +1617,13 @@ class BootstrapRuntime:
         }
 
     def operational_settings(self) -> Settings:
+        """Resolve family-neutral operational settings for ordinary design."""
         from .config import Settings
 
-        request = CapabilityRequest(
-            "family_create_or_manage",
-            additional_components=("product_family",),
-        )
-        self.require_capability(request, probe=False)
         inspection = self._inspect()
         assert inspection.manifest is not None
         assert inspection.actor is not None
         assert inspection.artifact_root is not None
-        assert inspection.selected_product_family is not None
         database_url = inspection.secrets["postgresql"].value
         assert database_url is not None
         return Settings(
@@ -1639,7 +1636,11 @@ class BootstrapRuntime:
             freecadcmd=inspection.freecad_command or Path("FreeCADCmd"),
             actor_id=inspection.actor.value,
             artifact_root=inspection.artifact_root,
-            family_config_path=inspection.selected_product_family.config.path,
+            family_config_path=(
+                inspection.selected_product_family.config.path
+                if inspection.selected_product_family is not None
+                else None
+            ),
             freecadcmd_sha256=(
                 inspection.freecad_candidate.sha256
                 if inspection.freecad_candidate is not None
@@ -1656,6 +1657,18 @@ class BootstrapRuntime:
                 else ""
             ),
         )
+
+    def family_operational_settings(self) -> Settings:
+        """Resolve settings for an operation whose subject is a Product Family."""
+        request = CapabilityRequest(
+            "family_create_or_manage",
+            additional_components=("product_family",),
+        )
+        self.require_capability(request, probe=False)
+        settings = self.operational_settings()
+        if settings.family_config_path is None:
+            raise RuntimeError("selected Product Family configuration is required")
+        return settings
 
     def job_operational_settings(self) -> JobSettings:
         """Resolve the Job authority without selecting a product family."""

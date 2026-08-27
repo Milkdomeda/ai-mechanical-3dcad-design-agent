@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Make Product Family association optional for ordinary Design Jobs and route
+  non-family operations through family-neutral runtime settings.
+- Add PostgreSQL-authoritative family inventory and deterministic, append-only
+  request matching without exposing specialized family knowledge before an
+  authoritative binding or user confirmation.
+- Label workspace family listing as bootstrap configuration only and allow new
+  workspaces to establish organization/design-group scope without creating a
+  Product Family.
+
 ## 0.3.1 - 2026-08-24
 
 - Normalize Windows managed workspace paths before ownership, containment, and

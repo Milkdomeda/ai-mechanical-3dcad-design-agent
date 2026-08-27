@@ -749,6 +749,42 @@ def test_init_accepts_explicit_safe_actor_ids(
     assert manifest["identity"]["actor_id"] == actor_id
 
 
+def test_init_can_establish_design_scope_without_a_product_family(tmp_path: Path) -> None:
+    workspace = tmp_path / "neutral-scope"
+
+    initialize_workspace(
+        workspace=workspace,
+        actor_id="actor-neutral",
+        dry_run=False,
+        organization_id="org-neutral",
+        design_group_id="group-neutral",
+    )
+
+    manifest = json.loads(
+        (workspace / "config/mechanical_design.json").read_text(encoding="utf-8")
+    )
+    assert manifest["identity"] == {
+        "actor_id": "actor-neutral",
+        "organization_id": "org-neutral",
+        "design_group_id": "group-neutral",
+    }
+    assert manifest["default_product_family_id"] is None
+    assert list((workspace / "config/product_families").iterdir()) == []
+
+
+def test_init_requires_complete_design_scope(tmp_path: Path) -> None:
+    with pytest.raises(BootstrapFailure) as captured:
+        initialize_workspace(
+            workspace=tmp_path / "incomplete-scope",
+            actor_id="actor-neutral",
+            dry_run=False,
+            organization_id="org-neutral",
+        )
+
+    assert captured.value.code == "WORKSPACE_IDENTITY_INCOMPLETE"
+    assert not (tmp_path / "incomplete-scope").exists()
+
+
 @pytest.mark.parametrize(
     "actor_id",
     [

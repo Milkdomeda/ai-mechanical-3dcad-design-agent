@@ -117,16 +117,26 @@ mechanical-design database bootstrap `
 ```
 
 The first bootstrap applies package-owned PostgreSQL migrations `001` through
-`014`, verifies `pgcrypto`, `pg_trgm`, and `vector`, and verifies package-owned
+`015`, verifies `pgcrypto`, `pg_trgm`, and `vector`, and verifies package-owned
 Neo4j migrations and constraints. The second bootstrap must report the
 PostgreSQL migrations as already applied and keep the Neo4j state valid. A
 partial migration, digest mismatch, or missing extension is a blocking failure;
 do not edit the migration ledger or copy migration files from the repository.
 
-## Create the first product family and start MCP
+## Establish workspace scope and start MCP
 
-An initialized workspace may contain zero product families. Create and select a
-synthetic first family before starting operational workflows:
+An initialized workspace may contain zero product families. Organization and
+design-group scope can be established without creating a family:
+
+```bash
+mechanical-design init \
+  --workspace /path/to/mechanical-design-workspace \
+  --organization-id example-org \
+  --design-group-id example-design-group
+```
+
+Creating and selecting a synthetic family is optional and is required only for
+family onboarding or specialized family-knowledge workflows:
 
 ```bash
 mechanical-design family create \

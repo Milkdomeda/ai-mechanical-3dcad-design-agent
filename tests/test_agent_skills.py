@@ -135,6 +135,10 @@ def test_design_job_skill_routes_product_operations_through_jobs() -> None:
     assert "Task 6" not in skill_text + contract_text
     assert "design_job_working_copy_create" in skill_text + contract_text
     assert "design_job_new_working_copy_create" in skill_text + contract_text
+    assert "product_family_inventory" in skill_text
+    assert "product_family_match" in skill_text
+    assert "workspace_product_family_list` is bootstrap configuration only" in skill_text
+    assert "continue with `family_id=null`" in skill_text
     routing = _markdown_table(skill_text, "## Routing decision matrix")
     assert routing == {
         "Explicit Job UUID or display ID": {

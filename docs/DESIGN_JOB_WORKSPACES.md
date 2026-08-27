@@ -41,6 +41,18 @@ Creating or changing the software, database schema, migrations, or tests is
 still a normal Git development task; only the product-family knowledge
 operation belongs to the Job.
 
+## Optional Product Family routing
+
+A `mechanical_design` Job may keep `family_id` null for its entire lifecycle.
+At intake, use PostgreSQL-backed `product_family_inventory` followed by
+`product_family_match`; do not infer inventory from workspace JSON. An existing
+Job or source-model binding and an exact approved family/product identifier are
+authoritative. Descriptor-only similarity is a candidate that requires user
+confirmation. No credible match proceeds unbound, and no match creates a new
+family. Family discovery metadata is visible for matching, but specialized
+assertions, lessons, and analogous models remain excluded until binding is
+authorized.
+
 ## Directory contract
 
 Each ready Job is stored below the configured workspace at

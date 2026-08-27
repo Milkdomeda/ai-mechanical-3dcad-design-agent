@@ -36,7 +36,7 @@ def test_new_existing_resume_and_independent_design_jobs_use_freecad() -> None:
     """Exercise the release-candidate Job/FreeCAD boundary against live services.
 
     The caller must provide an isolated initialized workspace, package-owned
-    migrations 001-014, configured PostgreSQL/Neo4j, pinned FreeCADCmd 1.1.3,
+    migrations 001-015, configured PostgreSQL/Neo4j, pinned FreeCADCmd 1.1.3,
     a selected synthetic product family, and a non-sensitive FCStd/STEP source.
     The acceptance target is disposable because this test creates durable Jobs.
     """

@@ -361,6 +361,35 @@ class DesignLifecycleTests(unittest.TestCase):
         self.assertTrue(repository.receipt_kwargs["retrieval_scope"]["general_design_knowledge"])
         self.assertTrue(repository.receipt_kwargs["retrieval_scope"]["design_lessons"])
 
+    def test_familyless_design_retrieval_never_authorizes_specialized_knowledge(self) -> None:
+        repository = _RetrievalRepository({
+            "id": "working-neutral",
+            "organization_id": "org",
+            "design_group_id": "group",
+            "family_id": None,
+            "source_model_revision_id": None,
+            "design_origin": "new_design",
+        })
+        context_builder = _EmptyContextBuilder()
+        service = MechanicalDesignService.__new__(MechanicalDesignService)
+        service.repository = repository
+        service.context_builder = context_builder
+        service.settings = SimpleNamespace(actor_id="owner")
+        service._require_database = lambda: None
+
+        result = service.design_knowledge_retrieve(
+            working_copy_id="working-neutral",
+            query="adjustable printed support",
+            design_features={},
+            used_knowledge_ids=[],
+        )
+
+        self.assertIsNone(context_builder.kwargs["requested_family_id"])
+        self.assertFalse(context_builder.kwargs["explicit_family_authorization"])
+        self.assertFalse(repository.receipt_kwargs["retrieval_scope"]["family_knowledge"])
+        self.assertFalse(repository.receipt_kwargs["retrieval_scope"]["similar_models"])
+        self.assertEqual(result["context"]["specialized_knowledge"], [])
+
     def test_approved_change_can_be_superseded_and_delivery_accepts_closed_state(self) -> None:
         connection = _LifecycleConnection()
         repository = PostgresRepository("postgresql://unused")

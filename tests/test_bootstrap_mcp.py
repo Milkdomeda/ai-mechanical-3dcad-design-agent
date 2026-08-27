@@ -22,8 +22,15 @@ from mechanical_design_agent.server import (
 )
 from mechanical_design_agent.config import JobCadSettings, JobSettings
 from mechanical_design_agent.jobs import JobFailure
+from mechanical_design_agent.product_families import (
+    build_product_family_config,
+    create_product_family_config,
+)
 from mechanical_design_agent.secure_fs import read_managed_file, same_managed_path
-from mechanical_design_agent.workspace_bootstrap import initialize_workspace
+from mechanical_design_agent.workspace_bootstrap import (
+    initialize_workspace,
+    read_workspace_manifest,
+)
 
 
 def _fake_x64_freecadcmd_bytes() -> bytes:
@@ -103,36 +110,38 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "knowledge_propose_assertions": request("design_knowledge", "product_family"),
     "knowledge_review": request("design_knowledge", "product_family"),
     "knowledge_search": request("design_knowledge", "product_family"),
-    "design_context_build": request("design_knowledge", "product_family"),
-    "design_lesson_review_context": request("design_knowledge", "product_family"),
-    "design_lesson_review_prepare": request("design_knowledge", "product_family"),
-    "design_lesson_review_approve": request("design_knowledge", "product_family"),
-    "design_lesson_review_reject": request("design_knowledge", "product_family"),
-    "design_lesson_review_status": request("design_knowledge", "product_family"),
-    "design_lesson_stage": request("design_knowledge", "product_family"),
-    "design_lesson_staged_get": request("design_knowledge", "product_family"),
-    "design_lesson_approve": request("design_knowledge", "product_family"),
-    "design_lesson_search_page": request("design_knowledge", "product_family"),
-    "design_lesson_get": request("design_knowledge", "product_family"),
-    "design_lesson_audit_get": request("design_knowledge", "product_family"),
-    "design_lesson_supersede": request("design_knowledge", "product_family"),
-    "design_lesson_revoke": request("design_knowledge", "product_family"),
-    "design_knowledge_retrieve": request("design_knowledge", "product_family"),
-    "design_retrieval_receipt_get": request("design_knowledge", "product_family"),
-    "design_working_copy_create": request("cad_working_copy", "product_family"),
-    "design_new_working_copy_create": request("cad_working_copy", "product_family"),
+    "design_context_build": request("design_knowledge"),
+    "design_lesson_review_context": request("design_knowledge"),
+    "design_lesson_review_prepare": request("design_knowledge"),
+    "design_lesson_review_approve": request("design_knowledge"),
+    "design_lesson_review_reject": request("design_knowledge"),
+    "design_lesson_review_status": request("design_knowledge"),
+    "design_lesson_stage": request("design_knowledge"),
+    "design_lesson_staged_get": request("design_knowledge"),
+    "design_lesson_approve": request("design_knowledge"),
+    "design_lesson_search_page": request("design_knowledge"),
+    "design_lesson_get": request("design_knowledge"),
+    "design_lesson_audit_get": request("design_knowledge"),
+    "design_lesson_supersede": request("design_knowledge"),
+    "design_lesson_revoke": request("design_knowledge"),
+    "design_knowledge_retrieve": request("design_knowledge"),
+    "design_retrieval_receipt_get": request("design_knowledge"),
+    "product_family_inventory": request("product_family_discovery"),
+    "product_family_match": request("product_family_discovery"),
+    "design_working_copy_create": request("cad_working_copy"),
+    "design_new_working_copy_create": request("cad_working_copy"),
     "design_job_working_copy_create": request(
         "design_job_workspace", "freecadcmd"
     ),
     "design_job_new_working_copy_create": request(
         "design_job_workspace", "freecadcmd"
     ),
-    "design_change_record": request("cad_working_copy", "product_family"),
-    "design_change_review": request("cad_working_copy", "product_family"),
-    "design_change_applied": request("cad_working_copy", "product_family"),
-    "design_change_close": request("cad_working_copy", "product_family"),
-    "design_confirmation_record": request("cad_working_copy", "product_family"),
-    "design_delivery_approve": request("cad_working_copy", "product_family"),
+    "design_change_record": request("cad_working_copy"),
+    "design_change_review": request("cad_working_copy"),
+    "design_change_applied": request("cad_working_copy"),
+    "design_change_close": request("cad_working_copy"),
+    "design_confirmation_record": request("cad_working_copy"),
+    "design_delivery_approve": request("cad_working_copy"),
     "design_validation_record": request("model_validation", "postgresql"),
     "design_assembly_completeness_validate": request(
         "model_validation",
@@ -236,6 +245,8 @@ def test_workspace_family_mcp_tools_are_bootstrap_safe_and_confirmation_bound(
     selected = json.loads(tool(mcp, "workspace_product_family_active")(""))
 
     assert empty["state"] == "empty"
+    assert empty["source"] == "workspace_config"
+    assert empty["authority"] == "bootstrap_configuration_only"
     assert unselected["code"] == "PRODUCT_FAMILY_REQUIRED"
     assert json.loads(str(wrong_confirmation.value))["code"] == "CONFIRMATION_REQUIRED"
     assert created["result"] == "created"
@@ -685,6 +696,83 @@ def test_job_proxy_uses_family_independent_job_operational_settings() -> None:
     )
     assert proxy.design_job_list()["jobs"] == []
     assert constructed == [job_settings]
+
+
+def test_design_knowledge_proxy_uses_family_neutral_operational_settings() -> None:
+    neutral_settings = object()
+
+    class NeutralRuntime:
+        def require_initialized(self, capability: str) -> None:
+            assert capability == "design_knowledge"
+
+        def require_capability(self, request: object, *, probe: bool) -> None:
+            assert getattr(request, "capability", request) == "design_knowledge"
+            assert getattr(request, "additional_components", ()) == ()
+            assert probe is True
+
+        def operational_settings(self) -> object:
+            return neutral_settings
+
+        def family_operational_settings(self) -> object:
+            pytest.fail("ordinary design knowledge must not select a Product Family")
+
+        def blocked_response(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+        def status(self) -> dict[str, object]:
+            return {}
+
+    class NeutralService:
+        def design_retrieval_receipt_get(self, working_copy_id: str) -> dict[str, str]:
+            return {"working_copy_id": working_copy_id}
+
+    constructed: list[object] = []
+    proxy = _LazyServiceProxy(
+        runtime=NeutralRuntime(),
+        service_factory=lambda settings: constructed.append(settings) or NeutralService(),
+    )
+
+    assert proxy.design_retrieval_receipt_get("working-1") == {
+        "working_copy_id": "working-1"
+    }
+    assert constructed == [neutral_settings]
+
+
+def test_operational_settings_allow_registered_but_unselected_family(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_workspace(workspace=workspace, actor_id="actor-001", dry_run=False)
+    manifest = read_workspace_manifest(workspace)
+    create_product_family_config(
+        manifest=manifest,
+        config=build_product_family_config(
+            organization_id="local-organization",
+            organization_name="Local organization",
+            design_group_id="local-design-group",
+            design_group_name="Local design group",
+            family_id="synthetic-family-a",
+            family_name="Synthetic family A",
+            aliases=[],
+            actor_id="actor-001",
+        ),
+    )
+    runtime = BootstrapRuntime.from_process(
+        cwd=workspace,
+        environ={
+            "MECH_DESIGN_DATABASE_URL": "postgresql://configured",
+            "MECH_DESIGN_NEO4J_URI": "bolt://127.0.0.1:7687",
+            "MECH_DESIGN_NEO4J_USER": "neo4j",
+            "MECH_DESIGN_NEO4J_PASSWORD": "configured",
+        },
+    )
+
+    settings = runtime.operational_settings()
+
+    assert settings.family_config_path is None
+    with pytest.raises(DiagnosticGateError) as captured:
+        runtime.family_operational_settings()
+    assert captured.value.response["code"] == "PRODUCT_FAMILY_SELECTION_REQUIRED"
 
 
 def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(

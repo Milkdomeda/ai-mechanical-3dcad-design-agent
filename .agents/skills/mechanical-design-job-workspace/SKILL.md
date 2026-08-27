@@ -24,6 +24,26 @@ Apply the first matching row through the configured Mechanical Design MCP.
 Never treat a UUID or display ID as text to resolve, and never auto-create from
 an ambiguous intent.
 
+## Optional Product Family match
+
+Before creating a new independent mechanical-design Job, call
+`product_family_inventory` and then `product_family_match` with the request and
+structured design features. PostgreSQL inventory is authoritative;
+`workspace_product_family_list` is bootstrap configuration only.
+
+- `authoritative_match`: create the Job or working copy with the returned
+  `binding_family_id` and preserve the match audit.
+- `confirmation_required`: present the candidates and the no-family option;
+  bind only after the user's choice.
+- `unbound_no_match`: continue with `family_id=null` without creating or
+  selecting a family.
+- `conflict`: stop product-family reassignment and request direction.
+
+Discovery metadata does not authorize specialized family knowledge. Retrieve
+that knowledge only after an authoritative or user-confirmed binding. For a
+resumed Job, preserve its existing family or null binding; never substitute the
+only configured family.
+
 ## Provenance and Job type
 
 | Product operation | Job type | Provenance rule |

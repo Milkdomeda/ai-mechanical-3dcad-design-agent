@@ -198,80 +198,38 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         ),
         "knowledge_review": _capability("design_knowledge", "product_family"),
         "knowledge_search": _capability("design_knowledge", "product_family"),
-        "design_context_build": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_review_context": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_review_prepare": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_review_approve": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_review_reject": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_review_status": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_stage": _capability("design_knowledge", "product_family"),
-        "design_lesson_staged_get": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_approve": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_search_page": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_get": _capability("design_knowledge", "product_family"),
-        "design_lesson_audit_get": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_supersede": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_lesson_revoke": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_knowledge_retrieve": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_retrieval_receipt_get": _capability(
-            "design_knowledge", "product_family"
-        ),
-        "design_working_copy_create": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_new_working_copy_create": _capability(
-            "cad_working_copy", "product_family"
-        ),
+        "design_context_build": _capability("design_knowledge"),
+        "design_lesson_review_context": _capability("design_knowledge"),
+        "design_lesson_review_prepare": _capability("design_knowledge"),
+        "design_lesson_review_approve": _capability("design_knowledge"),
+        "design_lesson_review_reject": _capability("design_knowledge"),
+        "design_lesson_review_status": _capability("design_knowledge"),
+        "design_lesson_stage": _capability("design_knowledge"),
+        "design_lesson_staged_get": _capability("design_knowledge"),
+        "design_lesson_approve": _capability("design_knowledge"),
+        "design_lesson_search_page": _capability("design_knowledge"),
+        "design_lesson_get": _capability("design_knowledge"),
+        "design_lesson_audit_get": _capability("design_knowledge"),
+        "design_lesson_supersede": _capability("design_knowledge"),
+        "design_lesson_revoke": _capability("design_knowledge"),
+        "design_knowledge_retrieve": _capability("design_knowledge"),
+        "design_retrieval_receipt_get": _capability("design_knowledge"),
+        "product_family_inventory": _capability("product_family_discovery"),
+        "product_family_match": _capability("product_family_discovery"),
+        "design_working_copy_create": _capability("cad_working_copy"),
+        "design_new_working_copy_create": _capability("cad_working_copy"),
         "design_job_working_copy_create": _capability(
             "design_job_workspace", "freecadcmd"
         ),
         "design_job_new_working_copy_create": _capability(
             "design_job_workspace", "freecadcmd"
         ),
-        "design_change_record": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_change_review": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_change_applied": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_change_close": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_confirmation_record": _capability(
-            "cad_working_copy", "product_family"
-        ),
-        "design_delivery_approve": _capability(
-            "cad_working_copy", "product_family"
-        ),
+        "design_change_record": _capability("cad_working_copy"),
+        "design_change_review": _capability("cad_working_copy"),
+        "design_change_applied": _capability("cad_working_copy"),
+        "design_change_close": _capability("cad_working_copy"),
+        "design_confirmation_record": _capability("cad_working_copy"),
+        "design_delivery_approve": _capability("cad_working_copy"),
         "design_validation_record": _capability(
             "model_validation", "postgresql"
         ),
@@ -326,6 +284,8 @@ class _LazyServiceProxy:
                 if "freecadcmd" in request.additional_components
                 else "job"
             )
+        elif "product_family" in request.additional_components:
+            key = "family_operational"
         else:
             key = "operational"
         if key in self._services:
@@ -338,6 +298,8 @@ class _LazyServiceProxy:
                     settings = self.runtime.job_operational_settings()
                 elif key == "job_cad":
                     settings = self.runtime.job_cad_operational_settings()
+                elif key == "family_operational":
+                    settings = self.runtime.family_operational_settings()
                 else:
                     settings = self.runtime.operational_settings()
                 self._services[key] = self.service_factory(settings)
@@ -1397,6 +1359,32 @@ def create_mcp(
                 design_features=_design_features(design_features_json),
                 used_knowledge_ids=used,
                 non_use_reason=non_use_reason,
+            )
+        )
+
+    @mcp.tool()
+    def product_family_inventory() -> str:
+        """List PostgreSQL-authoritative Product Family discovery metadata."""
+        return _json(service.product_family_inventory())
+
+    @mcp.tool()
+    def product_family_match(
+        query: str,
+        design_features_json: str = "{}",
+        job_id: str = "",
+        working_copy_id: str = "",
+        source_model_revision_id: str = "",
+        explicit_family_id: str = "",
+    ) -> str:
+        """Match a design request without authorizing semantic candidates."""
+        return _json(
+            service.product_family_match(
+                query=query,
+                design_features=_design_features(design_features_json),
+                job_id=job_id or None,
+                working_copy_id=working_copy_id or None,
+                source_model_revision_id=source_model_revision_id or None,
+                explicit_family_id=explicit_family_id or None,
             )
         )
 

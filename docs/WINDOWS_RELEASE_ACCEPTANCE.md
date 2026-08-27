@@ -94,7 +94,7 @@ environment with its explicit opt-in variables and one non-sensitive FCStd or
 STEP fixture. Then run the protected PostgreSQL/Neo4j and external FreeCAD GUI
 MCP suites. Acceptance requires:
 
-- exact migrations `001` through `014` from the installed package;
+- exact migrations `001` through `015` from the installed package;
 - same-Job resume and explicitly independent Job creation;
 - new-design and existing-model FCStd working copies under the selected fixed
   NTFS workspace, with source hashes and no nested `.git`;

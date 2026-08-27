@@ -24,6 +24,7 @@ from .design_lessons import (
     validate_design_lesson_package,
 )
 from .extractor import FreeCADExtractor
+from .family_matching import match_product_family
 from .hashing import file_sha256, stable_hash
 from .learning import family_statistics, generate_question_targets, parse_assertion_proposals
 from .jobs import DesignJobManager, DesignJobManifest, JobFailure
@@ -32,7 +33,7 @@ from .library import LibraryScanner, scan_change_dict
 from .lesson_reviews import DesignLessonReviewStore
 from .migrations import postgres_migrations_directory
 from .projection import Neo4jProjection
-from .product_families import validate_product_family_config
+from .product_families import load_product_family_catalog, validate_product_family_config
 from .product_family_onboarding import ProductFamilyOnboarding
 from .repository import PostgresRepository
 from .standard_parts import StandardPartRegistry
@@ -99,11 +100,28 @@ class MechanicalDesignService:
             self.bootstrap_error = f"{type(exc).__name__}: {exc}"
 
     def _read_bootstrap_file(self) -> dict[str, Any]:
-        value = json.loads(self.settings.family_config_path.read_text(encoding="utf-8"))
+        family_config_path = getattr(self.settings, "family_config_path", None)
+        if family_config_path is None:
+            manifest = read_workspace_manifest(self.settings.workspace)
+            identity = manifest.raw.get("identity")
+            if not isinstance(identity, dict):
+                raise ValueError("workspace identity is required")
+            organization_id = identity.get("organization_id")
+            design_group_id = identity.get("design_group_id")
+            if not isinstance(organization_id, str) or not organization_id.strip():
+                raise ValueError("workspace organization_id is required")
+            if not isinstance(design_group_id, str) or not design_group_id.strip():
+                raise ValueError("workspace design_group_id is required")
+            return {
+                "organization_id": organization_id.strip(),
+                "design_group_id": design_group_id.strip(),
+                "family_id": None,
+            }
+        value = json.loads(family_config_path.read_text(encoding="utf-8"))
         return dict(
             validate_product_family_config(
                 value,
-                path=self.settings.family_config_path,
+                path=family_config_path,
                 require_filename_match=False,
             )
         )
@@ -120,7 +138,16 @@ class MechanicalDesignService:
     def _initialize_database(self) -> None:
         with postgres_migrations_directory() as migrations:
             self.repository.apply_migrations(migrations)
-        self.repository.initialize_bootstrap(self.bootstrap_config, self.settings.actor_id)
+        family_config_path = getattr(self.settings, "family_config_path", None)
+        family_id = str(self.bootstrap_config.get("family_id") or "").strip()
+        if family_config_path is None and not family_id:
+            self.repository.initialize_runtime_identity(
+                organization_id=str(self.bootstrap_config["organization_id"]),
+                design_group_id=str(self.bootstrap_config["design_group_id"]),
+                actor_id=self.settings.actor_id,
+            )
+        else:
+            self.repository.initialize_bootstrap(self.bootstrap_config, self.settings.actor_id)
 
     def _require_database(self) -> None:
         if self.repository.status().get("status") != "healthy":
@@ -678,7 +705,11 @@ class MechanicalDesignService:
             },
             "artifact_store": {"status": "healthy", "root": str(self.settings.artifact_root)},
             "bootstrap_error": self.bootstrap_error,
-            "family_config": str(self.settings.family_config_path),
+            "family_config": (
+                str(self.settings.family_config_path)
+                if self.settings.family_config_path is not None
+                else None
+            ),
             "library_root_configured": bool(self.bootstrap_config.get("library_root")),
         }
 
@@ -2712,6 +2743,122 @@ class MechanicalDesignService:
             actor_id=self.settings.actor_id,
         )
         return {"context": context, "retrieval_receipt": receipt}
+
+    def product_family_inventory(self) -> dict[str, Any]:
+        """Return PostgreSQL-authoritative discovery metadata for this scope."""
+        self._require_database()
+        organization_id = str(self.bootstrap_config["organization_id"])
+        design_group_id = str(self.bootstrap_config["design_group_id"])
+        families = self.repository.product_family_inventory(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        configured_ids: set[str] = set()
+        configuration_status = "ready"
+        try:
+            manifest = read_workspace_manifest(self.settings.workspace)
+            catalog = load_product_family_catalog(manifest.product_families)
+            configured_ids = set(catalog.families)
+        except Exception:
+            configuration_status = "invalid"
+        selected_family_id = (
+            str(self.bootstrap_config.get("family_id") or "").strip() or None
+            if getattr(self.settings, "family_config_path", None) is not None
+            else None
+        )
+        for family in families:
+            family_id = str(family["family_id"])
+            family["database_registered"] = True
+            family["workspace_configured"] = family_id in configured_ids
+            family["selected_for_session"] = family_id == selected_family_id
+        return {
+            "schema_version": "ProductFamilyInventory/v1",
+            "status": "ok",
+            "source": "postgresql",
+            "organization_id": organization_id,
+            "design_group_id": design_group_id,
+            "configuration_status": configuration_status,
+            "families": families,
+        }
+
+    def product_family_match(
+        self,
+        *,
+        query: str,
+        design_features: dict[str, Any],
+        job_id: str | None = None,
+        working_copy_id: str | None = None,
+        source_model_revision_id: str | None = None,
+        explicit_family_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Match authorized discovery metadata and persist the decision evidence."""
+        self._require_database()
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("product-family match query is required")
+        organization_id = str(self.bootstrap_config["organization_id"])
+        design_group_id = str(self.bootstrap_config["design_group_id"])
+        resolved_job_id = str(job_id or "").strip() or None
+        bound_family_id: str | None = None
+        resolved_source_revision = str(source_model_revision_id or "").strip() or None
+        if working_copy_id:
+            working = self.repository.get_working_copy(working_copy_id)
+            if (
+                str(working["organization_id"]) != organization_id
+                or str(working["design_group_id"]) != design_group_id
+            ):
+                raise PermissionError("working copy is outside the authorized design scope")
+            resolved_job_id = str(working.get("job_id") or resolved_job_id or "").strip() or None
+            bound_family_id = str(working.get("family_id") or "").strip() or None
+            resolved_source_revision = (
+                str(working.get("source_model_revision_id") or resolved_source_revision or "").strip()
+                or None
+            )
+        if resolved_job_id:
+            job = self.repository.get_design_job(
+                job_id=resolved_job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+            )
+            job_family_id = str(job.get("family_id") or "").strip() or None
+            if bound_family_id and job_family_id and bound_family_id != job_family_id:
+                raise ValueError("working copy and Design Job family bindings conflict")
+            bound_family_id = bound_family_id or job_family_id
+        source_family_id: str | None = None
+        if resolved_source_revision:
+            model = self.repository.get_model_analysis(resolved_source_revision)
+            if (
+                str(model["organization_id"]) != organization_id
+                or str(model["design_group_id"]) != design_group_id
+            ):
+                raise PermissionError("source model is outside the authorized design scope")
+            source_family_id = str(model.get("family_id") or "").strip() or None
+        inventory = self.product_family_inventory()
+        result = match_product_family(
+            query=query,
+            families=inventory["families"],
+            bound_family_id=bound_family_id,
+            source_family_id=source_family_id,
+            explicit_family_id=str(explicit_family_id or "").strip() or None,
+            design_features=design_features,
+        )
+        audit = self.repository.record_product_family_match(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            actor_id=self.settings.actor_id,
+            query=query,
+            request_features=design_features,
+            result=result,
+            job_id=resolved_job_id,
+            working_copy_id=(str(working_copy_id).strip() if working_copy_id else None),
+        )
+        return {
+            **result,
+            "audit": {
+                "decision_id": str(audit["id"]),
+                "query_sha256": str(audit["query_sha256"]),
+                "created_at": audit["created_at"],
+            },
+        }
 
     def design_retrieval_receipt_get(self, working_copy_id: str) -> dict[str, Any] | None:
         self._require_database()

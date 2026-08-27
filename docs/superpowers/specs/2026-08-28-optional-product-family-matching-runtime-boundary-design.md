@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-28
 
-**Status:** User-approved architecture; implementation pending
+**Status:** Implemented and verified
 
 ## 1. Purpose
 
@@ -313,4 +313,3 @@ The fix is complete when:
 - synthetic focused tests and the supported offline suite pass;
 - public-release scans find no real user design data;
 - a separately authorized private runtime acceptance confirms visibility without moving or recreating its authoritative records.
-

@@ -548,14 +548,16 @@ def _manifest_template(
     *,
     workspace_id: uuid.UUID,
     actor_id: str,
+    organization_id: str | None,
+    design_group_id: str | None,
 ) -> dict[str, object]:
     return {
         "schema_version": "MechanicalDesignWorkspace/v1",
         "workspace_id": str(workspace_id),
         "identity": {
             "actor_id": actor_id,
-            "organization_id": None,
-            "design_group_id": None,
+            "organization_id": organization_id,
+            "design_group_id": design_group_id,
         },
         "paths": {
             "artifact_root": DEFAULT_ARTIFACT_ROOT,
@@ -804,7 +806,28 @@ def initialize_workspace(
     workspace: Path,
     actor_id: str | None,
     dry_run: bool,
+    organization_id: str | None = None,
+    design_group_id: str | None = None,
 ) -> InitResult:
+    if (organization_id is None) != (design_group_id is None):
+        raise BootstrapFailure(
+            "WORKSPACE_IDENTITY_INCOMPLETE",
+            "organization_id and design_group_id must be provided together",
+        )
+    normalized_organization = (
+        organization_id.strip() if isinstance(organization_id, str) else None
+    )
+    normalized_group = design_group_id.strip() if isinstance(design_group_id, str) else None
+    if organization_id is not None and not normalized_organization:
+        raise BootstrapFailure(
+            "WORKSPACE_IDENTITY_INVALID",
+            "organization_id must be a nonblank string",
+        )
+    if design_group_id is not None and not normalized_group:
+        raise BootstrapFailure(
+            "WORKSPACE_IDENTITY_INVALID",
+            "design_group_id must be a nonblank string",
+        )
     requested = workspace.expanduser()
     if requested.is_symlink():
         raise BootstrapFailure(
@@ -834,6 +857,17 @@ def initialize_workspace(
                 "ACTOR_ID_CONFLICT",
                 "explicit actor differs from initialized workspace default",
             )
+        identity = manifest.raw.get("identity")
+        assert isinstance(identity, Mapping)
+        for label, requested_identity in (
+            ("organization_id", normalized_organization),
+            ("design_group_id", normalized_group),
+        ):
+            if requested_identity is not None and identity.get(label) != requested_identity:
+                raise BootstrapFailure(
+                    "WORKSPACE_IDENTITY_CONFLICT",
+                    f"explicit {label} differs from initialized workspace identity",
+                )
         jobs_created = False
         relative_jobs_root = manifest.jobs_root.relative_to(canonical).as_posix()
         if not manifest.jobs_root.exists():
@@ -927,6 +961,8 @@ def initialize_workspace(
             _manifest_template(
                 workspace_id=workspace_id,
                 actor_id=persisted_actor,
+                organization_id=normalized_organization,
+                design_group_id=normalized_group,
             )
         )
         _publish_new_file(manifest_path, manifest_bytes)

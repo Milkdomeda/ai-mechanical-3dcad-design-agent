@@ -114,6 +114,8 @@ def main() -> None:
     init.add_argument("--workspace")
     init.add_argument("--env-file")
     init.add_argument("--actor-id")
+    init.add_argument("--organization-id")
+    init.add_argument("--design-group-id")
     init.add_argument("--dry-run", action="store_true")
     migrate = sub.add_parser("migrate")
     _add_bootstrap_args(migrate)
@@ -304,6 +306,8 @@ def main() -> None:
                     workspace=workspace.path,
                     actor_id=args.actor_id,
                     dry_run=args.dry_run,
+                    organization_id=args.organization_id,
+                    design_group_id=args.design_group_id,
                 ).as_dict()
             )
         except BootstrapFailure as exc:

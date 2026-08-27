@@ -140,7 +140,20 @@ $env:MECH_DESIGN_WORKSPACE = "C:\path\to\mechanical-design-workspace"
 These path examples describe the portable configuration contract. Windows
 certification is limited to the exact boundary in the Windows release guide.
 
-## Create and select the first product family
+## Optional: create and select a product family
+
+A Product Family is not required for an ordinary Design Job. Establish the
+organization and design-group scope independently when initializing a new
+workspace:
+
+```bash
+mechanical-design init \
+  --workspace /path/to/mechanical-design-workspace \
+  --organization-id example-org \
+  --design-group-id example-design-group
+```
+
+Create a family only when the design belongs to a reusable governed family:
 
 ```bash
 mechanical-design family create \
@@ -156,6 +169,13 @@ mechanical-design family create \
 
 The checked-in synthetic JSON is documentation only. It is never copied,
 auto-discovered, selected, or loaded as a runtime default.
+
+At request intake, `product_family_inventory` reads authorized discovery
+metadata from PostgreSQL and `product_family_match` records the match decision.
+An exact existing binding or approved identifier may authorize the family;
+descriptor-only candidates require user confirmation, and no credible match
+continues with a null family. `workspace_product_family_list` reports bootstrap
+JSON configuration only and is not the authoritative family inventory.
 
 ## Design Job workspaces and Legacy migration
 

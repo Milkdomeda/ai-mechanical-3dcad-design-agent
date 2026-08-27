@@ -151,6 +151,24 @@ def test_design_job_working_copy_migration_has_the_task6_immutable_digest():
     )
 
 
+def test_product_family_match_migration_is_scoped_append_only_and_fail_closed():
+    sql = _migration_text("015_product_family_match_decisions.sql")
+    normalized = " ".join(sql.split())
+
+    assert "CREATE TABLE IF NOT EXISTS product_family_match_decisions" in sql
+    assert "FOREIGN KEY (design_group_id,organization_id)" in normalized
+    assert "FOREIGN KEY (job_id,organization_id,design_group_id)" in normalized
+    assert (
+        "FOREIGN KEY (working_copy_id,job_id,organization_id,design_group_id)"
+        in normalized
+    )
+    assert "FOREIGN KEY (binding_family_id,organization_id,design_group_id)" in normalized
+    assert "specialized_knowledge_authorized = false" in normalized
+    assert "status = 'authoritative_match' AND binding_family_id IS NOT NULL" in normalized
+    assert "product_family_match_decisions_append_only" in sql
+    assert "BEFORE UPDATE OR DELETE ON product_family_match_decisions" in normalized
+
+
 def test_design_job_binding_hardening_migration_binds_exact_snapshot_and_revision():
     sql = _migration_text("012_design_job_binding_hardening.sql")
     normalized = " ".join(sql.split())
@@ -346,6 +364,17 @@ class _BootstrapRepository:
     def initialize_bootstrap(self, config: dict[str, str], actor_id: str) -> None:
         self.calls.append(f"bootstrap:{config['family_id']}:{actor_id}")
 
+    def initialize_runtime_identity(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+    ) -> None:
+        self.calls.append(
+            f"runtime_identity:{organization_id}:{design_group_id}:{actor_id}"
+        )
+
     def status(self) -> dict[str, str]:
         return {"status": "healthy"}
 
@@ -396,6 +425,7 @@ class MigrationTests(unittest.TestCase):
                     "012_design_job_binding_hardening.sql",
                     "013_design_job_binding_security.sql",
                     "014_design_job_knowledge.sql",
+                    "015_product_family_match_decisions.sql",
                 ],
             )
 
@@ -568,6 +598,32 @@ class MigrationTests(unittest.TestCase):
             [
                 f"migrations:{migration_root}",
                 "bootstrap:family:owner",
+            ],
+        )
+
+    def test_database_initialization_does_not_create_a_product_family(self) -> None:
+        service = MechanicalDesignService.__new__(MechanicalDesignService)
+        repository = _BootstrapRepository()
+        service.repository = repository
+        service.settings = SimpleNamespace(actor_id="owner", family_config_path=None)
+        service.bootstrap_config = {
+            "organization_id": "org-neutral",
+            "design_group_id": "group-neutral",
+            "family_id": None,
+        }
+
+        migration_root = Path("/package/resources/migrations/postgres")
+        with patch(
+            "mechanical_design_agent.service.postgres_migrations_directory"
+        ) as migrations:
+            migrations.return_value.__enter__.return_value = migration_root
+            service._initialize_database()
+
+        self.assertEqual(
+            repository.calls,
+            [
+                f"migrations:{migration_root}",
+                "runtime_identity:org-neutral:group-neutral:owner",
             ],
         )
 
