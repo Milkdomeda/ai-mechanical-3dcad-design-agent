@@ -67,7 +67,7 @@ jobs:
             $skipped += [int]$suite.skipped
           }
           # Live database/GUI/Job gates remain opt-in; second-volume tests run.
-          $expectedSkipped = 71
+          $expectedSkipped = 72
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }
