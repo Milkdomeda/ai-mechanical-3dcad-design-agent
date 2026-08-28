@@ -17,6 +17,7 @@ _MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 _MAX_ENTRY_COUNT = 4096
 _MAX_COMPRESSION_RATIO = 500
 _SUPPORTED_FLAGS = 0x0800
+_FREECAD_ARCHIVE_COMMENT = b"FreeCAD Document"
 _SCRIPTED_TYPE_MARKERS = (
     "featurepython", "propertypythonobject", "pythonobject", "scriptedobject",
 )
@@ -122,10 +123,24 @@ def _validate_entry(entry: _Entry) -> None:
 
 
 def _central_entries(contents: bytes) -> tuple[list[_Entry], int]:
-    if len(contents) < 22 or contents[-22:-18] != b"PK\x05\x06":
+    comment = b""
+    end_offset = len(contents) - 22
+    if (
+        len(contents) >= 22
+        and contents[end_offset:end_offset + 4] == b"PK\x05\x06"
+    ):
+        pass
+    else:
+        comment = _FREECAD_ARCHIVE_COMMENT
+        end_offset = len(contents) - 22 - len(comment)
+    if (
+        end_offset < 0
+        or contents[end_offset:end_offset + 4] != b"PK\x05\x06"
+        or contents[end_offset + 22:] != comment
+    ):
         raise _fail("FCSTD_ARCHIVE_INVALID", "FCStd has no canonical end record")
     try:
-        values = struct.unpack_from("<4s4H2IH", contents, len(contents) - 22)
+        values = struct.unpack_from("<4s4H2IH", contents, end_offset)
     except struct.error as exc:
         raise _fail("FCSTD_ARCHIVE_INVALID", "FCStd end record is malformed") from exc
     _, disk, central_disk, disk_count, total_count, central_size, central_offset, comment_size = values
@@ -133,10 +148,10 @@ def _central_entries(contents: bytes) -> tuple[list[_Entry], int]:
         disk != 0
         or central_disk != 0
         or disk_count != total_count
-        or comment_size != 0
+        or comment_size != len(comment)
         or not total_count
         or total_count > _MAX_ENTRY_COUNT
-        or central_offset + central_size != len(contents) - 22
+        or central_offset + central_size != end_offset
     ):
         raise _fail("FCSTD_ARCHIVE_INVALID", "FCStd central directory is unsupported")
     entries: list[_Entry] = []

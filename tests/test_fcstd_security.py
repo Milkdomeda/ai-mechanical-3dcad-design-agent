@@ -12,9 +12,14 @@ from mechanical_design_agent.fcstd_security import (
 )
 
 
-def _fcstd(entries: list[tuple[str, bytes]]) -> bytes:
+def _fcstd(
+    entries: list[tuple[str, bytes]],
+    *,
+    archive_comment: bytes = b"",
+) -> bytes:
     output = BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.comment = archive_comment
         for name, content in entries:
             archive.writestr(name, content)
     return output.getvalue()
@@ -94,6 +99,40 @@ def test_fcstd_static_inspection_accepts_a_minimal_non_scripted_document() -> No
 
     assert evidence.entry_count == 2
     assert evidence.document_schema_version == "4"
+
+
+def test_fcstd_static_inspection_accepts_freecad_canonical_archive_comment() -> None:
+    payload = _fcstd(
+        [("Document.xml", _document()), ("GuiDocument.xml", b"<GuiDocument/>")],
+        archive_comment=b"FreeCAD Document",
+    )
+
+    evidence = inspect_fcstd_bytes(payload)
+
+    assert evidence.entry_count == 2
+    assert evidence.document_schema_version == "4"
+
+
+@pytest.mark.parametrize(
+    "archive_comment",
+    (
+        b"FreeCAD document",
+        b"FreeCAD Document\x00",
+        b"arbitrary archive comment",
+    ),
+)
+def test_fcstd_static_inspection_rejects_noncanonical_archive_comments(
+    archive_comment: bytes,
+) -> None:
+    payload = _fcstd(
+        [("Document.xml", _document())],
+        archive_comment=archive_comment,
+    )
+
+    with pytest.raises(FcstdSecurityError) as captured:
+        inspect_fcstd_bytes(payload)
+
+    assert captured.value.code == "FCSTD_ARCHIVE_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -264,7 +303,8 @@ def test_agent_native_empty_document_archive_passes_its_scanner() -> None:
                 ),
             ),
             ("GuiDocument.xml", b'<GuiDocument SchemaVersion="1"/>'),
-        ]
+        ],
+        archive_comment=b"FreeCAD Document",
     )
 
     assert inspect_fcstd_bytes(payload).document_schema_version == "4"
