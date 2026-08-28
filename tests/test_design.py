@@ -237,7 +237,12 @@ def _safe_fcstd_bytes(marker: str = "safe") -> bytes:
         "</Document>"
     ).encode("utf-8")
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("Document.xml", document)
+        document_entry = zipfile.ZipInfo(
+            "Document.xml",
+            date_time=(1980, 1, 1, 0, 0, 0),
+        )
+        document_entry.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(document_entry, document)
     return output.getvalue()
 
 
