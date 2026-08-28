@@ -107,7 +107,7 @@ provision loopback-only PostgreSQL/pgvector and Neo4j services for local and
 evaluation use, but it never owns, mounts, or executes migrations. The
 installed package owns PostgreSQL and Neo4j migration resources and the
 installed `mechanical-design database bootstrap` command applies and verifies
-them. Production provisioning remains outside the version 0.3.0 boundary. See
+them. Production provisioning remains outside the version 0.4.0 boundary. See
 [Database deployment](DATABASE_DEPLOYMENT.md).
 
 ## Model analysis and working copies

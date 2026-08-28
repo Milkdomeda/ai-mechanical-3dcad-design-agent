@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-28
 
 - Accept the canonical `FreeCAD Document` archive comment emitted by official
   FreeCAD FCStd files while continuing to reject every other non-empty ZIP
@@ -20,6 +20,9 @@
 - Label workspace family listing as bootstrap configuration only and allow new
   workspaces to establish organization/design-group scope without creating a
   Product Family.
+- Harden Windows release verification with deterministic synthetic FCStd ZIP
+  metadata and semantic validation of escaped FreeCADCmd script paths and
+  arguments, without weakening process, stdout, stderr, or release gates.
 
 ## 0.3.1 - 2026-08-24
 
