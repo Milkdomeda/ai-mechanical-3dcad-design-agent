@@ -772,10 +772,18 @@ class DesignWorkspaceTests(unittest.TestCase):
             root = Path(temporary)
             settings, repository, manager = _job_binding_workspace(root)
             repository.publication_error = LostCommitAcknowledgement("lost COMMIT ack")
+            generated_artifacts: list[bytes] = []
+
+            def capture_generated_artifact(*args, **kwargs):
+                result = _valid_job_freecad_run(*args, **kwargs)
+                script = Path(args[1])
+                if script.name == "create_empty_working_copy.py":
+                    generated_artifacts.append(Path(args[2][0]).read_bytes())
+                return result
 
             with patch(
                 "mechanical_design_agent.design.run_freecad_script",
-                side_effect=_valid_job_freecad_run,
+                side_effect=capture_generated_artifact,
             ):
                 result = DesignWorkspace(settings, repository, manager).create_job_new_working_copy(
                     job_id="10000000-0000-4000-8000-000000000001",
@@ -787,8 +795,13 @@ class DesignWorkspaceTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(repository.reconciliations), 2)
+            self.assertEqual(len(generated_artifacts), 1)
             self.assertEqual(
-                Path(result["working_path"]).read_bytes(), _safe_fcstd_bytes("new")
+                Path(result["working_path"]).read_bytes(), generated_artifacts[0]
+            )
+            self.assertEqual(
+                repository.created["working_sha256"],
+                file_sha256(Path(result["working_path"])),
             )
             self.assertEqual([name for name, _ in manager.calls], ["lock", "publish"])
 

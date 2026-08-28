@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import subprocess
 
@@ -71,10 +72,14 @@ def test_runner_uses_noninteractive_console_argument_and_closed_stdin(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
+    injection_like_argument = (
+        "quote' double\" backslash\\ newline\n$(touch should-not-run); & |"
+    )
+
     run_freecad_script(
         executable,
         script,
-        ["argument with spaces"],
+        ["argument with spaces", injection_like_argument],
         timeout_seconds=3,
         expected_sha256=pinned.sha256,
         expected_identity=pinned.identity,
@@ -84,13 +89,50 @@ def test_runner_uses_noninteractive_console_argument_and_closed_stdin(
     invocation = captured["args"]
     assert isinstance(invocation, tuple)
     command = invocation[0]
+    assert isinstance(command, list)
     assert command[:2] == [str(executable), "-c"]
     assert len(command) == 3
-    assert "sys.argv =" in command[2]
-    assert str(script) in command[2]
-    assert "argument with spaces" in command[2]
+
+    outer = ast.parse(command[2], mode="exec")
+    assert len(outer.body) == 1
+    outer_expression = outer.body[0]
+    assert isinstance(outer_expression, ast.Expr)
+    outer_call = outer_expression.value
+    assert isinstance(outer_call, ast.Call)
+    assert isinstance(outer_call.func, ast.Name)
+    assert outer_call.func.id == "exec"
+    assert len(outer_call.args) == 1
+    runner_source = ast.literal_eval(outer_call.args[0])
+    assert isinstance(runner_source, str)
+
+    runner = ast.parse(runner_source, mode="exec")
+    argv_assignment = next(
+        node
+        for node in runner.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Attribute)
+        and isinstance(node.targets[0].value, ast.Name)
+        and node.targets[0].value.id == "sys"
+        and node.targets[0].attr == "argv"
+    )
+    script_assignment = next(
+        node
+        for node in runner.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "_script"
+    )
+    assert ast.literal_eval(argv_assignment.value) == [
+        str(script),
+        "argument with spaces",
+        injection_like_argument,
+    ]
+    assert ast.literal_eval(script_assignment.value) == str(script)
     assert captured["stdin"] is subprocess.DEVNULL
     assert "input" not in captured
+    assert "shell" not in captured
 
 
 def test_runner_strips_only_complete_freecad_progress_blocks() -> None:
