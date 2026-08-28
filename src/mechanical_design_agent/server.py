@@ -226,6 +226,9 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         ),
         "design_change_record": _capability("cad_working_copy"),
         "design_change_review": _capability("cad_working_copy"),
+        "design_approval_envelope_get": _capability("cad_working_copy"),
+        "design_change_audit_history": _capability("cad_working_copy"),
+        "design_change_mutation_authorize": _capability("cad_working_copy"),
         "design_change_applied": _capability("cad_working_copy"),
         "design_change_close": _capability("cad_working_copy"),
         "design_confirmation_record": _capability("cad_working_copy"),
@@ -1324,6 +1327,8 @@ def create_mcp(
         changes_json: str,
         knowledge_used_json: str,
         rationale: str,
+        approval_envelope_draft_json: str = "",
+        semantic_impact_json: str = "",
     ) -> str:
         """Record a structured proposed CAD change and the exact approved knowledge it used."""
         changes = _array(changes_json, "changes_json")
@@ -1337,6 +1342,19 @@ def create_mcp(
                 changes=changes,
                 knowledge_used=knowledge_used,
                 rationale=rationale,
+                approval_envelope_draft=(
+                    _object(
+                        approval_envelope_draft_json,
+                        "approval_envelope_draft_json",
+                    )
+                    if approval_envelope_draft_json.strip()
+                    else None
+                ),
+                semantic_impact=(
+                    _object(semantic_impact_json, "semantic_impact_json")
+                    if semantic_impact_json.strip()
+                    else None
+                ),
             )
         )
 
@@ -1397,8 +1415,23 @@ def create_mcp(
     def design_change_review(
         change_set_id: str, decision: str, review_text: str, confirmation: str
     ) -> str:
-        """Approve or reject a proposed structure/parameter change before it is applied in FreeCAD."""
+        """Approve a design intent or request a revised proposal using simple user confirmation."""
         return _json(service.design_change_review(change_set_id, decision, review_text, confirmation))
+
+    @mcp.tool()
+    def design_approval_envelope_get(working_copy_id: str) -> str:
+        """Return the active auditable design-intent approval envelope."""
+        return _json(service.design_approval_envelope_get(working_copy_id))
+
+    @mcp.tool()
+    def design_change_audit_history(change_set_id: str) -> str:
+        """Return append-only approval and autonomous-change audit events."""
+        return _json(service.design_change_audit_history(change_set_id))
+
+    @mcp.tool()
+    def design_change_mutation_authorize(change_set_id: str) -> str:
+        """Fail closed unless this exact change is authorized by the active approval envelope."""
+        return _json(service.design_change_mutation_authorize(change_set_id))
 
     @mcp.tool()
     def design_change_applied(change_set_id: str, confirmation: str) -> str:

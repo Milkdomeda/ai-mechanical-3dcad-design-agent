@@ -110,6 +110,9 @@ _RESOURCE_SETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "migrations/postgres/011_design_job_working_copies.sql",
             "migrations/postgres/012_design_job_binding_hardening.sql",
             "migrations/postgres/013_design_job_binding_security.sql",
+            "migrations/postgres/014_design_job_knowledge.sql",
+            "migrations/postgres/015_product_family_match_decisions.sql",
+            "migrations/postgres/016_design_approval_envelopes.sql",
         ),
         "schemas": ("schemas/design-lesson-package-v1.schema.json",),
         "standard_part_provider_config": (

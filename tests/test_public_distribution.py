@@ -35,10 +35,13 @@ EXPECTED_SCRIPTS = {
 }
 EXPECTED_MCP_TOOL_NAMES = {
     "design_assembly_completeness_validate",
+    "design_approval_envelope_get",
     "design_change_applied",
+    "design_change_audit_history",
     "design_change_close",
     "design_change_record",
     "design_change_review",
+    "design_change_mutation_authorize",
     "design_confirmation_record",
     "design_context_build",
     "design_delivery_approve",

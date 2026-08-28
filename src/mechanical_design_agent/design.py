@@ -1315,6 +1315,8 @@ class DesignWorkspace:
         knowledge_used: list[str],
         rationale: str,
         actor_id: str,
+        approval_envelope_draft: dict[str, Any] | None = None,
+        semantic_impact: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not changes:
             raise ValueError("at least one structured change is required")
@@ -1323,13 +1325,20 @@ class DesignWorkspace:
         if change_phase not in {"design_proposal", "structure_change", "parameter_change"}:
             raise ValueError("change_phase must be design_proposal, structure_change, or parameter_change")
         return self.repository.record_change_set(
-            working_copy_id, change_phase, changes, knowledge_used, rationale, actor_id
+            working_copy_id,
+            change_phase,
+            changes,
+            knowledge_used,
+            rationale,
+            actor_id,
+            approval_envelope_draft=approval_envelope_draft,
+            semantic_impact=semantic_impact,
         )
 
-    def mark_change_applied(self, *, change_set_id: str, confirmation: str) -> dict[str, Any]:
-        if change_set_id not in confirmation or "已应用" not in confirmation:
-            raise ValueError("confirmation must include change_set_id and 已应用")
-        change = self.repository.get_change_set(change_set_id)
+    def mark_change_applied(
+        self, *, change_set_id: str, confirmation: str, actor_id: str
+    ) -> dict[str, Any]:
+        change = self.repository.authorize_change_mutation(change_set_id, actor_id)
         working_copy_id = str(change["working_copy_id"])
         self.repository.require_completed_retrieval(
             working_copy_id,
@@ -1345,7 +1354,9 @@ class DesignWorkspace:
             revision_path = revision_dir / f"{digest}.FCStd"
             if not revision_path.exists():
                 atomic_publish_new(revision_path, read_managed_file(path).content)
-            result = self.repository.mark_change_set_applied(change_set_id, digest)
+            result = self.repository.mark_change_set_applied(
+                change_set_id, digest, actor_id
+            )
             return {**result, "job_revision_path": str(revision_path)}
 
     def record_validation(

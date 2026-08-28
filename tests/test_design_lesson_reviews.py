@@ -4089,6 +4089,34 @@ def test_live_confirmed_to_retrievable_flow_is_atomic_projected_and_searchable()
                 ],
                 knowledge_used=[],
                 rationale="Task 8 isolated end-to-end proof",
+                approval_envelope_draft={
+                    "design_intent": {
+                        "function": "Align a synthetic actuator mount"
+                    },
+                    "architecture": {
+                        "mechanism": "synthetic fixed mounting interface"
+                    },
+                    "key_interfaces": [
+                        {
+                            "id": "synthetic-actuator-mount",
+                            "contract": "aligned rigid interface",
+                        }
+                    ],
+                    "user_constraints": [
+                        {
+                            "id": "synthetic-clearance",
+                            "rule": "preserve positive clearance",
+                        }
+                    ],
+                    "manufacturing_method": {"process": "synthetic machining"},
+                    "material_constraints": [],
+                    "validation_requirements": [
+                        {
+                            "id": "synthetic-shape-validity",
+                            "rule": "valid model geometry",
+                        }
+                    ],
+                },
             )
             change_set_id = str(change["id"])
             service.design_change_review(

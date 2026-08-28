@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 import uuid
 
+from .approval_envelope import (
+    classify_change_against_envelope,
+    require_mutation_authorization,
+    validate_approval_envelope_draft,
+)
 from .design_lessons import (
     EVIDENCE_ROLE_VALIDATION_KINDS,
     PUBLISHED_RISK,
@@ -3387,7 +3392,12 @@ class PostgresRepository:
         knowledge_used: list[str],
         rationale: str,
         actor_id: str,
+        *,
+        approval_envelope_draft: dict[str, Any] | None = None,
+        semantic_impact: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if approval_envelope_draft is not None:
+            validate_approval_envelope_draft(approval_envelope_draft)
         with self.connection() as connection, connection.transaction():
             working = connection.execute(
                 "SELECT w.*,m.product_id FROM design_working_copies w LEFT JOIN model_revisions m "
@@ -3411,22 +3421,93 @@ class PostgresRepository:
             authorized = self._authorized_knowledge_ids(connection, working, knowledge_used)
             if authorized != set(knowledge_used):
                 raise ValueError("knowledge_used contains unapproved or out-of-scope assertions")
+            active_envelope_row = connection.execute(
+                "SELECT * FROM design_approval_envelopes "
+                "WHERE working_copy_id=%s AND status='active' FOR UPDATE",
+                (working_copy_id,),
+            ).fetchone()
+            active_envelope = dict(active_envelope_row) if active_envelope_row else None
+            if approval_envelope_draft is not None:
+                boundary_decision = {
+                    "status": "requires_human_approval",
+                    "requires_human_approval": True,
+                    "reasons": ["new_design_intent_proposed"],
+                    "rule_basis": "semantic_design_intent",
+                }
+            elif semantic_impact is not None:
+                boundary_decision = classify_change_against_envelope(
+                    active_envelope, semantic_impact
+                )
+            else:
+                boundary_decision = {
+                    "status": "requires_human_approval",
+                    "requires_human_approval": True,
+                    "reasons": ["incomplete_semantic_impact"],
+                    "rule_basis": "semantic_design_intent",
+                }
+            autonomous = not boundary_decision["requires_human_approval"]
             row = connection.execute(
-                "INSERT INTO design_change_sets(working_copy_id,change_phase,changes,knowledge_used,rationale,created_by) "
-                "VALUES (%s,%s,%s::jsonb,%s::jsonb,%s,%s) RETURNING *",
+                "INSERT INTO design_change_sets("
+                "working_copy_id,status,change_phase,changes,knowledge_used,rationale,created_by,"
+                "approval_envelope_id,approval_envelope_draft,semantic_impact,boundary_decision,"
+                "authorization_mode,requires_human_approval) "
+                "VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s) "
+                "RETURNING *",
                 (
                     working_copy_id,
+                    "approved" if autonomous else "proposed",
                     change_phase,
                     json.dumps(changes, ensure_ascii=False),
                     json.dumps(knowledge_used),
                     rationale,
                     actor_id,
+                    active_envelope["id"] if autonomous else None,
+                    (
+                        json.dumps(approval_envelope_draft, ensure_ascii=False)
+                        if approval_envelope_draft is not None
+                        else None
+                    ),
+                    (
+                        json.dumps(semantic_impact, ensure_ascii=False)
+                        if semantic_impact is not None
+                        else None
+                    ),
+                    json.dumps(boundary_decision, ensure_ascii=False),
+                    "approval_envelope" if autonomous else "human_required",
+                    not autonomous,
                 ),
             ).fetchone()
+            event_type = (
+                "autonomous_authorized"
+                if autonomous
+                else (
+                    "human_approval_required"
+                    if approval_envelope_draft is not None
+                    or active_envelope is None
+                    else "boundary_fail_closed"
+                )
+            )
+            connection.execute(
+                "INSERT INTO design_change_audit_events("
+                "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                "VALUES (%s,%s,%s,%s,%s::jsonb)",
+                (
+                    row["id"],
+                    active_envelope["id"] if active_envelope else None,
+                    event_type,
+                    actor_id,
+                    json.dumps(boundary_decision, ensure_ascii=False),
+                ),
+            )
         return dict(row)
 
     def review_change_set(
-        self, change_set_id: str, decision: str, actor_id: str, review_text: str
+        self,
+        change_set_id: str,
+        decision: str,
+        actor_id: str,
+        review_text: str,
+        approval_text: str = "",
     ) -> dict[str, Any]:
         if decision not in {"approve", "reject"}:
             raise ValueError("change-set decision must be approve or reject")
@@ -3434,14 +3515,207 @@ class PostgresRepository:
             actor = connection.execute("SELECT role FROM actors WHERE id=%s", (actor_id,)).fetchone()
             if actor is None or actor["role"] != "family_owner":
                 raise PermissionError("design change review requires family_owner")
+            target_row = connection.execute(
+                "SELECT * FROM design_change_sets WHERE id=%s AND status='proposed' FOR UPDATE",
+                (change_set_id,),
+            ).fetchone()
+            if target_row is None:
+                raise KeyError("change set was not found or is no longer proposed")
+            target = dict(target_row)
+            if decision == "reject":
+                row = connection.execute(
+                    "UPDATE design_change_sets SET status='rejected',reviewed_by=%s,"
+                    "review_text=%s,reviewed_at=now() WHERE id=%s RETURNING *",
+                    (actor_id, review_text, change_set_id),
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO design_change_audit_events("
+                    "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                    "VALUES (%s,%s,'human_rejected',%s,%s::jsonb)",
+                    (
+                        change_set_id,
+                        target.get("approval_envelope_id"),
+                        actor_id,
+                        json.dumps({"decision": "reject", "review_text": review_text}),
+                    ),
+                )
+                return dict(row)
+
+            draft = target.get("approval_envelope_draft")
+            if not isinstance(draft, dict):
+                raise ValueError(
+                    "approved design intent requires a complete approval_envelope_draft"
+                )
+            validate_approval_envelope_draft(draft)
+            working = connection.execute(
+                "SELECT * FROM design_working_copies WHERE id=%s FOR UPDATE",
+                (target["working_copy_id"],),
+            ).fetchone()
+            if working is None or not working.get("job_id"):
+                raise ValueError("approval envelope requires a Design Job-bound working copy")
+            job = connection.execute(
+                "SELECT revision FROM design_jobs WHERE id=%s FOR UPDATE",
+                (working["job_id"],),
+            ).fetchone()
+            if job is None:
+                raise ValueError("approval envelope Design Job was not found")
+            prior = connection.execute(
+                "SELECT * FROM design_approval_envelopes "
+                "WHERE working_copy_id=%s AND status='active' FOR UPDATE",
+                (target["working_copy_id"],),
+            ).fetchone()
+            revision_row = connection.execute(
+                "SELECT COALESCE(max(envelope_revision),0)+1 AS next_revision "
+                "FROM design_approval_envelopes WHERE working_copy_id=%s",
+                (target["working_copy_id"],),
+            ).fetchone()
+            envelope_revision = int(revision_row["next_revision"])
+            envelope_id = str(uuid.uuid4())
+            if prior is not None:
+                connection.execute(
+                    "UPDATE design_approval_envelopes SET status='superseded' WHERE id=%s",
+                    (prior["id"],),
+                )
+            envelope = connection.execute(
+                "INSERT INTO design_approval_envelopes("
+                "id,approval_change_set_id,job_id,working_copy_id,organization_id,design_group_id,"
+                "design_intent,architecture,"
+                "key_interfaces,user_constraints,manufacturing_method,material_constraints,"
+                "validation_requirements,approved_by,approval_text,approval_revision,envelope_revision) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,"
+                "%s::jsonb,%s,%s,%s,%s) RETURNING *",
+                (
+                    envelope_id,
+                    change_set_id,
+                    working["job_id"],
+                    target["working_copy_id"],
+                    working["organization_id"],
+                    working["design_group_id"],
+                    json.dumps(draft["design_intent"], ensure_ascii=False),
+                    json.dumps(draft["architecture"], ensure_ascii=False),
+                    json.dumps(draft["key_interfaces"], ensure_ascii=False),
+                    json.dumps(draft["user_constraints"], ensure_ascii=False),
+                    json.dumps(draft["manufacturing_method"], ensure_ascii=False),
+                    json.dumps(draft["material_constraints"], ensure_ascii=False),
+                    json.dumps(draft["validation_requirements"], ensure_ascii=False),
+                    actor_id,
+                    approval_text.strip() or review_text,
+                    int(job["revision"]),
+                    envelope_revision,
+                ),
+            ).fetchone()
+            if prior is not None:
+                connection.execute(
+                    "UPDATE design_approval_envelopes SET superseded_by=%s "
+                    "WHERE id=%s",
+                    (envelope["id"], prior["id"]),
+                )
+                connection.execute(
+                    "INSERT INTO design_change_audit_events("
+                    "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                    "VALUES (%s,%s,'envelope_superseded',%s,%s::jsonb)",
+                    (
+                        change_set_id,
+                        prior["id"],
+                        actor_id,
+                        json.dumps({"superseded_by": str(envelope["id"])}),
+                    ),
+                )
             row = connection.execute(
-                "UPDATE design_change_sets SET status=%s,reviewed_by=%s,review_text=%s,reviewed_at=now() "
-                "WHERE id=%s AND status='proposed' RETURNING *",
-                ("approved" if decision == "approve" else "rejected", actor_id, review_text, change_set_id),
+                "UPDATE design_change_sets SET status='approved',reviewed_by=%s,review_text=%s,"
+                "reviewed_at=now(),approval_envelope_id=%s,authorization_mode='human_approval',"
+                "requires_human_approval=false WHERE id=%s RETURNING *",
+                (actor_id, review_text, envelope["id"], change_set_id),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO design_change_audit_events("
+                "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                "VALUES (%s,%s,'human_approved',%s,%s::jsonb)",
+                (
+                    change_set_id,
+                    envelope["id"],
+                    actor_id,
+                    json.dumps(
+                        {
+                            "decision": "approve",
+                            "review_text": review_text,
+                            "approval_text": approval_text.strip() or review_text,
+                            "approval_revision": int(job["revision"]),
+                            "envelope_revision": envelope_revision,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+        return dict(row)
+
+    def get_active_approval_envelope(
+        self, working_copy_id: str
+    ) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM design_approval_envelopes "
+                "WHERE working_copy_id=%s AND status='active'",
+                (working_copy_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_change_audit_events(
+        self, change_set_id: str
+    ) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_change_audit_events WHERE change_set_id=%s "
+                "ORDER BY created_at,id",
+                (change_set_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def authorize_change_mutation(
+        self, change_set_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        with self.connection() as connection, connection.transaction():
+            row = connection.execute(
+                "SELECT * FROM design_change_sets WHERE id=%s FOR UPDATE",
+                (change_set_id,),
             ).fetchone()
             if row is None:
-                raise KeyError("change set was not found or is no longer proposed")
-        return dict(row)
+                raise KeyError(f"unknown change_set_id: {change_set_id}")
+            change = dict(row)
+            envelope = connection.execute(
+                "SELECT * FROM design_approval_envelopes "
+                "WHERE working_copy_id=%s AND status='active' FOR UPDATE",
+                (change["working_copy_id"],),
+            ).fetchone()
+            active_envelope_id = str(envelope["id"]) if envelope else None
+            normalized_change = {
+                **change,
+                "approval_envelope_id": (
+                    str(change["approval_envelope_id"])
+                    if change.get("approval_envelope_id")
+                    else None
+                ),
+            }
+            require_mutation_authorization(
+                normalized_change, active_envelope_id=active_envelope_id
+            )
+            decision = {
+                "status": "mutation_authorized",
+                "authorization_mode": change["authorization_mode"],
+                "approval_envelope_id": active_envelope_id,
+            }
+            connection.execute(
+                "INSERT INTO design_change_audit_events("
+                "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                "VALUES (%s,%s,'mutation_authorized',%s,%s::jsonb)",
+                (
+                    change_set_id,
+                    active_envelope_id,
+                    actor_id,
+                    json.dumps(decision),
+                ),
+            )
+        return {**normalized_change, "mutation_authorization": decision}
 
     def close_change_set(
         self,
@@ -3497,8 +3771,34 @@ class PostgresRepository:
             ).fetchone()
         return dict(row)
 
-    def mark_change_set_applied(self, change_set_id: str, resulting_sha256: str) -> dict[str, Any]:
+    def mark_change_set_applied(
+        self, change_set_id: str, resulting_sha256: str, actor_id: str
+    ) -> dict[str, Any]:
         with self.connection() as connection, connection.transaction():
+            target_row = connection.execute(
+                "SELECT * FROM design_change_sets WHERE id=%s FOR UPDATE",
+                (change_set_id,),
+            ).fetchone()
+            if target_row is None:
+                raise KeyError("change set was not found")
+            target = dict(target_row)
+            envelope = connection.execute(
+                "SELECT * FROM design_approval_envelopes "
+                "WHERE working_copy_id=%s AND status='active' FOR UPDATE",
+                (target["working_copy_id"],),
+            ).fetchone()
+            active_envelope_id = str(envelope["id"]) if envelope else None
+            require_mutation_authorization(
+                {
+                    **target,
+                    "approval_envelope_id": (
+                        str(target["approval_envelope_id"])
+                        if target.get("approval_envelope_id")
+                        else None
+                    ),
+                },
+                active_envelope_id=active_envelope_id,
+            )
             row = connection.execute(
                 "UPDATE design_change_sets SET status='applied',applied_at=now(),resulting_sha256=%s "
                 "WHERE id=%s AND status='approved' RETURNING *",
@@ -3509,6 +3809,17 @@ class PostgresRepository:
             connection.execute(
                 "UPDATE design_working_copies SET status='draft' WHERE id=%s",
                 (row["working_copy_id"],),
+            )
+            connection.execute(
+                "INSERT INTO design_change_audit_events("
+                "change_set_id,approval_envelope_id,event_type,actor_id,decision) "
+                "VALUES (%s,%s,'change_applied',%s,%s::jsonb)",
+                (
+                    change_set_id,
+                    active_envelope_id,
+                    actor_id,
+                    json.dumps({"resulting_sha256": resulting_sha256}),
+                ),
             )
         return dict(row)
 

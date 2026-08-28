@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Accept the canonical `FreeCAD Document` archive comment emitted by official
+  FreeCAD FCStd files while continuing to reject every other non-empty ZIP
+  comment.
+- Run FreeCADCmd scripts through the non-interactive console command path and
+  remove only strictly recognized complete official progress blocks; unknown
+  stdout and stderr remain evidence and continue to fail closed.
+- Replace per-iteration Design Change approval with a PostgreSQL-authoritative
+  Design Intent Approval Envelope, semantic boundary classification,
+  pre-mutation authorization, simple `批准` / `修改方案` interaction, and
+  append-only audit history for autonomous in-envelope repairs.
 - Make Product Family association optional for ordinary Design Jobs and route
   non-family operations through family-neutral runtime settings.
 - Add PostgreSQL-authoritative family inventory and deterministic, append-only

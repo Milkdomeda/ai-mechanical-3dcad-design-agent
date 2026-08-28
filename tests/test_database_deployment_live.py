@@ -50,6 +50,8 @@ EXPECTED_POSTGRES_MIGRATIONS = (
     "012_design_job_binding_hardening.sql",
     "013_design_job_binding_security.sql",
     "014_design_job_knowledge.sql",
+    "015_product_family_match_decisions.sql",
+    "016_design_approval_envelopes.sql",
 )
 EXPECTED_NEO4J_MIGRATIONS = (
     "001_constraints.cypher",

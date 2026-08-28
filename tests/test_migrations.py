@@ -426,8 +426,35 @@ class MigrationTests(unittest.TestCase):
                     "013_design_job_binding_security.sql",
                     "014_design_job_knowledge.sql",
                     "015_product_family_match_decisions.sql",
+                    "016_design_approval_envelopes.sql",
                 ],
             )
+
+    def test_approval_envelope_migration_is_scoped_audited_and_fail_closed(self) -> None:
+        sql = _migration_text("016_design_approval_envelopes.sql")
+        normalized = " ".join(sql.split())
+
+        assert "CREATE TABLE IF NOT EXISTS design_approval_envelopes" in sql
+        assert "approval_change_set_id uuid NOT NULL UNIQUE" in normalized
+        assert "job_id uuid NOT NULL REFERENCES design_jobs(id)" in normalized
+        assert "working_copy_id uuid NOT NULL REFERENCES design_working_copies(id)" in normalized
+        assert "organization_id text NOT NULL REFERENCES organizations(id)" in normalized
+        assert "design_group_id text NOT NULL REFERENCES design_groups(id)" in normalized
+        assert "FOREIGN KEY (working_copy_id, job_id, organization_id, design_group_id)" in normalized
+        assert "design_intent jsonb NOT NULL" in normalized
+        assert "architecture jsonb NOT NULL" in normalized
+        assert "key_interfaces jsonb NOT NULL" in normalized
+        assert "user_constraints jsonb NOT NULL" in normalized
+        assert "manufacturing_method jsonb NOT NULL" in normalized
+        assert "material_constraints jsonb NOT NULL" in normalized
+        assert "validation_requirements jsonb NOT NULL" in normalized
+        assert "authorization_mode text NOT NULL DEFAULT 'human_required'" in normalized
+        assert "requires_human_approval boolean NOT NULL DEFAULT true" in normalized
+        assert "CREATE TABLE IF NOT EXISTS design_change_audit_events" in sql
+        assert "design_approval_envelopes_immutable" in sql
+        assert "approved design intent envelope content is immutable" in sql
+        assert "design_change_audit_events_append_only" in sql
+        assert "BEFORE UPDATE OR DELETE ON design_change_audit_events" in normalized
 
     def test_packaged_neo4j_migrations_contain_the_exact_ordered_baseline(self) -> None:
         expected = {

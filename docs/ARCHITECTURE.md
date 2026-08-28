@@ -134,6 +134,32 @@ archive. Embedded Python or other executable persistence is never executed.
 The executable must match its reviewed configured SHA-256 and file identity
 immediately before and after every isolated, secret-scrubbed invocation.
 
+## Design-intent approval envelope
+
+The first substantive CAD mutation requires a proposed Design Intent with a
+complete Approval Envelope draft and explicit user approval. PostgreSQL stores
+the approved intent, mechanism and architecture, key interfaces, user
+constraints, manufacturing and specified material constraints, validation
+requirements, approval actor/text/time, Design Job revision, and envelope
+revision. The user can approve or request revision with `批准` or `修改方案`;
+internal UUIDs remain MCP and audit identifiers.
+
+Each later change set declares its semantic impact. Routine parameter, detail,
+clearance, interference, geometry-validity, validation-driven, and
+implementation repairs are approved automatically only when every declared
+boundary remains unambiguously inside the active envelope. Mechanism,
+architecture, key-interface, approved-function, explicit-constraint,
+manufacturing, specified-material, standard-part-category, or validation-scope
+changes require a successor proposal and new approval. Missing or ambiguous
+impact data fails closed; percentage-only thresholds never grant authority.
+
+Before the external FreeCAD GUI MCP performs a substantive edit, the client
+must call `design_change_mutation_authorize` for the exact change set. The gate
+requires an active matching envelope and an approved authorization mode. Every
+human decision, autonomous authorization, boundary failure, mutation grant,
+application, and envelope supersession is written to the append-only
+`design_change_audit_events` history.
+
 ## Design-context gate
 
 `DesignContext/v2` is the sole context contract. Specialized family/design

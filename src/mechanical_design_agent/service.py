@@ -2868,17 +2868,51 @@ class MechanicalDesignService:
         self, change_set_id: str, decision: str, review_text: str, confirmation: str
     ) -> dict[str, Any]:
         self._require_database()
-        decision_word = "批准" if decision == "approve" else "拒绝"
-        if change_set_id not in confirmation or decision_word not in confirmation:
-            raise ValueError("confirmation must include change_set_id and the matching Chinese decision word")
+        normalized_confirmation = confirmation.strip()
+        simple_confirmation = "批准" if decision == "approve" else "修改方案"
+        legacy_decision_word = "批准" if decision == "approve" else "拒绝"
+        legacy_confirmation = (
+            change_set_id in normalized_confirmation
+            and legacy_decision_word in normalized_confirmation
+        )
+        if normalized_confirmation != simple_confirmation and not legacy_confirmation:
+            raise ValueError(
+                f"confirmation must be {simple_confirmation} or a matching legacy confirmation"
+            )
         return self.repository.review_change_set(
-            change_set_id, decision, self.settings.actor_id, review_text
+            change_set_id,
+            decision,
+            self.settings.actor_id,
+            review_text,
+            normalized_confirmation,
+        )
+
+    def design_approval_envelope_get(
+        self, working_copy_id: str
+    ) -> dict[str, Any] | None:
+        self._require_database()
+        return self.repository.get_active_approval_envelope(working_copy_id)
+
+    def design_change_audit_history(
+        self, change_set_id: str
+    ) -> list[dict[str, Any]]:
+        self._require_database()
+        return self.repository.list_change_audit_events(change_set_id)
+
+    def design_change_mutation_authorize(
+        self, change_set_id: str
+    ) -> dict[str, Any]:
+        self._require_database()
+        return self.repository.authorize_change_mutation(
+            change_set_id, self.settings.actor_id
         )
 
     def design_change_applied(self, change_set_id: str, confirmation: str) -> dict[str, Any]:
         self._require_database()
         return self.design_workspace.mark_change_applied(
-            change_set_id=change_set_id, confirmation=confirmation
+            change_set_id=change_set_id,
+            confirmation=confirmation,
+            actor_id=self.settings.actor_id,
         )
 
     def design_change_close(

@@ -110,9 +110,9 @@ authorization cannot be mistaken for a new human review.
 - Existing callers may continue to include ID-bearing Chinese confirmation text.
 - New callers may pass the simple canonical user response while retaining the
   internal ID in the MCP arguments.
-- Legacy approved changes without an envelope retain the old explicit application
-  confirmation requirement; envelope-linked changes use the new audit-only apply
-  operation.
+- Legacy proposed or approved changes without enough data to create an envelope
+  fail closed and require a complete successor Design Intent proposal. Existing
+  IDs and history remain readable and are never silently promoted.
 - Product Family matching and binding are unchanged.
 
 ## Fail-Closed Mutation Gate
