@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Sequence
@@ -10,6 +11,52 @@ from .secure_fs import FileIdentity, SecureFilesystemError, read_managed_file, v
 
 class FreeCADExecutableTrustError(RuntimeError):
     """The reviewed FreeCAD executable changed or no longer matches its digest."""
+
+
+_FREECAD_PROGRESS_LABELS = frozenset(
+    {
+        "Importing project files......\n",
+        "Postprocessing......\n",
+        "Recompute......\n",
+    }
+)
+_FREECAD_PROGRESS_VALUE = re.compile(
+    r"\t{6}\((0|[1-9][0-9]?|100) %\)\t\n\Z"
+)
+_FREECAD_PROGRESS_CLEAR = "\t" * 8 + "\n"
+
+
+def _strip_freecad_progress_output(value: str) -> str:
+    """Remove only complete, monotonic FreeCAD 1.1 console progress blocks."""
+    lines = value.splitlines(keepends=True)
+    preserved: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index] not in _FREECAD_PROGRESS_LABELS:
+            preserved.append(lines[index])
+            index += 1
+            continue
+        start = index
+        index += 1
+        percentages: list[int] = []
+        while index < len(lines):
+            match = _FREECAD_PROGRESS_VALUE.fullmatch(lines[index])
+            if match is None:
+                break
+            percentages.append(int(match.group(1)))
+            index += 1
+        complete = (
+            bool(percentages)
+            and percentages[-1] == 100
+            and all(left <= right for left, right in zip(percentages, percentages[1:]))
+            and index < len(lines)
+            and lines[index] == _FREECAD_PROGRESS_CLEAR
+        )
+        if complete:
+            index += 1
+            continue
+        preserved.extend(lines[start:index])
+    return "".join(preserved)
 
 
 def _pin_executable(
@@ -64,9 +111,10 @@ def run_freecad_script(
 ) -> subprocess.CompletedProcess[str]:
     """Execute a Python file in FreeCAD's console with an explicit argv.
 
-    FreeCAD 1.1 treats trailing command-line paths as documents. Feeding one
-    bounded exec statement to console mode avoids that ambiguity and keeps the
-    script arguments out of FreeCAD's document-opening path.
+    FreeCAD 1.1 treats trailing command-line paths as documents. Passing one
+    bounded exec statement as the console command avoids that ambiguity, keeps
+    script arguments out of the document-opening path, and avoids interactive
+    REPL prompts or banners contaminating the evidence channels.
     """
     if expected_sha256 is None or expected_identity is None or controlled_directory is None:
         raise FreeCADExecutableTrustError(
@@ -91,10 +139,11 @@ def run_freecad_script(
         "    traceback.print_exc()\n"
         "    raise\n"
     )
+    console_command = f"exec({runner!r})"
     try:
-        return subprocess.run(
-            [str(freecadcmd), "-c"],
-            input=f"exec({runner!r})\n",
+        completed = subprocess.run(
+            [str(freecadcmd), "-c", console_command],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -102,6 +151,16 @@ def run_freecad_script(
             check=False,
             cwd=controlled,
             env=_scrubbed_environment(controlled),
+        )
+        return subprocess.CompletedProcess(
+            args=completed.args,
+            returncode=completed.returncode,
+            stdout=(
+                _strip_freecad_progress_output(completed.stdout)
+                if isinstance(completed.stdout, str)
+                else completed.stdout
+            ),
+            stderr=completed.stderr,
         )
     finally:
         _pin_executable(
