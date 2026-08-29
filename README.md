@@ -15,20 +15,20 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.5.0 adds adaptive engineering obligations and MCP tool-exposure
-profiles while retaining the single-confirmation Design Lessons workflow and
-immutable reviewed-no-publication decisions from the combined 0.4.1 changes.
-It retains the v0.4.0
-PostgreSQL-authoritative Design Intent Approval Envelopes, semantic
-authorization for autonomous in-envelope CAD repair, optional Product Family
-matching, canonical FreeCAD 1.1.3 FCStd archive acceptance, safe
-non-interactive FreeCADCmd execution, and deterministic Design Job
-workspaces, lifecycle and legacy migration, engineering knowledge workflows,
-standard-part provenance, validation resources, and package-owned database
-migrations. It also publishes project-owned agent instructions and skills for
-Design Job routing, standard-part selection, and FreeCAD model validation. It
-does not bundle a language model, a CAD model library, generated Job output,
-engineering reports, database services, or a FreeCAD GUI MCP integration.
+Version 0.5.0 is being simplified around the default lightweight workflow
+described below while preserving explicit governed compatibility.
+
+The default workflow is a lightweight AI mechanical-design experimentation
+path: one natural-language design approval, optional knowledge retrieval,
+direct FreeCAD modeling, exact-hash validation, automatic correction, and
+result recording in local filesystem state. PostgreSQL-backed Design Jobs,
+Change Sets, Approval Envelopes, mutation authorization, obligations, and
+delivery approval remain available only through the explicit `governed`
+compatibility profile. The distribution retains Product Family Knowledge,
+Design Lessons, standard-part provenance, validation resources, safe
+FreeCADCmd execution, and package-owned database migrations. It does not
+bundle a language model, CAD model library, generated design output, database
+services, or a FreeCAD GUI MCP integration.
 
 See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
 [Design Job workspace guide](docs/DESIGN_JOB_WORKSPACES.md) for routing,
@@ -43,6 +43,8 @@ contain no production credentials or real project data.
 ## Capabilities
 
 - Explicit, idempotent workspace initialization with structured diagnostics.
+- Filesystem-backed `designs/<design-id>/` sessions with no database dependency.
+- Natural Chinese and English `APPROVE` / `REJECT` / `UNCLEAR` semantics.
 - Empty-workspace first use and explicit product-family creation/selection.
 - FreeCADCmd extraction and package-owned FreeCAD scripts for applicable
   headless workflows.
@@ -51,8 +53,8 @@ contain no production credentials or real project data.
 - Provider-aware standard-part lookup and provenance.
 - FreeCAD model, mechanical-interface, and `AssemblyCompleteness/v2` validation.
 - Stable CLI and MCP tool schemas for coding agents and compatible MCP clients.
-- Adaptive Product Family, knowledge, standard-parts, and assembly conclusions
-  without imposing a fixed mechanical-design sequence.
+- Best-effort knowledge retrieval that does not block ordinary CAD when no
+  match exists or the optional backend is unavailable.
 - Task-focused MCP profiles that reduce model-visible tool choice while the
   complete compatibility surface remains available.
 
@@ -62,11 +64,8 @@ The repository root [`AGENTS.md`](AGENTS.md) defines the recommended operating
 boundary for coding agents. Three project-owned skills are included:
 
 - [`mechanical-design-job-workspace`](.agents/skills/mechanical-design-job-workspace/SKILL.md)
-  routes every product operation through a controlled Design Job before work on
-  a new design, existing model, resumed job, Product Family, or Design Lesson.
-  A supplied Job UUID/display ID is checked with `design_job_get`; an explicitly
-  independent demand creates directly; an unreferenced resume resolves only
-  active/blocked candidates and stops on ambiguity.
+  operates the optional governed compatibility workflow only. Ordinary CAD does
+  not use this skill or create a Design Job.
 
 - [`freecad-standard-parts`](.agents/skills/freecad-standard-parts/SKILL.md)
   selects and imports reusable standard mechanical components while preserving
@@ -186,13 +185,20 @@ descriptor-only candidates require user confirmation, and no credible match
 continues with a null family. `workspace_product_family_list` reports bootstrap
 JSON configuration only and is not the authoritative family inventory.
 
-## Design Job workspaces and Legacy migration
+## Lightweight design sessions
 
-Each independent mechanical-design request belongs to one Design Job directory
-under the configured workspace. Continue the same design in the same Job; create
-a new Job only for an independent requirement. Product design work does not
-create a Git worktree, and governed FCStd files, validation evidence, delivery
-records, and Design Lessons remain together inside their originating Job.
+Ordinary designs use `designs/<design-id>/design.json` and `model.FCStd` inside
+the selected workspace. `design_start` creates or idempotently resumes the
+session after one approval. Existing source CAD is snapshotted read-only.
+`design_record_result` marks completion only when the validation report and
+Markdown/PNG evidence match the exact current FCStd SHA-256.
+
+## Optional governed Design Jobs and legacy migration
+
+Design Jobs are retained for users who explicitly select the `governed`
+profile for audit-heavy or multi-user work. They are not prerequisites for an
+ordinary design and existing Job data is not migrated or deleted by the
+lightweight workflow.
 
 Upgrading a workspace that contains pre-Job working copies is an explicit,
 receipt-bound operation. First save the UTF-8 JSON dry-run output:
@@ -248,13 +254,13 @@ mechanical-design-mcp
 The MCP server exposes deterministic tools; semantic reasoning remains the
 responsibility of the connected coding agent or MCP client.
 
-`design` is the recommended profile for ordinary mechanical design and exposes
-32 canonical tools. `family-knowledge` focuses on Product Family onboarding and
-knowledge curation; `maintenance` exposes owner/administrative operations; and
-`all` preserves the complete backward-compatible surface. An unset profile
-defaults to `all`; an unknown profile fails closed at startup. Tool profiles
-change only model-visible schemas, not the underlying Service or engineering
-gates.
+`design` is the default profile and exposes seven tools: system status,
+`design_start`, optional `design_knowledge_retrieve`, `design_record_result`,
+and the applicable standard-part tools. `governed` exposes the historical Job,
+change, approval, validation-record, and delivery lifecycle. `family-knowledge`
+focuses on Product Family onboarding and knowledge curation; `maintenance`
+exposes owner operations; and explicit `all` exposes the compatibility union.
+An unknown profile fails closed at startup.
 
 ## Configurable runtime capabilities
 
@@ -274,27 +280,26 @@ FreeCADCmd 1.1.3 executable plus an explicitly reviewed
 `MECH_DESIGN_FREECADCMD_SHA256`; discovery never substitutes version text for
 that pinned executable identity and digest.
 
-## Design and knowledge lifecycle
+## Design and knowledge workflow
 
-Before proposing or applying a CAD change, retrieve scoped design knowledge for
-the working copy. Existing-model working copies must bind one unique source
-model revision; new designs may be source-less. `design_knowledge_retrieve`
-builds `DesignContext/v2` and records its receipt. Specialized family knowledge
-is available only after explicit family authority; similarity never grants
-scope.
-
-The first Design Intent in the recommended `design` profile also carries an
-`EngineeringScope/v1` component plan. Product Family, retrieval, standard-part,
-and assembly obligations can be resolved in any sensible order. A simple
-custom plate can record `no_match`/`not_applicable` conclusions immediately; a
-mechanism expands standard-part and assembly work only when its scope triggers
-them. Scope-hash drift reopens affected conclusions, and delivery of an
-assembly requires same-revision passing evidence.
-
-The default post-delivery lesson workflow is:
+The ordinary flow is:
 
 ```text
-final-model delivery approval -> design_lesson_review_context
+request -> clarification -> short proposal -> one approval
+-> optional scoped knowledge -> CAD -> validation -> automatic correction
+-> design_record_result -> final result
+```
+
+`design_knowledge_retrieve` returns `DesignContext/v2` when the durable backend
+is available. Matches may improve the design; no match or an unavailable
+backend records a warning and continues unless the user explicitly required
+that named knowledge. Specialized family knowledge still requires authority;
+similarity never grants scope.
+
+Design Lesson publication is a separate, optional durable workflow:
+
+```text
+validated design -> design_lesson_review_context
 -> material/generalizable summary when warranted
 -> design_lesson_review_prepare -> one immutable review card
 -> display the complete card -> engineer says "确认发布设计经验" once
@@ -312,7 +317,7 @@ confirmation remains separate and never publishes a Lesson. The hash-bound
 `design_lesson_staged_get`, `design_lesson_approve`, and
 `design_lesson_supersede` surfaces remain an expert/audit compatibility path.
 
-Delivery uses mandatory same-revision gates. FreeCAD model validation emits the
+Completion uses mandatory exact-hash validation. FreeCAD model validation emits the
 model-detected fastener inventory bound to the same-revision FCStd SHA-256.
 `AssemblyCompleteness/v2` requires exactly-once fastened-joint assignment for
 every occurrence. Missing, duplicate, unknown, failed, or stale evidence is a

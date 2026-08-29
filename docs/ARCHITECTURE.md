@@ -6,18 +6,13 @@ flowchart LR
   Agent --> MD["mechanical-design MCP<br/>deterministic tools"]
   Agent --> GUI["External FreeCAD GUI MCP<br/>interactive CAD"]
   MD --> CMD["FreeCADCmd<br/>headless extraction"]
-  MD --> PG["PostgreSQL + pgvector<br/>authoritative state"]
-  MD --> Jobs["Design Job workspaces<br/>copies and evidence"]
-  Jobs --> CAS["Workspace content-addressed store"]
+  MD --> Sessions["Lightweight sessions<br/>JSON + FCStd + evidence"]
+  Sessions --> GUI
+  Sessions --> GV["Exact-hash validation"]
+  MD -. optional knowledge .-> PG["PostgreSQL + pgvector<br/>durable knowledge"]
   PG --> Outbox["Transactional outbox"]
   Outbox --> Neo["Neo4j<br/>rebuildable projection"]
-  GUI --> WC["Job-bound FCStd working copies"]
-  Jobs --> WC
-  WC --> GV["FreeCAD model validation"]
-  WC --> MIV["Mechanical-interface validation"]
-  GV --> ACV["AssemblyCompleteness/v2"]
-  MIV --> ACV
-  ACV --> Delivery["Delivery approval gate"]
+  MD -. explicit governed profile .-> Jobs["Optional Design Jobs<br/>audit lifecycle"]
 ```
 
 The core service does not call a language-model API. It validates structured
@@ -25,22 +20,12 @@ requests, extracts geometry, stores audit state, retrieves approved knowledge,
 and projects relationships. Semantic reasoning belongs to the connected coding
 agent or MCP client.
 
-## MCP exposure and engineering obligations
+## MCP exposure
 
-The MCP registers one immutable tool profile at startup: `design`,
-`family-knowledge`, `maintenance`, or the backward-compatible `all`. Profiles
-hide unrelated schemas from the connected model; they do not delete Service
-operations or weaken PostgreSQL gates. Unknown profiles fail closed.
-
-Mechanical design is not encoded as one global sequence. PostgreSQL stores
-append-only standard-parts and assembly conclusions bound to a canonical
-`EngineeringScope/v1` SHA-256, while Product Family and retrieval outcomes are
-derived from their existing authoritative records. The read model can expose
-several allowed actions simultaneously. Scope triggers reject contradictory
-`not_applicable` conclusions; scope drift reopens the affected questions.
-Approved modeling may begin with an expanded assembly at `required_pending`,
-but delivery still requires `required_passed` plus the existing same-revision
-assembly and geometry validation gates.
+The MCP registers one immutable profile at startup: lightweight `design` by
+default, optional `governed`, `family-knowledge`, `maintenance`, or explicit
+`all`. Default start and result operations do not construct the PostgreSQL-
+backed Service. Unknown profiles fail closed.
 
 The previously recorded Windows integration boundary is Windows 11 x64 with
 CPython 3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit documented
@@ -65,8 +50,8 @@ values, not paths into the package filesystem.
 
 Workspace initialization is explicit and idempotent. A newly initialized
 workspace may contain zero product families. Organization and design-group
-identity are independent workspace scope; ordinary Design Job, change,
-retrieval, validation, and delivery operations do not require a Product Family.
+identity are independent workspace scope; ordinary lightweight design and
+validation do not require a Product Family.
 Family onboarding and family-specific knowledge operations still require an
 explicit family selection.
 Runtime configuration precedence is final override, process environment,
@@ -83,9 +68,23 @@ existing Job/source binding or exact approved identifier may authorize a family,
 semantic candidates require confirmation, and a non-match remains unbound.
 Specialized family knowledge is inaccessible until that authorization exists.
 
-## Design Job boundary
+## Lightweight design boundary
 
-Every product operation is routed through one authoritative Design Job. A new,
+An ordinary design owns one `designs/<design-id>/` directory with atomic
+`design.json`, authoritative `model.FCStd`, an optional read-only source
+snapshot, validation evidence, and exports. One clear Chinese or English
+design-direction approval creates the session; there is no canonical phrase,
+second approval, Change Set, or mutation authorization.
+
+Knowledge retrieval is best effort. A no-match or backend outage is
+nonblocking unless the user explicitly required named knowledge. Completion
+always requires a passed validation report and Markdown/PNG evidence bound to
+the exact current FCStd SHA-256.
+
+## Optional governed Design Job boundary
+
+With the explicit `governed` profile, each product operation is routed through
+one authoritative Design Job. A new,
 existing, or resumed mechanical design uses `mechanical_design`; Product Family
 intake, analysis, review, and publication use the same
 `product_family_onboarding` Job. Design Lessons remain in the originating
@@ -114,7 +113,11 @@ for routing, storage, migration, and repair contracts.
 
 ## Authoritative state
 
-PostgreSQL owns identity, model revisions, source hashes, extracted manifests,
+Filesystem JSON is authoritative for each lightweight design session. It is a
+current inspectable snapshot, not an enterprise event log.
+
+PostgreSQL owns durable knowledge and optional governed identity, model
+revisions, source hashes, extracted manifests,
 geometry/structure vectors, questions, engineer answers, assertion versions,
 reviews, family profiles, Design Jobs and revisions, source and working-copy
 bindings, design changes, lesson events, and validation reports.
@@ -159,9 +162,9 @@ archive. Embedded Python or other executable persistence is never executed.
 The executable must match its reviewed configured SHA-256 and file identity
 immediately before and after every isolated, secret-scrubbed invocation.
 
-## Design-intent approval envelope
+## Optional governed approval envelope
 
-The first substantive CAD mutation requires a proposed Design Intent with a
+Only `governed` mode requires a proposed Design Intent with a
 complete Approval Envelope draft and explicit user approval. PostgreSQL stores
 the approved intent, mechanism and architecture, key interfaces, user
 constraints, manufacturing and specified material constraints, validation
@@ -185,7 +188,7 @@ human decision, autonomous authorization, boundary failure, mutation grant,
 application, and envelope supersession is written to the append-only
 `design_change_audit_events` history.
 
-## Design-context gate
+## Design-context retrieval
 
 `DesignContext/v2` is the sole context contract. Specialized family/design
 group knowledge enters it only after explicit family authorization, confirmed
@@ -193,6 +196,8 @@ current-model family, or explicit session selection. Without authority,
 `specialized_knowledge` is empty and the client asks for function, loads,
 envelope, interfaces, and constraints in neutral terms.
 
+For lightweight design, failure to retrieve this context is a recorded warning,
+not a CAD-mutation gate, unless the user explicitly requires named knowledge.
 Similarity never grants scope. Pending, rejected, superseded, conflicting, or
 out-of-scope assertions cannot support a design change. Neo4j relationships are
 queried only after the family gate has resolved; PostgreSQL remains the

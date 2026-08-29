@@ -1295,7 +1295,7 @@ class FakeLessonMcpService:
 class McpDesignLessonBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = FakeLessonMcpService()
-        self.mcp = create_mcp(service=self.service)
+        self.mcp = create_mcp(service=self.service, tool_profile="all")
 
     def tool(self, name: str):
         return self.mcp._tool_manager._tools[name].fn

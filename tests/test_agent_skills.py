@@ -92,7 +92,7 @@ def test_skill_python_sources_are_syntax_valid_and_portable() -> None:
         assert not re.search(r"[A-Za-z]:\\\\Users\\\\", text)
 
 
-def test_design_job_skill_routes_product_operations_through_jobs() -> None:
+def test_design_job_skill_is_explicit_governed_compatibility() -> None:
     skill_root = SKILLS_ROOT / "mechanical-design-job-workspace"
     skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
     contract_text = (skill_root / "references" / "job-contract.md").read_text(
@@ -108,21 +108,15 @@ def test_design_job_skill_routes_product_operations_through_jobs() -> None:
     assert frontmatter["name"] == "mechanical-design-job-workspace"
     description = frontmatter["description"]
     assert isinstance(description, str)
-    for trigger in (
-        "new designs",
-        "existing models",
-        "resumptions",
-        "Product Family onboarding",
-        "Design Lessons",
-    ):
-        assert trigger.casefold() in description.casefold()
-    assert "do not use for software-only changes" in description.casefold()
+    assert "optional governed" in description.casefold()
+    assert "explicitly requests" in description.casefold()
+    assert "ordinary cad uses the lightweight" in description.casefold()
 
     interface = metadata.get("interface")
     policy = metadata.get("policy")
     assert isinstance(interface, dict)
     assert isinstance(policy, dict)
-    assert policy["allow_implicit_invocation"] is True
+    assert policy["allow_implicit_invocation"] is False
     default_prompt = interface["default_prompt"]
     assert isinstance(default_prompt, str)
     assert "$mechanical-design-job-workspace" in default_prompt

@@ -280,6 +280,19 @@ class JobCadSettings(JobSettings):
     freecadcmd_version: str
 
 
+@dataclass(frozen=True)
+class LightweightDesignSettings:
+    """Filesystem and certified-FreeCAD settings for ordinary design sessions."""
+
+    workspace: Path
+    package_root: Path
+    design_root: Path
+    freecadcmd: Path
+    freecadcmd_sha256: str
+    freecadcmd_identity: FileIdentity
+    freecadcmd_version: str
+
+
 def resolve_workspace_output(settings: Settings, requested: str | Path) -> Path:
     candidate = Path(requested)
     if not candidate.is_absolute():

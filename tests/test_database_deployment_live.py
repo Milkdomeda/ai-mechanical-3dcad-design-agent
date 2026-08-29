@@ -538,7 +538,7 @@ async def _installed_mcp_contract(
 def _source_mcp_contract() -> dict[str, dict[str, object]]:
     from mechanical_design_agent.server import create_mcp
 
-    mcp = create_mcp()
+    mcp = create_mcp(tool_profile="all")
     return {
         name: tool.parameters
         for name, tool in sorted(mcp._tool_manager._tools.items())

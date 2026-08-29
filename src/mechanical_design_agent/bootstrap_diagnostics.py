@@ -84,6 +84,13 @@ CAPABILITY_COMPONENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "postgresql",
             "package_resources",
         ),
+        "lightweight_design": (
+            "workspace_selection",
+            "workspace_manifest",
+            "managed_config_integrity",
+            "freecadcmd",
+            "package_resources",
+        ),
         "library_ingest": (
             "workspace_selection",
             "workspace_manifest",

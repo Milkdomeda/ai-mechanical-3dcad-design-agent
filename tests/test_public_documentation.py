@@ -43,7 +43,7 @@ def test_public_identity_and_release_boundary() -> None:
     assert "ai-mechanical-3dcad-design-agent" in text
 
 
-def test_design_job_routing_is_public_and_precedes_model_lifecycle() -> None:
+def test_lightweight_design_is_public_and_governance_is_optional() -> None:
     agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
     skill = (
@@ -54,25 +54,20 @@ def test_design_job_routing_is_public_and_precedes_model_lifecycle() -> None:
         / "SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert agents.index("## Product Job routing") < agents.index(
-        "## Managed model and change lifecycle"
-    )
-    assert "Product Family and Design Lesson database writes are Job operations" in agents
-    assert "Changing their implementation or schema is software development" in agents
-    assert "Do not create a Git branch or Git worktree" in agents
-    assert "design_job_resolve" in agents
-    assert "design_job_create" in agents
-    assert "same design" in agents.casefold()
-    assert "independent demand" in agents.casefold()
-    assert "ambigu" in agents.casefold()
+    assert "## Default lightweight design workflow" in agents
+    assert "one natural-language approval" in agents
+    assert "Do not create a Design Job" in agents
+    assert "design_start" in agents
+    assert "design_record_result" in agents
+    assert "optional `governed` profile" in agents
     assert "mechanical-design-job-workspace" in readme
     assert "Three project-owned skills" in readme
     assert "`superpowers:brainstorming`" in readme
     assert "optional" in readme.casefold()
     assert "not bundled" in readme.casefold()
     assert "not installed" in normalized(README).casefold()
-    assert "design_job_resolve" in skill
-    assert "design_job_create" in skill
+    assert "Use this Skill only for the explicit `governed`" in skill
+    assert "Do not use it" in skill
 
 
 def test_design_lesson_single_confirmation_contract_is_public() -> None:

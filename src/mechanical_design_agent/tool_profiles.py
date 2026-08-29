@@ -8,7 +8,9 @@ from mcp.server.fastmcp import FastMCP
 
 
 TOOL_PROFILE_ENV = "MECH_DESIGN_MCP_TOOL_PROFILE"
-TOOL_PROFILES = frozenset({"design", "family-knowledge", "maintenance", "all"})
+TOOL_PROFILES = frozenset(
+    {"design", "governed", "family-knowledge", "maintenance", "all"}
+)
 
 ALL_TOOL_NAMES = frozenset(
     {
@@ -34,6 +36,8 @@ ALL_TOOL_NAMES = frozenset(
         "design_job_resolve",
         "design_job_working_copy_create",
         "design_knowledge_retrieve",
+        "design_record_result",
+        "design_start",
         "design_lesson_approve",
         "design_lesson_audit_get",
         "design_lesson_get",
@@ -102,6 +106,18 @@ ALL_TOOL_NAMES = frozenset(
 )
 
 DESIGN_TOOL_NAMES = frozenset(
+    {
+        "design_system_status",
+        "design_start",
+        "design_knowledge_retrieve",
+        "design_record_result",
+        "standard_part_providers_get",
+        "standard_part_sources_status",
+        "standard_part_download_register",
+    }
+)
+
+GOVERNED_TOOL_NAMES = frozenset(
     {
         "design_system_status",
         "design_job_create",
@@ -207,6 +223,7 @@ MAINTENANCE_TOOL_NAMES = frozenset(
 
 PROFILE_TOOL_NAMES = {
     "design": DESIGN_TOOL_NAMES,
+    "governed": GOVERNED_TOOL_NAMES,
     "family-knowledge": FAMILY_KNOWLEDGE_TOOL_NAMES,
     "maintenance": MAINTENANCE_TOOL_NAMES,
     "all": ALL_TOOL_NAMES,
@@ -217,12 +234,12 @@ def resolve_tool_profile(
     requested: str | None = None, *, environ: dict[str, str] | None = None
 ) -> str:
     environment = os.environ if environ is None else environ
-    value = requested if requested is not None else environment.get(TOOL_PROFILE_ENV, "all")
+    value = requested if requested is not None else environment.get(TOOL_PROFILE_ENV, "design")
     normalized = str(value).strip().casefold()
     if normalized not in TOOL_PROFILES:
         raise ValueError(
-            "MECH_DESIGN_MCP_TOOL_PROFILE must be design, family-knowledge, "
-            "maintenance, or all"
+            "MECH_DESIGN_MCP_TOOL_PROFILE must be design, governed, "
+            "family-knowledge, maintenance, or all"
         )
     return normalized
 
@@ -240,14 +257,22 @@ class ProfiledToolRegistrar:
         self.allowed = tool_names_for_profile(self.profile)
         self.encountered: set[str] = set()
 
-    def tool(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def tool(
+        self,
+        *,
+        name: str | None = None,
+        profiles: frozenset[str] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
-            name = function.__name__
-            if name not in ALL_TOOL_NAMES:
-                raise RuntimeError(f"MCP tool is missing exposure metadata: {name}")
-            self.encountered.add(name)
-            if name in self.allowed:
-                return self.server.tool()(function)
+            public_name = name or function.__name__
+            if public_name not in ALL_TOOL_NAMES:
+                raise RuntimeError(
+                    f"MCP tool is missing exposure metadata: {public_name}"
+                )
+            self.encountered.add(public_name)
+            profile_selected = profiles is None or self.profile in profiles
+            if public_name in self.allowed and profile_selected:
+                return self.server.tool(name=public_name)(function)
             return function
 
         return decorate

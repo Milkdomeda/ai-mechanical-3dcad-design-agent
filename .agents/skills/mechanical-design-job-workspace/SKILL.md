@@ -1,13 +1,15 @@
 ---
 name: mechanical-design-job-workspace
-description: Route FreeCAD product operations through controlled Design Jobs. Use for new designs, existing models, resumptions, Product Family onboarding, or Design Lessons; do not use for software-only changes.
+description: Operate the optional governed Design Job compatibility workflow. Use only when the user explicitly requests governed, audited, or multi-user lifecycle handling; ordinary CAD uses the lightweight design profile.
 ---
 
 # Mechanical Design Job Workspace
 
-Use this Skill before any product operation: a new design, an existing model,
-a resume, Product Family onboarding, or Design Lessons. Its public scope is
-mechanical FreeCAD work on macOS and Windows.
+Use this Skill only for the explicit `governed` compatibility profile, durable
+Product Family onboarding, or governed Design Lesson publication. Do not use it
+for an ordinary new design, existing-model edit, or resume; those use
+`design_start`, optional `design_knowledge_retrieve`, direct CAD modeling,
+validation, and `design_record_result` after one natural-language approval.
 
 ## Routing decision matrix
 

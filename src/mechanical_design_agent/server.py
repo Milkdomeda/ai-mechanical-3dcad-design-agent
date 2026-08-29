@@ -18,6 +18,8 @@ from .config import Settings
 from .context import DesignContextBuilder
 from .design_lessons import match_design_lesson, normalize_design_features
 from .engineering_obligations import validate_engineering_scope
+from .lightweight_design import LightweightDesignService
+from .lightweight_knowledge import LightweightKnowledgeService
 from .models import require_safe_id
 from .service import MechanicalDesignService
 from .job_errors import safe_job_error_json
@@ -413,6 +415,9 @@ def create_mcp(
     runtime: BootstrapRuntime | None = None,
     product_family_id: str | None = None,
     service_factory: Callable[[object], Any] | None = None,
+    lightweight_service: Any | None = None,
+    lightweight_service_factory: Callable[[object], Any] | None = None,
+    lightweight_knowledge_service: Any | None = None,
     tool_profile: str | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
@@ -432,11 +437,139 @@ def create_mcp(
     mcp_server = FastMCP("FreeCAD Mechanical Design Knowledge")
     registrar = ProfiledToolRegistrar(mcp_server, selected_profile)
     mcp = registrar
+    local_service = lightweight_service
+    local_knowledge = lightweight_knowledge_service
+    local_lock = Lock()
+
+    def get_lightweight_service() -> Any:
+        nonlocal local_service
+        if local_service is not None:
+            return local_service
+        with local_lock:
+            if local_service is None:
+                try:
+                    settings = bootstrap_runtime.lightweight_design_settings()
+                    factory = lightweight_service_factory or LightweightDesignService
+                    local_service = factory(settings)
+                except DiagnosticGateError as exc:
+                    raise ToolError(_json(exc.response)) from None
+        return local_service
+
+    def load_lightweight_context(
+        query: str, features: dict[str, object]
+    ) -> dict[str, object]:
+        scope = bootstrap_runtime.lightweight_knowledge_scope()
+        context_features = dict(features)
+        requested_family_id = str(
+            context_features.pop("requested_family_id", "") or ""
+        ).strip()
+        model_revision_id = str(
+            context_features.pop("model_revision_id", "") or ""
+        ).strip()
+        explicit_family_authorization = bool(
+            context_features.pop("explicit_family_authorization", False)
+        )
+        confirmed_in_current_session = bool(
+            context_features.pop("confirmed_in_current_session", False)
+        )
+        user_requested_analogy = bool(
+            context_features.pop("user_requested_analogy", False)
+        )
+        return operational_service.design_context_build(
+            organization_id=scope["organization_id"],
+            design_group_id=scope["design_group_id"],
+            requested_family_id=requested_family_id or None,
+            model_revision_id=model_revision_id or None,
+            explicit_family_authorization=explicit_family_authorization,
+            confirmed_in_current_session=confirmed_in_current_session,
+            user_requested_analogy=user_requested_analogy,
+            design_features=normalize_design_features(context_features),
+            lesson_query=query,
+        )
+
+    def get_lightweight_knowledge() -> Any:
+        nonlocal local_knowledge
+        if local_knowledge is not None:
+            return local_knowledge
+        design_service = get_lightweight_service()
+        with local_lock:
+            if local_knowledge is None:
+                local_knowledge = LightweightKnowledgeService(
+                    design_service, load_lightweight_context
+                )
+        return local_knowledge
 
     @mcp.tool()
     def design_system_status() -> str:
         """Inspect bootstrap and configured runtime status without constructing the full service."""
         return _json(bootstrap_runtime.status())
+
+    @mcp.tool()
+    def design_start(
+        design_id: str,
+        title: str,
+        model_classification: str,
+        requirements_json: str,
+        proposal_summary: str,
+        approval_text: str,
+        source_path: str = "",
+    ) -> str:
+        """Start or resume an approved local CAD session without a governed lifecycle."""
+        return _json(
+            get_lightweight_service().start(
+                design_id=design_id,
+                title=title,
+                model_classification=model_classification,
+                requirements=_object(requirements_json, "requirements_json"),
+                proposal_summary=proposal_summary,
+                approval_text=approval_text,
+                source_path=source_path or None,
+            )
+        )
+
+    @mcp.tool(
+        name="design_knowledge_retrieve", profiles=frozenset({"design"})
+    )
+    def lightweight_design_knowledge_retrieve(
+        design_id: str,
+        query: str,
+        features_json: str = "{}",
+        used_knowledge_ids_json: str = "[]",
+        required: bool = False,
+    ) -> str:
+        """Retrieve optional scoped knowledge; no match or outage is nonblocking by default."""
+        used = _array(used_knowledge_ids_json, "used_knowledge_ids_json")
+        if not all(isinstance(item, str) for item in used):
+            raise ValueError("used knowledge IDs must be strings")
+        return _json(
+            get_lightweight_knowledge().retrieve(
+                design_id=design_id,
+                query=query,
+                features=_object(features_json, "features_json"),
+                used_ids=used,
+                required=required,
+            )
+        )
+
+    @mcp.tool()
+    def design_record_result(
+        design_id: str,
+        model_path: str,
+        validation_report_path: str,
+        evidence_paths_json: str,
+    ) -> str:
+        """Bind exact-hash validation evidence and complete a local design session."""
+        evidence = _array(evidence_paths_json, "evidence_paths_json")
+        if not all(isinstance(item, str) for item in evidence):
+            raise ValueError("evidence_paths_json must contain only strings")
+        return _json(
+            get_lightweight_service().record_result(
+                design_id=design_id,
+                model_path=model_path,
+                validation_report_path=validation_report_path,
+                evidence_paths=evidence,
+            )
+        )
 
     @mcp.tool()
     def design_system_doctor() -> str:
@@ -1422,7 +1555,7 @@ def create_mcp(
             if approval_envelope_draft_json.strip()
             else None
         )
-        if selected_profile == "design" and approval_envelope_draft is not None:
+        if selected_profile == "governed" and approval_envelope_draft is not None:
             design_intent = approval_envelope_draft.get("design_intent")
             if not isinstance(design_intent, dict) or not isinstance(
                 design_intent.get("engineering_scope"), dict
@@ -1448,15 +1581,18 @@ def create_mcp(
             )
         )
 
-    @mcp.tool()
-    def design_knowledge_retrieve(
+    @mcp.tool(
+        name="design_knowledge_retrieve",
+        profiles=frozenset({"governed", "all"}),
+    )
+    def governed_design_knowledge_retrieve(
         working_copy_id: str,
         query: str,
         design_features_json: str = "{}",
         used_knowledge_ids_json: str = "[]",
         non_use_reason: str = "",
     ) -> str:
-        """Build scoped DesignContext and record its retrieval receipt before CAD changes."""
+        """Governed compatibility retrieval with a Working Copy receipt."""
         used = _array(used_knowledge_ids_json, "used_knowledge_ids_json")
         if not all(isinstance(item, str) for item in used):
             raise ValueError("used knowledge IDs must be strings")

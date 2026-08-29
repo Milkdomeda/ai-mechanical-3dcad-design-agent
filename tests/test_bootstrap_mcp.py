@@ -183,7 +183,7 @@ def test_uninitialized_mcp_registers_tools_without_constructing_service(
     monkeypatch.setattr(server.Settings, "from_environment", fail)
     monkeypatch.setattr(server, "MechanicalDesignService", fail)
 
-    mcp = create_mcp()
+    mcp = create_mcp(tool_profile="all")
 
     assert "design_system_status" in mcp._tool_manager._tools
     assert "design_system_doctor" in mcp._tool_manager._tools
@@ -212,7 +212,9 @@ def test_workspace_family_mcp_tools_are_bootstrap_safe_and_confirmation_bound(
         del settings
         pytest.fail("workspace family MCP tool constructed operational service")
 
-    mcp = create_mcp(runtime=runtime, service_factory=fail_service)
+    mcp = create_mcp(
+        runtime=runtime, service_factory=fail_service, tool_profile="all"
+    )
     empty = json.loads(tool(mcp, "workspace_product_family_list")())
     unselected = json.loads(tool(mcp, "workspace_product_family_active")(""))
 
@@ -301,7 +303,9 @@ def test_selected_family_mcp_constructs_normal_service_once(
         calls.append(settings)
         return ReadyService()
 
-    mcp = create_mcp(runtime=runtime, service_factory=service_factory)
+    mcp = create_mcp(
+        runtime=runtime, service_factory=service_factory, tool_profile="all"
+    )
     first = json.loads(tool(mcp, "family_bootstrap_get")())
     second = json.loads(tool(mcp, "family_bootstrap_get")())
 
@@ -322,7 +326,7 @@ def test_uninitialized_mcp_status_doctor_and_operational_guard_are_structured(
 
     monkeypatch.setattr(server.Settings, "from_environment", fail)
     monkeypatch.setattr(server, "MechanicalDesignService", fail)
-    mcp = create_mcp()
+    mcp = create_mcp(tool_profile="all")
 
     status = json.loads(tool(mcp, "design_system_status")())
     doctor = json.loads(tool(mcp, "design_system_doctor")())
@@ -369,7 +373,7 @@ def test_lazy_proxy_constructs_service_only_after_a_ready_capability(
     monkeypatch.setattr(server.Settings, "from_environment", settings_factory)
     monkeypatch.setattr(server, "MechanicalDesignService", service_factory)
 
-    mcp = create_mcp()
+    mcp = create_mcp(tool_profile="all")
     assert calls == []
     result = json.loads(tool(mcp, "standard_part_providers_get")(""))
 
@@ -391,6 +395,7 @@ def test_standard_part_configuration_mcp_tools_are_bootstrap_safe(
     uninitialized_mcp = create_mcp(
         runtime=uninitialized,
         service_factory=fail_service,
+        tool_profile="all",
     )
 
     providers = json.loads(tool(uninitialized_mcp, "standard_part_providers_get")(""))
@@ -411,7 +416,9 @@ def test_standard_part_configuration_mcp_tools_are_bootstrap_safe(
     workspace = tmp_path / "workspace"
     initialize_workspace(workspace=workspace, actor_id="actor-test", dry_run=False)
     runtime = BootstrapRuntime.from_process(cwd=workspace, environ={})
-    mcp = create_mcp(runtime=runtime, service_factory=fail_service)
+    mcp = create_mcp(
+        runtime=runtime, service_factory=fail_service, tool_profile="all"
+    )
     status_before = json.loads(tool(mcp, "design_system_status")())
     disabled = json.loads(tool(mcp, "standard_part_sources_status")())
     missing = tmp_path / "missing-catalog"
@@ -452,6 +459,7 @@ def test_injected_service_bypasses_bootstrap_for_existing_boundary_tests(
     mcp = create_mcp(
         service=InjectedService(),
         runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+        tool_profile="all",
     )
 
     result = json.loads(
@@ -501,6 +509,7 @@ def test_design_job_mcp_tools_have_exact_names_and_do_not_accept_paths_as_identi
     mcp = create_mcp(
         service=service,
         runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+        tool_profile="all",
     )
     names = {
         "design_job_create",
@@ -555,6 +564,7 @@ def test_design_job_mcp_uses_the_shared_redacted_error_contract(tmp_path: Path) 
     mcp = create_mcp(
         service=FailingJobService(),
         runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+        tool_profile="all",
     )
     with pytest.raises(ToolError) as captured:
         tool(mcp, "design_job_get")("00000000-0000-4000-8000-000000000499")
@@ -593,6 +603,7 @@ def test_job_cad_mcp_exposes_code_specific_redacted_recovery(
     mcp = create_mcp(
         service=FailingCadService(),
         runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+        tool_profile="all",
     )
     job_id = "10000000-0000-4000-8000-000000000001"
     with pytest.raises(ToolError) as captured:
@@ -640,6 +651,7 @@ def test_deprecated_working_copy_wrappers_use_redacted_typed_job_errors(
     mcp = create_mcp(
         service=FailingCompatibilityService(),
         runtime=BootstrapRuntime.from_process(cwd=tmp_path, environ={}),
+        tool_profile="all",
     )
 
     with pytest.raises(ToolError) as captured:
@@ -859,7 +871,7 @@ def test_lazy_job_cad_proxy_invokes_both_real_service_tools_without_a_family(
         )
         or {"kind": "new"},
     )
-    mcp = create_mcp(runtime=JobCadRuntime())
+    mcp = create_mcp(runtime=JobCadRuntime(), tool_profile="all")
     job_id = "10000000-0000-4000-8000-000000000001"
 
     existing = json.loads(
