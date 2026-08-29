@@ -100,6 +100,8 @@ class FakeJobBindingRepository(FakeRepository):
         self.committed_publication: dict | None = None
         self.reconciliations: list[dict] = []
         self.reconciliation_responses: list[object] = []
+        self.job_active_working_copy_id: str | None = "copy"
+        self.job_revision = 1
 
     def create_job_working_copy(self, **kwargs):
         self.created = kwargs
@@ -143,8 +145,11 @@ class FakeJobBindingRepository(FakeRepository):
     def get_design_job(self, **_scope):
         return {
             "id": "job-operational",
-            "revision": 1,
-            "active_working_copy_id": "copy",
+            "revision": self.job_revision,
+            "status": "active",
+            "phase": "delivery",
+            "job_type": "mechanical_design",
+            "active_working_copy_id": self.job_active_working_copy_id,
         }
 
     def reconcile_job_working_copy_publication(self, **kwargs):
@@ -169,9 +174,20 @@ class LostCommitAcknowledgement(ConnectionError):
 
 
 class FakeJobBindingManager:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, repository: FakeJobBindingRepository | None = None) -> None:
         self.root = root
+        self.repository = repository
         self.calls: list[tuple[str, dict]] = []
+
+    def reactivate_working_copy_for_delivery(self, **kwargs):
+        self.calls.append(("reactivate", kwargs))
+        if self.repository is not None:
+            self.repository.job_active_working_copy_id = kwargs["working_copy_id"]
+            self.repository.job_revision += 1
+        return SimpleNamespace(
+            revision=kwargs["expected_job_revision"] + 1,
+            active_working_copy_id=kwargs["working_copy_id"],
+        )
 
     @contextmanager
     def locked_active_mechanical_design_job(self, **kwargs):
@@ -1358,6 +1374,80 @@ class DesignWorkspaceTests(unittest.TestCase):
                 ("delivery", "copy"),
             )
             self.assertEqual(approved["approved_final_sha256"], file_sha256(snapshot_path))
+
+    def test_delivery_approval_reactivates_the_unique_confirmed_working_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            package = workspace / "agent"
+            package.mkdir()
+            working = workspace / "working.FCStd"
+            working.write_bytes(b"reopened confirmed model")
+            repository = FakeJobBindingRepository()
+            repository.working_path = str(working)
+            repository.job_active_working_copy_id = None
+            manager = FakeJobBindingManager(workspace, repository)
+            settings = Settings(
+                workspace=workspace,
+                package_root=package,
+                database_url="unused",
+                neo4j_uri="unused",
+                neo4j_user="unused",
+                neo4j_password="unused",
+                freecadcmd=Path("/bin/false"),
+                actor_id="owner",
+                artifact_root=package / "data",
+                family_config_path=package / "family.json",
+            )
+
+            approved = DesignWorkspace(settings, repository, manager).approve_delivery(
+                "copy",
+                "owner",
+                "批准 copy",
+                ArtifactStore(settings.artifact_root),
+                organization_id="org-001",
+                design_group_id="group-001",
+            )
+
+            self.assertEqual(repository.job_active_working_copy_id, "copy")
+            self.assertEqual([name for name, _ in manager.calls].count("reactivate"), 1)
+            self.assertEqual(approved["approved_final_sha256"], file_sha256(working))
+
+    def test_invalid_delivery_confirmation_never_reactivates_a_working_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            package = workspace / "agent"
+            package.mkdir()
+            working = workspace / "working.FCStd"
+            working.write_bytes(b"must remain inactive")
+            repository = FakeJobBindingRepository()
+            repository.working_path = str(working)
+            repository.job_active_working_copy_id = None
+            manager = FakeJobBindingManager(workspace, repository)
+            settings = Settings(
+                workspace=workspace,
+                package_root=package,
+                database_url="unused",
+                neo4j_uri="unused",
+                neo4j_user="unused",
+                neo4j_password="unused",
+                freecadcmd=Path("/bin/false"),
+                actor_id="owner",
+                artifact_root=package / "data",
+                family_config_path=package / "family.json",
+            )
+
+            with self.assertRaisesRegex(ValueError, "working_copy_id and 批准"):
+                DesignWorkspace(settings, repository, manager).approve_delivery(
+                    "copy",
+                    "owner",
+                    "do not approve copy",
+                    ArtifactStore(settings.artifact_root),
+                    organization_id="org-001",
+                    design_group_id="group-001",
+                )
+
+            self.assertIsNone(repository.job_active_working_copy_id)
+            self.assertNotIn("reactivate", [name for name, _ in manager.calls])
 
     def test_iteration_candidates_group_repeated_targets_and_failed_check_ids(self) -> None:
         changes = [

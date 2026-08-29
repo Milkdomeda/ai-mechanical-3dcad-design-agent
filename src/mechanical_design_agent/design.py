@@ -1523,6 +1523,37 @@ class DesignWorkspace:
         organization_id: str,
         design_group_id: str,
     ) -> dict[str, Any]:
+        if working_copy_id not in confirmation or "批准" not in confirmation:
+            raise ValueError(
+                "delivery confirmation must include the working_copy_id and 批准"
+            )
+        working = self.repository.get_working_copy(working_copy_id)
+        job_id = working.get("job_id")
+        if not job_id:
+            raise JobFailure(
+                "JOB_MIGRATION_REQUIRED",
+                "the working copy is not bound to a Design Job",
+            )
+        job = self.repository.get_design_job(
+            job_id=str(job_id),
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        active_working_copy_id = job.get("active_working_copy_id")
+        if active_working_copy_id is None:
+            self._require_job_manager().reactivate_working_copy_for_delivery(
+                job_id=str(job_id),
+                expected_job_revision=int(job["revision"]),
+                working_copy_id=working_copy_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                actor_id=actor_id,
+            )
+        elif str(active_working_copy_id) != working_copy_id:
+            raise JobFailure(
+                "JOB_WORKING_COPY_NOT_ACTIVE",
+                "another working copy is active for this Design Job",
+            )
         with self.locked_job_working_copy(working_copy_id) as (job_root, working_path, _, _):
             working_read = read_managed_file(working_path)
             delivery_dir = ensure_managed_directory(

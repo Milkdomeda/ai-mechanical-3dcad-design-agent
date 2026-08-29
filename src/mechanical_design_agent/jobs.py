@@ -537,6 +537,8 @@ class _JobRepository(Protocol):
     def create_design_job(self, **kwargs: object) -> dict[str, Any]: ...
     def record_design_job_directory(self, **kwargs: object) -> dict[str, Any]: ...
     def transition_design_job(self, **kwargs: object) -> dict[str, Any]: ...
+    def list_job_working_copies(self, **kwargs: object) -> list[dict[str, Any]]: ...
+    def reactivate_design_job_working_copy(self, **kwargs: object) -> dict[str, Any]: ...
     def get_design_job(self, **kwargs: object) -> dict[str, Any]: ...
     def list_design_jobs(self, **kwargs: object) -> list[dict[str, Any]]: ...
     def resolve_design_jobs(self, **kwargs: object) -> list[dict[str, Any]]: ...
@@ -1591,6 +1593,162 @@ class DesignJobManager:
             updated = self._manifest_from_row(authoritative)
             self._replace_projection(locked / "job.json", updated)
         return updated
+
+    def reactivate_working_copy_for_delivery(
+        self,
+        *,
+        job_id: str,
+        expected_job_revision: int,
+        working_copy_id: str,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+    ) -> DesignJobManifest:
+        """Restore one closed Job's sole verified copy for delivery approval only."""
+        if type(expected_job_revision) is not int or expected_job_revision < 0:
+            raise JobFailure(
+                "JOB_INPUT_INVALID",
+                "expected_job_revision must be a non-negative integer",
+            )
+        requested = self._input_string(working_copy_id, "working_copy_id")
+        actor = self._input_string(actor_id, "actor_id")
+        row = self._get_authoritative_row(
+            job_id=job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        if row.get("revision") != expected_job_revision:
+            raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+        root = self._final_path(row)
+        with locked_job_root(job_root=root) as locked:
+            fresh = self._fresh_locked_row(
+                original=row,
+                job_id=job_id,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                directory_name=str(row["directory_name"]),
+                allow_unrecorded=False,
+            )
+            if fresh.get("revision") != expected_job_revision:
+                raise JobFailure("JOB_STALE_REVISION", "expected Job revision is stale")
+            if (
+                fresh.get("status") != "active"
+                or fresh.get("job_type") != "mechanical_design"
+                or fresh.get("provisioning_state") != "ready"
+                or fresh.get("phase") not in {"delivery", "lesson_capture"}
+            ):
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNAVAILABLE",
+                    "working-copy reactivation is limited to an active delivery-stage mechanical Design Job",
+                )
+            active = fresh.get("active_working_copy_id")
+            if active is not None:
+                if str(active) == requested:
+                    return self._read_ready_manifest(fresh)
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "another working copy is already active for this Design Job",
+                )
+            self._read_ready_manifest(fresh)
+            try:
+                candidates = self.repository.list_job_working_copies(
+                    job_id=job_id,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor,
+                )
+            except KeyError as exc:
+                raise JobFailure(
+                    "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                    "Job identity is unknown or outside the authorized scope",
+                ) from exc
+            if not candidates:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNAVAILABLE",
+                    "the Design Job has no governed working copy to restore",
+                )
+            if len(candidates) != 1:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_AMBIGUOUS",
+                    "the Design Job has multiple governed working copies; delivery recovery cannot choose one",
+                )
+            candidate = candidates[0]
+            if str(candidate.get("id")) != requested:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "the confirmed working copy is not the Design Job's sole governed copy",
+                )
+            relative = candidate.get("working_relative_path")
+            authoritative_path = candidate.get("working_path")
+            if (
+                not isinstance(relative, str)
+                or not relative
+                or not isinstance(authoritative_path, str)
+                or not authoritative_path
+            ):
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "the governed working-copy path is incomplete",
+                )
+            try:
+                working_path = managed_job_path(
+                    job_root=locked,
+                    relative_path=relative,
+                    allow_missing_leaf=False,
+                )
+                authoritative = validate_managed_path(
+                    Path(os.path.abspath(authoritative_path)),
+                    allow_missing_leaf=False,
+                ).path
+                working_read = read_managed_file(working_path)
+            except (JobFailure, SecureFilesystemError) as exc:
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "the governed working-copy file is missing or unsafe",
+                ) from exc
+            if (
+                working_path != authoritative
+                or working_path.suffix.casefold() != ".fcstd"
+                or working_read.link_count != 1
+                or not working_read.content
+                or candidate.get("working_sha256") != working_read.sha256
+                or candidate.get("working_size_bytes") != working_read.size_bytes
+            ):
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "the governed working-copy evidence no longer matches the authoritative binding",
+                )
+            try:
+                self.repository.reactivate_design_job_working_copy(
+                    job_id=job_id,
+                    expected_revision=expected_job_revision,
+                    working_copy_id=requested,
+                    organization_id=organization_id,
+                    design_group_id=design_group_id,
+                    actor_id=actor,
+                )
+            except KeyError as exc:
+                raise JobFailure(
+                    "JOB_NOT_FOUND_OR_UNAUTHORIZED",
+                    "Job identity is unknown or outside the authorized scope",
+                ) from exc
+            except ValueError as exc:
+                if "stale" in str(exc):
+                    raise JobFailure(
+                        "JOB_STALE_REVISION", "expected Job revision is stale"
+                    ) from exc
+                raise JobFailure(
+                    "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
+                    "the authoritative reactivation candidate changed during recovery",
+                ) from exc
+            return self.publish_authoritative_manifest_locked(
+                locked_root=locked,
+                job_id=job_id,
+                expected_job_revision=expected_job_revision,
+                working_copy_id=requested,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+            )
 
     def close(
         self,

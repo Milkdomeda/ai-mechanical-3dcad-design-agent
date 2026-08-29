@@ -780,6 +780,7 @@ NOW = datetime(2026, 8, 23, 8, 15, 30, tzinfo=timezone.utc)
 class _ManagerRepository:
     def __init__(self) -> None:
         self.jobs: dict[str, dict[str, object]] = {}
+        self.working_copies: dict[str, dict[str, object]] = {}
         self.tokens: dict[tuple[str, str], str] = {}
         self.calls: list[tuple[str, dict[str, object]]] = []
 
@@ -866,6 +867,31 @@ class _ManagerRepository:
         persisted["phase"] = kwargs["phase"]
         if kwargs["status"] in {"completed", "cancelled", "archived"}:
             persisted["active_working_copy_id"] = None
+        persisted["revision"] = int(persisted["revision"]) + 1
+        persisted["updated_at"] = NOW
+        return copy.deepcopy(persisted)
+
+    def list_job_working_copies(self, **kwargs: object) -> list[dict[str, object]]:
+        self.calls.append(("list_working_copies", dict(kwargs)))
+        return [
+            copy.deepcopy(row)
+            for row in self.working_copies.values()
+            if row["job_id"] == kwargs["job_id"]
+            and row["organization_id"] == kwargs["organization_id"]
+            and row["design_group_id"] == kwargs["design_group_id"]
+        ]
+
+    def reactivate_design_job_working_copy(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("reactivate_working_copy", dict(kwargs)))
+        persisted = self.jobs[str(kwargs["job_id"])]
+        if persisted["revision"] != kwargs["expected_revision"]:
+            raise ValueError("stale design job revision")
+        if persisted["status"] != "active" or persisted.get("active_working_copy_id") is not None:
+            raise ValueError("design Job is not ready for working-copy reactivation")
+        candidates = self.list_job_working_copies(**kwargs)
+        if len(candidates) != 1 or candidates[0]["id"] != kwargs["working_copy_id"]:
+            raise ValueError("working-copy reactivation candidate changed")
+        persisted["active_working_copy_id"] = kwargs["working_copy_id"]
         persisted["revision"] = int(persisted["revision"]) + 1
         persisted["updated_at"] = NOW
         return copy.deepcopy(persisted)
@@ -977,6 +1003,132 @@ def _create_managed_job(manager: DesignJobManager) -> DesignJobManifest:
         idempotency_token="request-001",
         actor_id=ACTOR_ID,
     )
+
+
+def _create_reopened_delivery_job(manager: DesignJobManager) -> DesignJobManifest:
+    created = _create_managed_job(manager)
+    closed = manager.close(
+        job_id=str(created.job_id),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=created.revision,
+        status="completed",
+        phase="completed",
+        actor_id=ACTOR_ID,
+        reason="synthetic completed design",
+    )
+    return manager.reopen(
+        job_id=str(closed.job_id),
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        expected_revision=closed.revision,
+        phase="delivery",
+        actor_id=ACTOR_ID,
+        reason="resume synthetic delivery",
+    )
+
+
+def _add_delivery_working_copy(
+    manager: DesignJobManager,
+    repository: _ManagerRepository,
+    manifest: DesignJobManifest,
+    *,
+    working_copy_id: str = "50000000-0000-4000-8000-000000000001",
+    content: bytes = b"synthetic confirmed FCStd",
+) -> Path:
+    root = manager.workspace.jobs_root / manifest.directory_name
+    working_path = root / "models" / "working" / working_copy_id / "working.FCStd"
+    working_path.parent.mkdir()
+    working_path.write_bytes(content)
+    repository.working_copies[working_copy_id] = {
+        "id": working_copy_id,
+        "job_id": str(manifest.job_id),
+        "organization_id": ORGANIZATION_ID,
+        "design_group_id": DESIGN_GROUP_ID,
+        "working_path": str(working_path.resolve()),
+        "working_relative_path": working_path.relative_to(root).as_posix(),
+        "working_sha256": hashlib.sha256(content).hexdigest(),
+        "working_size_bytes": len(content),
+    }
+    return working_path
+
+
+def test_delivery_reactivation_restores_one_verified_working_copy(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_reopened_delivery_job(manager)
+    working_copy_id = "50000000-0000-4000-8000-000000000001"
+    _add_delivery_working_copy(
+        manager, repository, manifest, working_copy_id=working_copy_id
+    )
+
+    restored = manager.reactivate_working_copy_for_delivery(
+        job_id=str(manifest.job_id),
+        expected_job_revision=manifest.revision,
+        working_copy_id=working_copy_id,
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+    )
+
+    assert restored.active_working_copy_id == working_copy_id
+    assert restored.revision == manifest.revision + 1
+    projected = json.loads(
+        (
+            manager.workspace.jobs_root
+            / manifest.directory_name
+            / "job.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert projected["active_working_copy_id"] == working_copy_id
+
+
+def test_delivery_reactivation_fails_closed_for_multiple_candidates(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_reopened_delivery_job(manager)
+    requested = "50000000-0000-4000-8000-000000000001"
+    _add_delivery_working_copy(manager, repository, manifest, working_copy_id=requested)
+    _add_delivery_working_copy(
+        manager,
+        repository,
+        manifest,
+        working_copy_id="50000000-0000-4000-8000-000000000002",
+    )
+
+    with pytest.raises(JobFailure) as captured:
+        manager.reactivate_working_copy_for_delivery(
+            job_id=str(manifest.job_id),
+            expected_job_revision=manifest.revision,
+            working_copy_id=requested,
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+
+    assert captured.value.code == "JOB_WORKING_COPY_REACTIVATION_AMBIGUOUS"
+    assert repository.jobs[str(manifest.job_id)].get("active_working_copy_id") is None
+
+
+def test_delivery_reactivation_rejects_changed_working_copy_bytes(tmp_path: Path) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_reopened_delivery_job(manager)
+    working_copy_id = "50000000-0000-4000-8000-000000000001"
+    working_path = _add_delivery_working_copy(
+        manager, repository, manifest, working_copy_id=working_copy_id
+    )
+    working_path.write_bytes(b"tampered after authoritative binding")
+
+    with pytest.raises(JobFailure) as captured:
+        manager.reactivate_working_copy_for_delivery(
+            job_id=str(manifest.job_id),
+            expected_job_revision=manifest.revision,
+            working_copy_id=working_copy_id,
+            organization_id=ORGANIZATION_ID,
+            design_group_id=DESIGN_GROUP_ID,
+            actor_id=ACTOR_ID,
+        )
+
+    assert captured.value.code == "JOB_WORKING_COPY_REACTIVATION_UNSAFE"
+    assert repository.jobs[str(manifest.job_id)].get("active_working_copy_id") is None
 
 
 def _repair(manager: DesignJobManager, **kwargs: object):

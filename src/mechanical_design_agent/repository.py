@@ -5281,6 +5281,96 @@ class PostgresRepository:
             )
         return dict(row)
 
+    def list_job_working_copies(
+        self,
+        *,
+        job_id: str,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            authorized = connection.execute(
+                "SELECT id FROM design_jobs WHERE id=%s AND organization_id=%s "
+                "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+                "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id)",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if authorized is None:
+                raise KeyError("unknown design_job_id or unauthorized")
+            rows = connection.execute(
+                "SELECT id,job_id,organization_id,design_group_id,working_path,"
+                "working_relative_path,working_sha256,working_size_bytes "
+                "FROM design_working_copies WHERE job_id=%s AND organization_id=%s "
+                "AND design_group_id=%s ORDER BY created_at,id",
+                (job_id, organization_id, design_group_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reactivate_design_job_working_copy(
+        self,
+        *,
+        job_id: str,
+        expected_revision: int,
+        working_copy_id: str,
+        organization_id: str,
+        design_group_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ValueError("expected_revision must be a non-negative integer")
+        with self.connection() as connection, connection.transaction():
+            job = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+                "AND design_group_id=%s AND EXISTS (SELECT 1 FROM actors actor "
+                "WHERE actor.id=%s AND actor.organization_id=design_jobs.organization_id) "
+                "FOR UPDATE",
+                (job_id, organization_id, design_group_id, actor_id),
+            ).fetchone()
+            if job is None:
+                raise KeyError("unknown design_job_id or unauthorized")
+            if int(job["revision"]) != expected_revision:
+                raise ValueError("stale design job revision")
+            if (
+                job["status"] != "active"
+                or job["job_type"] != "mechanical_design"
+                or job["provisioning_state"] != "ready"
+                or job["phase"] not in {"delivery", "lesson_capture"}
+                or job.get("active_working_copy_id") is not None
+            ):
+                raise ValueError("design Job is not ready for working-copy reactivation")
+            candidates = connection.execute(
+                "SELECT id FROM design_working_copies WHERE job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id FOR UPDATE",
+                (job_id, organization_id, design_group_id),
+            ).fetchall()
+            if len(candidates) != 1 or str(candidates[0]["id"]) != working_copy_id:
+                raise ValueError("working-copy reactivation candidate changed")
+            row = connection.execute(
+                "UPDATE design_jobs SET active_working_copy_id=%s,revision=revision+1,updated_at=now() "
+                "WHERE id=%s AND revision=%s AND active_working_copy_id IS NULL "
+                "AND status='active' AND job_type='mechanical_design' "
+                "AND phase IN ('delivery','lesson_capture') AND provisioning_state='ready' "
+                "AND organization_id=%s AND design_group_id=%s RETURNING *",
+                (
+                    working_copy_id,
+                    job_id,
+                    expected_revision,
+                    organization_id,
+                    design_group_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError("working-copy reactivation candidate changed")
+            self._record_design_job_event(
+                connection,
+                job=dict(row),
+                event_type="working_copy_reactivated",
+                actor_id=actor_id,
+                reason="restore sole verified working copy for delivery approval",
+            )
+        return dict(row)
+
     def get_design_job(
         self,
         *,
