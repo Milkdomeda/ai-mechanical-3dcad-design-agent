@@ -5415,7 +5415,7 @@ class PostgresRepository:
             self._record_design_job_event(
                 connection,
                 job=dict(row),
-                event_type="working_copy_reactivated",
+                event_type="working_copy_bound",
                 actor_id=actor_id,
                 reason="restore sole verified working copy for delivery approval",
             )
