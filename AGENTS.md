@@ -60,6 +60,10 @@
 - Mechanism or architecture changes, key-interface or approved-function changes, exceeded explicit constraints, manufacturing-process or specified-material changes, new standard-part categories, and removed validation requirements require a successor Design Intent proposal and new user approval. Do not use percentage-only thresholds to decide materiality.
 - Do not call an approval or delivery operation on the user's behalf. Approval phrases must come from the user and match the operation being approved.
 - When the user confirms with “模型设计确认”, immediately summarize the material design lessons and call `design_confirmation_record`, even if another delivery gate is still pending. Continue the governed review and publication flow when the remaining gates become ready.
+- Model confirmation and Design Lesson publication are separate decisions. `模型设计确认` never approves or publishes a Design Lesson.
+- After delivery, call `design_lesson_review_context`, retain only material, generalizable, evidence-backed candidates, and prepare one immutable Review Card. Display the complete current card before requesting a decision. Treat requested edits or filtering as review feedback; prepare a replacement card and supersede the prior pending card.
+- For a publishable card, request only `确认发布设计经验`, keep the active Review ID and Job binding internal, and call `design_lesson_review_publish`. Report completion only for public status `published`. If status is `publishing`, retry the existing status path without requesting another confirmation.
+- If no candidate survives engineering review, display the complete immutable screening card, request only `确认无可发布设计经验`, and call `design_lesson_review_no_publish`. The terminal `reviewed-no-publishable-lesson` outcome must create no shared Design Lesson.
 
 ## Standard parts and provenance
 

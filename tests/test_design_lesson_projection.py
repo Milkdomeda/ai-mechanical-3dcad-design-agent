@@ -571,6 +571,7 @@ class DesignLessonProjectionTests(unittest.TestCase):
                         "working_copy_id": "working-copy-1",
                         "job_id": "job-1",
                         "lesson_id": "lesson-1",
+                        "review_outcome": "publish",
                         "occurred_at": "2026-08-11T12:00:00Z",
                         "aggregate_version": 1,
                         "force": False,

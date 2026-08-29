@@ -1332,6 +1332,9 @@ class PostgresRepository:
         verified_review_card_sha256: str | None = None,
         verified_review_path: str | None = None,
         verified_package_path: str | None = None,
+        confirmation_mode: str = "legacy_review_id",
+        decision_receipt_sha256: str | None = None,
+        decision_receipt_path: str | None = None,
     ) -> dict[str, Any]:
         """Atomically promote one verified staging package into authoritative knowledge."""
         package = validate_design_lesson_package(package)
@@ -1341,6 +1344,20 @@ class PostgresRepository:
             raise ValueError("archived_package_path is required")
         if not reviewer_text.strip():
             raise ValueError("reviewer_text is required")
+        if confirmation_mode not in {"legacy_review_id", "single_confirmation"}:
+            raise ValueError("unsupported design lesson confirmation mode")
+        if confirmation_mode == "single_confirmation" and (
+            not decision_receipt_sha256 or not decision_receipt_path
+        ):
+            raise ValueError("single-confirmation approval requires a decision receipt")
+        if decision_receipt_sha256 is not None and (
+            len(decision_receipt_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in decision_receipt_sha256.lower()
+            )
+        ):
+            raise ValueError("decision_receipt_sha256 must be a full SHA-256 digest")
         source = package["source"]
         required_source_fields = (
             "organization_id",
@@ -1394,6 +1411,8 @@ class PostgresRepository:
                     raise PermissionError(
                         "design lesson review actor must belong to the review organization"
                     )
+                if review.get("review_outcome", "publish") != "publish":
+                    raise ValueError("design lesson publication requires a publish review")
                 if any(
                     (
                         review["organization_id"] != source["organization_id"],
@@ -1957,9 +1976,18 @@ class PostgresRepository:
             if review is not None:
                 review = connection.execute(
                     "UPDATE design_lesson_reviews SET status='approved-retrieval-pending',"
-                    "published_design_lesson_id=%s,reviewed_by=%s,reviewed_at=now(),reviewer_text=%s "
+                    "published_design_lesson_id=%s,reviewed_by=%s,reviewed_at=now(),reviewer_text=%s,"
+                    "confirmation_mode=%s,decision_receipt_sha256=%s,decision_receipt_path=%s "
                     "WHERE id=%s AND status='awaiting-engineer-review' RETURNING *",
-                    (lesson["id"], reviewer_id, reviewer_text, review_id),
+                    (
+                        lesson["id"],
+                        reviewer_id,
+                        reviewer_text,
+                        confirmation_mode,
+                        decision_receipt_sha256,
+                        decision_receipt_path,
+                        review_id,
+                    ),
                 ).fetchone()
                 if review is None:
                     raise RuntimeError(
@@ -4136,7 +4164,7 @@ class PostgresRepository:
         organization_id: str,
         design_group_id: str,
         working_copy_id: str,
-        lesson_id: str,
+        lesson_id: str | None,
         package_sha256: str,
         review_card_sha256: str,
         final_model_sha256: str,
@@ -4145,8 +4173,13 @@ class PostgresRepository:
         package_path: str,
         actor_id: str,
         supersedes_review_id: str | None = None,
+        review_outcome: str = "publish",
         pre_commit_verifier: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if review_outcome not in {"publish", "no_publish"}:
+            raise ValueError("unsupported design lesson review outcome")
+        if (review_outcome == "publish") != (lesson_id is not None):
+            raise ValueError("design lesson review outcome and lesson_id are inconsistent")
         if (
             not isinstance(approved_final_artifact_path, str)
             or not approved_final_artifact_path.strip()
@@ -4217,11 +4250,11 @@ class PostgresRepository:
                     (
                         predecessor["design_group_id"] != design_group_id,
                         str(predecessor["working_copy_id"]) != str(working_copy_id),
-                        predecessor["lesson_id"] != lesson_id,
+                        predecessor["final_model_sha256"] != final_model_sha256,
                     )
                 ):
                     raise ValueError(
-                        "replacement review and predecessor must describe the same design lesson set"
+                        "replacement review and predecessor must describe the same delivered model"
                     )
                 if predecessor["status"] != "awaiting-engineer-review":
                     raise ValueError(
@@ -4244,7 +4277,7 @@ class PostgresRepository:
             row = connection.execute(
                 "INSERT INTO design_lesson_reviews(id,organization_id,design_group_id,working_copy_id,lesson_id,"
                 "package_sha256,review_card_sha256,final_model_sha256,status,review_path,package_path,created_by,"
-                "supersedes_review_id,approved_final_artifact_path) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'awaiting-engineer-review',%s,%s,%s,%s,%s) "
+                "supersedes_review_id,approved_final_artifact_path,review_outcome) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'awaiting-engineer-review',%s,%s,%s,%s,%s,%s) "
                 "RETURNING *",
                 (
                     review_id,
@@ -4260,11 +4293,90 @@ class PostgresRepository:
                     actor_id,
                     supersedes_review_id,
                     approved_final_artifact_path,
+                    review_outcome,
                 ),
             ).fetchone()
             self._enqueue_design_lesson_review_event(
                 connection,
                 event_type="design_lesson_review.prepared",
+                review=row,
+            )
+            if pre_commit_verifier is not None:
+                pre_commit_verifier()
+        return dict(row)
+
+    def record_design_lesson_review_no_publish(
+        self,
+        *,
+        review_id: str,
+        reviewer_id: str,
+        reviewer_text: str,
+        decision_receipt_sha256: str,
+        decision_receipt_path: str,
+        pre_commit_verifier: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        if not reviewer_text.strip():
+            raise ValueError("no-publication reviewer text is required")
+        if (
+            len(decision_receipt_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in decision_receipt_sha256.lower()
+            )
+        ):
+            raise ValueError("decision_receipt_sha256 must be a full SHA-256 digest")
+        if not decision_receipt_path.strip():
+            raise ValueError("decision_receipt_path is required")
+        with self.connection() as connection, connection.transaction():
+            actor = connection.execute(
+                "SELECT * FROM actors WHERE id=%s FOR UPDATE", (reviewer_id,)
+            ).fetchone()
+            review = connection.execute(
+                "SELECT * FROM design_lesson_reviews WHERE id=%s FOR UPDATE",
+                (review_id,),
+            ).fetchone()
+            if review is None:
+                raise KeyError(f"unknown design lesson review: {review_id}")
+            if (
+                actor is None
+                or actor["role"] != "family_owner"
+                or actor["organization_id"] != review["organization_id"]
+            ):
+                raise PermissionError(
+                    "design lesson no-publication decision requires an authorized family owner"
+                )
+            if review.get("review_outcome") != "no_publish":
+                raise ValueError("no-publication decision requires a no_publish review")
+            if review["status"] == "reviewed-no-publishable-lesson":
+                if (
+                    review.get("decision_receipt_sha256") == decision_receipt_sha256
+                    and review.get("decision_receipt_path") == decision_receipt_path
+                ):
+                    return dict(review)
+                raise ValueError("no-publication decision receipt diverged")
+            if review["status"] != "awaiting-engineer-review":
+                raise ValueError("design lesson review must be awaiting-engineer-review")
+            if pre_commit_verifier is not None:
+                pre_commit_verifier()
+            row = connection.execute(
+                "UPDATE design_lesson_reviews SET status='reviewed-no-publishable-lesson',"
+                "reviewed_by=%s,reviewed_at=now(),reviewer_text=%s,"
+                "confirmation_mode='single_confirmation',decision_receipt_sha256=%s,"
+                "decision_receipt_path=%s WHERE id=%s AND status='awaiting-engineer-review' "
+                "RETURNING *",
+                (
+                    reviewer_id,
+                    reviewer_text,
+                    decision_receipt_sha256,
+                    decision_receipt_path,
+                    review_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("design lesson review state changed while locked")
+            self._enqueue_design_lesson_review_event(
+                connection,
+                event_type="design_lesson_review.no_publish",
                 review=row,
             )
             if pre_commit_verifier is not None:
@@ -5543,6 +5655,7 @@ class PostgresRepository:
             "working_copy_id": str(review["working_copy_id"]),
             "job_id": str(origin["job_id"]),
             "lesson_id": review["lesson_id"],
+            "review_outcome": review.get("review_outcome", "publish"),
             "package_sha256": review["package_sha256"],
             "review_card_sha256": review["review_card_sha256"],
             "final_model_sha256": review["final_model_sha256"],
@@ -5557,6 +5670,10 @@ class PostgresRepository:
             payload["published_design_lesson_id"] = str(
                 review["published_design_lesson_id"]
             )
+        if review.get("decision_receipt_sha256") is not None:
+            payload["decision_receipt_sha256"] = review[
+                "decision_receipt_sha256"
+            ]
         PostgresRepository._enqueue(
             connection,
             "design_lesson_review",

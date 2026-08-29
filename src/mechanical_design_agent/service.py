@@ -1530,6 +1530,279 @@ class MechanicalDesignService:
                 "job_revision": int(fresh_job["revision"]),
             }
 
+    @staticmethod
+    def _design_lesson_publication_result(review: dict[str, Any]) -> dict[str, Any]:
+        internal_status = str(review["status"])
+        if internal_status == "stored-and-retrievable":
+            status = "published"
+            next_action = "none"
+        elif internal_status == "approved-retrieval-pending":
+            status = "publishing"
+            next_action = "retry_status"
+        elif internal_status == "reviewed-no-publishable-lesson":
+            status = internal_status
+            next_action = "none"
+        else:
+            status = "blocked"
+            next_action = "replace_or_review_card"
+        result: dict[str, Any] = {
+            "schema_version": "DesignLessonPublication/v1",
+            "status": status,
+            "review_id": str(review["id"]),
+            "review_card_sha256": review.get("review_card_sha256"),
+            "publication_receipt_sha256": review.get(
+                "decision_receipt_sha256"
+            ),
+            "internal_status": internal_status,
+            "next_action": next_action,
+        }
+        if review.get("published_design_lesson_id") is not None:
+            result["published_design_lesson_id"] = str(
+                review["published_design_lesson_id"]
+            )
+        return result
+
+    @staticmethod
+    def _blocked_design_lesson_publication(
+        review_id: str, reason_code: str
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "DesignLessonPublication/v1",
+            "status": "blocked",
+            "review_id": review_id,
+            "reason_code": reason_code,
+            "next_action": "replace_or_review_card",
+        }
+
+    def _prepare_design_lesson_decision_receipt(
+        self,
+        *,
+        review: dict[str, Any],
+        review_outcome: str,
+        job_id: str,
+        job_revision: int,
+        job_root: Path,
+        review_store: DesignLessonReviewStore,
+    ) -> dict[str, Any]:
+        approved_path = Path(str(review["approved_final_artifact_path"]))
+        workspace = validate_managed_path(
+            self.settings.workspace, allow_missing_leaf=False
+        ).path
+        approved_relative = relative_managed_path(
+            approved_path, workspace
+        ).as_posix()
+        receipt = {
+            "schema_version": "DesignLessonDecisionReceipt/v1",
+            "review_id": str(review["id"]),
+            "review_outcome": review_outcome,
+            "job_id": job_id,
+            "reviewed_job_revision": job_revision,
+            "working_copy_id": str(review["working_copy_id"]),
+            "package_sha256": str(review["package_sha256"]),
+            "review_card_sha256": str(review["review_card_sha256"]),
+            "final_model_sha256": str(review["final_model_sha256"]),
+            "approved_final_artifact_path": approved_relative,
+            "actor_id": self.settings.actor_id,
+            "confirmation_mode": "single_confirmation",
+        }
+        prepared = review_store.prepare_decision_receipt(
+            str(review["id"]), receipt
+        )
+        prepared["decision_receipt_path"] = relative_managed_path(
+            Path(str(prepared["decision_receipt_path"])), job_root
+        ).as_posix()
+        return prepared
+
+    def design_lesson_review_publish(
+        self,
+        *,
+        review_id: str,
+        confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(confirmation, str) or confirmation.strip() != "确认发布设计经验":
+            raise ValueError("confirmation must be exactly: 确认发布设计经验")
+        self._require_database()
+        review = self.repository.get_design_lesson_review(review_id)
+        self._require_design_lesson_review_scope(review)
+        if review.get("review_outcome", "publish") != "publish":
+            return self._blocked_design_lesson_publication(
+                review_id, "REVIEW_OUTCOME_MISMATCH"
+            )
+        if review["status"] in {"stored-and-retrievable", "approved-retrieval-pending"}:
+            if review["status"] == "approved-retrieval-pending":
+                self._complete_design_lesson_review(review_id, idempotent=True)
+                review = self.repository.get_design_lesson_review(review_id)
+            return self._design_lesson_publication_result(review)
+        if review["status"] != "awaiting-engineer-review":
+            return self._blocked_design_lesson_publication(
+                review_id, "REVIEW_NOT_ACTIVE"
+            )
+        try:
+            with self.design_workspace.locked_job_working_copy(
+                str(review["working_copy_id"])
+            ) as (job_root, _, working, fresh_job):
+                origin_job_id = self._require_lesson_job_request(
+                    working=working,
+                    fresh_job=fresh_job,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                )
+                if str(review.get("job_id") or origin_job_id) != origin_job_id:
+                    raise ImmutableReviewBindingDriftError(
+                        "design lesson review Job binding changed"
+                    )
+                staging_store, review_store = self._job_design_lesson_stores(job_root)
+                receipt = self._prepare_design_lesson_decision_receipt(
+                    review=review,
+                    review_outcome="publish",
+                    job_id=origin_job_id,
+                    job_revision=int(fresh_job["revision"]),
+                    job_root=job_root,
+                    review_store=review_store,
+                )
+                self._design_lesson_review_approve_locked(
+                    review=review,
+                    reviewer_text=confirmation.strip(),
+                    staging_store=staging_store,
+                    review_store=review_store,
+                    confirmation_mode="single_confirmation",
+                    decision_receipt_sha256=str(
+                        receipt["decision_receipt_sha256"]
+                    ),
+                    decision_receipt_path=str(receipt["decision_receipt_path"]),
+                )
+            current = self.repository.get_design_lesson_review(review_id)
+            return self._design_lesson_publication_result(current)
+        except JobFailure as exc:
+            return self._blocked_design_lesson_publication(review_id, exc.code)
+        except (ImmutableReviewBindingDriftError, ArtifactChecksumMismatchError):
+            return self._blocked_design_lesson_publication(
+                review_id, "IMMUTABLE_BINDING_DRIFT"
+            )
+
+    def design_lesson_review_no_publish(
+        self,
+        *,
+        review_id: str,
+        confirmation: str,
+        job_id: str | None = None,
+        expected_job_revision: int | None = None,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(confirmation, str)
+            or confirmation.strip() != "确认无可发布设计经验"
+        ):
+            raise ValueError("confirmation must be exactly: 确认无可发布设计经验")
+        self._require_database()
+        review = self.repository.get_design_lesson_review(review_id)
+        self._require_design_lesson_review_scope(review)
+        if review.get("review_outcome") != "no_publish":
+            return self._blocked_design_lesson_publication(
+                review_id, "REVIEW_OUTCOME_MISMATCH"
+            )
+        if review["status"] == "reviewed-no-publishable-lesson":
+            return self._design_lesson_publication_result(review)
+        if review["status"] != "awaiting-engineer-review":
+            return self._blocked_design_lesson_publication(
+                review_id, "REVIEW_NOT_ACTIVE"
+            )
+        try:
+            with self.design_workspace.locked_job_working_copy(
+                str(review["working_copy_id"])
+            ) as (job_root, locked_working_path, working, fresh_job):
+                origin_job_id = self._require_lesson_job_request(
+                    working=working,
+                    fresh_job=fresh_job,
+                    job_id=job_id,
+                    expected_job_revision=expected_job_revision,
+                )
+                staging_store, review_store = self._job_design_lesson_stores(job_root)
+                package_sha256 = str(review["package_sha256"])
+
+                def verify_bindings() -> None:
+                    verified_review = review_store.verify(review_id, package_sha256)
+                    if verified_review["review_outcome"] != "no_publish":
+                        raise ImmutableReviewBindingDriftError(
+                            "review outcome changed"
+                        )
+                    inspection = review_store.inspect(review_id)
+                    package_inspection = staging_store.get_review(package_sha256)
+                    if package_inspection.get("status") != "verified-local-only":
+                        raise ImmutableReviewBindingDriftError(
+                            "screening package changed"
+                        )
+                    package = package_inspection.get("package") or {}
+                    source = package.get("source") or {}
+                    if any(
+                        (
+                            str(source.get("working_copy_id"))
+                            != str(review["working_copy_id"]),
+                            source.get("after_model_sha256")
+                            != review["final_model_sha256"],
+                            source.get("organization_id")
+                            != review["organization_id"],
+                            source.get("design_group_id")
+                            != review["design_group_id"],
+                            inspection["paths"]["review_card"]
+                            != review["review_path"],
+                            str(staging_store.review_package_paths(package_sha256)["lesson_json"])
+                            != review["package_path"],
+                            file_sha256(locked_working_path)
+                            != review["final_model_sha256"],
+                        )
+                    ):
+                        raise ImmutableReviewBindingDriftError(
+                            "no-publication review binding changed"
+                        )
+                    self.artifacts.verify_file(
+                        Path(str(review["approved_final_artifact_path"])),
+                        str(review["final_model_sha256"]),
+                    )
+                    for descriptor, evidence_path in staging_store.review_evidence_paths(
+                        package_sha256
+                    ):
+                        if file_sha256(evidence_path) != descriptor["sha256"]:
+                            raise ImmutableReviewBindingDriftError(
+                                "review evidence changed"
+                            )
+
+                verify_bindings()
+                receipt = self._prepare_design_lesson_decision_receipt(
+                    review=review,
+                    review_outcome="no_publish",
+                    job_id=origin_job_id,
+                    job_revision=int(fresh_job["revision"]),
+                    job_root=job_root,
+                    review_store=review_store,
+                )
+
+                def verify_decision() -> None:
+                    verify_bindings()
+                    review_store.verify_decision_receipt(
+                        review_id, str(receipt["decision_receipt_sha256"])
+                    )
+
+                self.repository.record_design_lesson_review_no_publish(
+                    review_id=review_id,
+                    reviewer_id=self.settings.actor_id,
+                    reviewer_text=confirmation.strip(),
+                    decision_receipt_sha256=str(
+                        receipt["decision_receipt_sha256"]
+                    ),
+                    decision_receipt_path=str(receipt["decision_receipt_path"]),
+                    pre_commit_verifier=verify_decision,
+                )
+            current = self.repository.get_design_lesson_review(review_id)
+            return self._design_lesson_publication_result(current)
+        except JobFailure as exc:
+            return self._blocked_design_lesson_publication(review_id, exc.code)
+        except (ImmutableReviewBindingDriftError, ArtifactChecksumMismatchError):
+            return self._blocked_design_lesson_publication(
+                review_id, "IMMUTABLE_BINDING_DRIFT"
+            )
+
     def _design_lesson_review_approve_locked(
         self,
         *,
@@ -1537,6 +1810,9 @@ class MechanicalDesignService:
         reviewer_text: str,
         staging_store: DesignLessonStagingStore,
         review_store: DesignLessonReviewStore,
+        confirmation_mode: str = "legacy_review_id",
+        decision_receipt_sha256: str | None = None,
+        decision_receipt_path: str | None = None,
     ) -> dict[str, Any]:
         review_id = str(review["id"])
         if review["status"] == "stored-and-retrievable":
@@ -1569,6 +1845,9 @@ class MechanicalDesignService:
                 review=review,
                 staging_store=staging_store,
                 review_store=review_store,
+                confirmation_mode=confirmation_mode,
+                decision_receipt_sha256=decision_receipt_sha256,
+                decision_receipt_path=decision_receipt_path,
             )
         except (
             ImmutableReviewBindingDriftError,
@@ -1776,6 +2055,9 @@ class MechanicalDesignService:
         review: dict[str, Any] | None = None,
         staging_store: DesignLessonStagingStore | None = None,
         review_store: DesignLessonReviewStore | None = None,
+        confirmation_mode: str = "legacy_review_id",
+        decision_receipt_sha256: str | None = None,
+        decision_receipt_path: str | None = None,
     ) -> dict[str, Any]:
         self._require_database()
         verified_review_card_sha256 = None
@@ -1996,6 +2278,18 @@ class MechanicalDesignService:
                             Path(str(review["approved_final_artifact_path"])),
                             str(review["final_model_sha256"]),
                         )
+                        if decision_receipt_sha256 is not None:
+                            verified_receipt = review_store.verify_decision_receipt(
+                                review_id, decision_receipt_sha256
+                            )
+                            if (
+                                decision_receipt_path is None
+                                or Path(str(verified_receipt["decision_receipt_path"])).name
+                                != Path(decision_receipt_path).name
+                            ):
+                                raise ImmutableReviewBindingDriftError(
+                                    "decision receipt path changed"
+                                )
                     except ImmutableReviewBindingDriftError:
                         raise
                     except ValueError as error:
@@ -2015,6 +2309,9 @@ class MechanicalDesignService:
                 verified_review_card_sha256=verified_review_card_sha256,
                 verified_review_path=verified_review_path,
                 verified_package_path=verified_package_path,
+                confirmation_mode=confirmation_mode,
+                decision_receipt_sha256=decision_receipt_sha256,
+                decision_receipt_path=decision_receipt_path,
             )
         return {
             "lesson": lesson,
@@ -3440,7 +3737,8 @@ class MechanicalDesignService:
                 organization_id=configured_organization,
                 design_group_id=configured_design_group,
                 working_copy_id=working_copy_id,
-                lesson_id=staged_inspection["package"]["lesson_id"],
+                lesson_id=staged_inspection["package"].get("lesson_id"),
+                review_outcome=prepared["review_outcome"],
                 package_sha256=staged_inspection["package_sha256"],
                 review_card_sha256=prepared["review_card_sha256"],
                 final_model_sha256=context["final_model_sha256"],
@@ -3485,6 +3783,8 @@ class MechanicalDesignService:
             "review_card": prepared["review_card"],
             "review_card_markdown": prepared["review_card_markdown"],
             "confirmation": prepared["confirmation"],
+            "publication_confirmation": prepared["publication_confirmation"],
+            "review_outcome": prepared["review_outcome"],
         }
 
     def projection_sync(self, limit: int = 100) -> dict[str, Any]:

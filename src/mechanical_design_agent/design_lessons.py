@@ -39,6 +39,13 @@ EVIDENCE_ROLES = {
     "review_image",
     "supporting_report",
 }
+SCREENING_EXCLUSION_REASONS = {
+    "product_specific",
+    "insufficient_evidence",
+    "duplicate",
+    "no_material_learning",
+    "uncertain_applicability",
+}
 
 _REQUIRED_PACKAGE_FIELDS = (
     "schema_version",
@@ -269,6 +276,157 @@ def validate_design_lesson_package(raw: dict[str, Any]) -> dict[str, Any]:
     return package
 
 
+def validate_design_lesson_screening_package(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate an immutable reviewed-no-publication screening package."""
+    if not isinstance(raw, dict):
+        raise ValueError("design lesson screening package must be an object")
+    _reject_non_finite_json_numbers(raw)
+    package = json.loads(json.dumps(raw, ensure_ascii=False, allow_nan=False))
+    required = {
+        "schema_version",
+        "screening_id",
+        "codex_session_id",
+        "source",
+        "summary",
+        "excluded_candidates",
+        "evidence_manifest",
+    }
+    missing = sorted(required - package.keys())
+    if missing:
+        raise ValueError(
+            "design lesson screening package missing required fields: "
+            + ", ".join(missing)
+        )
+    unsupported = sorted(set(package) - required)
+    if unsupported:
+        raise ValueError("unsupported top-level fields: " + ", ".join(unsupported))
+    if package["schema_version"] != "DesignLessonScreeningPackage/v1":
+        raise ValueError("invalid design lesson screening schema_version")
+    screening_id = _require_string(package["screening_id"], "screening_id")
+    require_safe_id(screening_id, "screening_id")
+    for field in ("codex_session_id", "summary"):
+        value = _require_string(package[field], field)
+        if not value.strip():
+            raise ValueError(f"{field} is required")
+
+    source = package["source"]
+    if not isinstance(source, dict):
+        raise ValueError("source must be an object")
+    allowed_source = {
+        "organization_id",
+        "design_group_id",
+        "family_id",
+        "working_copy_id",
+        "change_set_ids",
+        "before_model_sha256",
+        "after_model_sha256",
+    }
+    unsupported_source = sorted(set(source) - allowed_source)
+    if unsupported_source:
+        raise ValueError("unsupported source fields: " + ", ".join(unsupported_source))
+    for field in ("organization_id", "design_group_id", "working_copy_id"):
+        value = _require_string(source.get(field), f"source.{field}")
+        if not value.strip():
+            raise ValueError(f"source.{field} is required")
+    family_id = source.get("family_id")
+    if family_id is not None and (
+        not isinstance(family_id, str) or not family_id.strip()
+    ):
+        raise ValueError("source.family_id must be a nonblank string or null")
+    for field in ("before_model_sha256", "after_model_sha256"):
+        _require_sha256(source.get(field), f"source.{field}")
+    change_set_ids = _require_string_list(
+        source,
+        "change_set_ids",
+        nonempty=True,
+        label="source.change_set_ids",
+    )
+    if len(change_set_ids) != len(set(change_set_ids)):
+        raise ValueError("source.change_set_ids must contain unique values")
+
+    evidence_ids = _validate_screening_evidence_manifest(package["evidence_manifest"])
+    candidates = package["excluded_candidates"]
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("excluded_candidates must be a nonempty list")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise ValueError("excluded_candidates must contain objects")
+        required_candidate = {"candidate", "reason_code", "rationale", "evidence_refs"}
+        if set(candidate) != required_candidate:
+            raise ValueError("excluded candidate fields are invalid")
+        for field in ("candidate", "rationale"):
+            value = _require_string(candidate[field], field)
+            if not value.strip():
+                raise ValueError(f"excluded candidate {field} is required")
+        if candidate["reason_code"] not in SCREENING_EXCLUSION_REASONS:
+            raise ValueError(
+                f"unsupported screening reason_code: {candidate['reason_code']}"
+            )
+        refs = candidate["evidence_refs"]
+        if not isinstance(refs, list) or not refs or not all(
+            isinstance(value, str) and value.strip() for value in refs
+        ):
+            raise ValueError("excluded candidate evidence_refs must be nonempty strings")
+        if len(refs) != len(set(refs)):
+            raise ValueError("excluded candidate evidence_refs must be unique")
+        unknown = sorted(set(refs) - evidence_ids)
+        if unknown:
+            raise ValueError(
+                "excluded candidate evidence_refs must reference evidence_id values: "
+                + ", ".join(unknown)
+            )
+    return package
+
+
+def validate_design_lesson_review_package(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("design lesson review package must be an object")
+    schema_version = raw.get("schema_version")
+    if schema_version == "DesignLessonPackage/v1":
+        return validate_design_lesson_package(raw)
+    if schema_version == "DesignLessonScreeningPackage/v1":
+        return validate_design_lesson_screening_package(raw)
+    raise ValueError("unsupported design lesson review package schema_version")
+
+
+def _validate_screening_evidence_manifest(raw: Any) -> set[str]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("evidence_manifest must contain baseline geometry validation evidence")
+    evidence_ids: set[str] = set()
+    roles: set[str] = set()
+    for evidence in raw:
+        if not isinstance(evidence, dict):
+            raise ValueError("evidence_manifest must contain objects")
+        for field in ("evidence_id", "path", "role", "media_type", "sha256"):
+            if field not in evidence:
+                raise ValueError(f"evidence_manifest item missing required field: {field}")
+        evidence_id = _require_string(evidence["evidence_id"], "evidence_id")
+        require_safe_id(evidence_id, "evidence_id")
+        if evidence_id in evidence_ids:
+            raise ValueError(f"evidence_id values must be unique: {evidence_id}")
+        evidence_ids.add(evidence_id)
+        for field in ("path", "media_type"):
+            value = _require_string(evidence[field], f"evidence.{field}")
+            if not value.strip():
+                raise ValueError(f"evidence.{field} is required")
+        role = _require_string(evidence["role"], "evidence.role")
+        if role not in EVIDENCE_ROLES:
+            raise ValueError(f"unsupported evidence role: {role}")
+        roles.add(role)
+        _require_sha256(evidence["sha256"], "evidence.sha256")
+        if role in EVIDENCE_ROLE_VALIDATION_KINDS:
+            for field in ("working_copy_id", "change_set_id", "validation_kind"):
+                value = _require_string(evidence.get(field), f"evidence.{field}")
+                if not value.strip():
+                    raise ValueError(f"evidence.{field} is required for validation evidence")
+            _require_sha256(evidence.get("model_sha256"), "evidence.model_sha256")
+            if evidence["validation_kind"] != EVIDENCE_ROLE_VALIDATION_KINDS[role]:
+                raise ValueError("evidence validation_kind does not match its typed role")
+    if "geometry_validation" not in roles:
+        raise ValueError("evidence_manifest requires baseline geometry validation evidence")
+    return evidence_ids
+
+
 def _require_string(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string")
@@ -436,19 +594,30 @@ class DesignLessonStagingStore:
         )
         manifest = self._evidence_manifest(evidence_items)
         staged_package["evidence_manifest"] = manifest
-        staged_package = validate_design_lesson_package(staged_package)
-        evidence_ids = {item["evidence_id"] for item in manifest}
-        for assertion in staged_package["atomic_assertions"]:
-            unknown = sorted(set(assertion["evidence_refs"]) - evidence_ids)
-            if unknown:
-                raise ValueError(
-                    "atomic assertion evidence_refs must reference evidence_id values: "
-                    + ", ".join(unknown)
-                )
-        lesson_id = staged_package["lesson_id"]
+        staged_package = (
+            validate_design_lesson_review_package(staged_package)
+            if review_keyed
+            else validate_design_lesson_package(staged_package)
+        )
+        if staged_package["schema_version"] == "DesignLessonPackage/v1":
+            evidence_ids = {item["evidence_id"] for item in manifest}
+            for assertion in staged_package["atomic_assertions"]:
+                unknown = sorted(set(assertion["evidence_refs"]) - evidence_ids)
+                if unknown:
+                    raise ValueError(
+                        "atomic assertion evidence_refs must reference evidence_id values: "
+                        + ", ".join(unknown)
+                    )
+            lesson_id: str | None = staged_package["lesson_id"]
+            subject_id = lesson_id
+            review_outcome = "publish"
+        else:
+            lesson_id = None
+            subject_id = staged_package["screening_id"]
+            review_outcome = "no_publish"
         package_bytes = canonical_json(staged_package).encode("utf-8")
         package_sha256 = hashlib.sha256(package_bytes).hexdigest()
-        storage_key = f"review-{package_sha256}" if review_keyed else lesson_id
+        storage_key = f"review-{package_sha256}" if review_keyed else subject_id
         staging_root = self.staging_root
         lesson_dir = staging_root / storage_key
         if lesson_dir.exists() or lesson_dir.is_symlink():
@@ -495,6 +664,8 @@ class DesignLessonStagingStore:
         result = {
             "status": "staged-local-only",
             "lesson_id": lesson_id,
+            "review_subject_id": subject_id,
+            "review_outcome": review_outcome,
             "package_sha256": package_sha256,
             "manifest_sha256": stable_hash(manifest),
             "lesson_json_path": str(lesson_json_path),
@@ -617,7 +788,11 @@ class DesignLessonStagingStore:
                     ValueError(f"non-finite JSON number: {value}")
                 ),
             )
-            package = validate_design_lesson_package(parsed)
+            package = (
+                validate_design_lesson_review_package(parsed)
+                if expected_lesson_id is None
+                else validate_design_lesson_package(parsed)
+            )
             if (
                 expected_lesson_id is not None
                 and package["lesson_id"] != expected_lesson_id
@@ -703,9 +878,9 @@ class DesignLessonStagingStore:
         result = {
             "status": "verified-local-only" if verified else "integrity-drift",
             "lesson_id": (
-                package["lesson_id"]
+                package.get("lesson_id")
                 if package is not None
-                else expected_lesson_id or storage_key
+                else expected_lesson_id
             ),
             "package": package,
             "package_sha256": actual_package_sha256,
@@ -909,6 +1084,51 @@ class DesignLessonStagingStore:
                 lines.extend(f"- {text(item)}" for item in values)
             else:
                 lines.append("- _None_")
+
+        if package.get("schema_version") == "DesignLessonScreeningPackage/v1":
+            lines = [
+                "# Design Lesson screening: no publishable lesson",
+                "",
+                f"- Screening ID: `{text(package['screening_id'])}`",
+                f"- Package SHA-256: `{package_sha256}`",
+                f"- Codex session: `{text(package['codex_session_id'])}`",
+                "",
+                "## Source",
+                "",
+            ]
+            for field, value in sorted(package["source"].items()):
+                lines.append(f"- {text(field)}: {json_text(value)}")
+            lines.extend(["", "## Screening summary", "", text(package["summary"]), ""])
+            lines.extend(["## Excluded candidates", ""])
+            for item in package["excluded_candidates"]:
+                lines.extend(
+                    [
+                        f"### {text(item['candidate'])}",
+                        "",
+                        f"- Reason: `{text(item['reason_code'])}`",
+                        f"- Rationale: {text(item['rationale'])}",
+                        f"- Evidence refs: {json_text(item['evidence_refs'])}",
+                        "",
+                    ]
+                )
+            lines.extend(["## Evidence", ""])
+            for item in package["evidence_manifest"]:
+                lines.append(
+                    f"- `{text(item['evidence_id'])}`: `{text(item['path'])}` "
+                    f"({text(item['role'])}, {text(item['media_type'])}): `{item['sha256']}`"
+                )
+            canonical_package = html.escape(
+                json.dumps(
+                    package,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                    allow_nan=False,
+                ),
+                quote=True,
+            )
+            lines.extend(["", "## Canonical full package", "", "<pre>", canonical_package, "</pre>", ""])
+            return "\n".join(lines)
 
         problem = package["problem"]
         lines = [

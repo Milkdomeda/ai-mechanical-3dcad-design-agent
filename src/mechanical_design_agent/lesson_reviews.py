@@ -9,7 +9,7 @@ import re
 import tempfile
 from typing import Any
 
-from .design_lessons import validate_design_lesson_package
+from .design_lessons import validate_design_lesson_review_package
 from .hashing import file_sha256
 from .models import canonical_json, require_safe_id
 from .secure_fs import (
@@ -23,7 +23,7 @@ from .secure_fs import (
 
 
 _REVIEW_PARTS = ("output", "mechanical_design", "lesson_reviews")
-_REVIEW_FIELDS = {
+_REVIEW_V1_FIELDS = {
     "schema_version",
     "review_id",
     "lesson_id",
@@ -34,6 +34,7 @@ _REVIEW_FIELDS = {
     "supersedes_review_id",
     "status",
 }
+_REVIEW_V2_FIELDS = _REVIEW_V1_FIELDS | {"review_outcome"}
 _SHA256_TOKEN = re.compile(r"(?i)[0-9a-f]{64}")
 
 
@@ -118,10 +119,17 @@ class DesignLessonReviewStore:
         review_markdown = self._render_markdown(
             review_id, package, evidence_summary, validation_summary
         )
+        review_outcome = (
+            "publish"
+            if package["schema_version"] == "DesignLessonPackage/v1"
+            else "no_publish"
+        )
+        lesson_id = package.get("lesson_id")
         review = {
-            "schema_version": "DesignLessonReview/v1",
+            "schema_version": "DesignLessonReview/v2",
             "review_id": review_id,
-            "lesson_id": package["lesson_id"],
+            "lesson_id": lesson_id,
+            "review_outcome": review_outcome,
             "package_sha256": package_sha256,
             "working_copy_id": package["source"]["working_copy_id"],
             "final_model_sha256": package["source"]["after_model_sha256"],
@@ -148,7 +156,16 @@ class DesignLessonReviewStore:
                 )
         return {
             **review,
-            "confirmation": f"批准设计经验 {review_id}",
+            "confirmation": (
+                f"批准设计经验 {review_id}"
+                if review_outcome == "publish"
+                else "确认无可发布设计经验"
+            ),
+            "publication_confirmation": (
+                "确认发布设计经验"
+                if review_outcome == "publish"
+                else "确认无可发布设计经验"
+            ),
             "review_card": self._review_card(
                 package, evidence_summary, validation_summary
             ),
@@ -242,6 +259,7 @@ class DesignLessonReviewStore:
             "status": "verified-local-only",
             "review_id": review_id,
             "lesson_id": review["lesson_id"],
+            "review_outcome": review.get("review_outcome", "publish"),
             "package_sha256": package_sha256,
             "review_card_sha256": review["review_card_sha256"],
             "file_integrity": inspection["file_integrity"],
@@ -261,7 +279,7 @@ class DesignLessonReviewStore:
         if not isinstance(package_sha256, str):
             raise ValueError("staged inspection package SHA-256 is invalid")
         self._require_sha256(package_sha256, "staged inspection package SHA-256")
-        package = validate_design_lesson_package(package)
+        package = validate_design_lesson_review_package(package)
         actual_sha256 = hashlib.sha256(canonical_json(package).encode("utf-8")).hexdigest()
         if actual_sha256 != package_sha256:
             raise ValueError("staged inspection package SHA-256 is invalid")
@@ -283,12 +301,119 @@ class DesignLessonReviewStore:
             "review_card": resolved_review_dir / "review.md",
         }
 
+    def prepare_decision_receipt(
+        self, review_id: str, receipt: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Write one canonical immutable decision receipt beside its Review Card."""
+        require_safe_id(review_id, "review_id")
+        if not isinstance(receipt, dict):
+            raise ValueError("decision receipt must be an object")
+        expected_fields = {
+            "schema_version",
+            "review_id",
+            "review_outcome",
+            "job_id",
+            "reviewed_job_revision",
+            "working_copy_id",
+            "package_sha256",
+            "review_card_sha256",
+            "final_model_sha256",
+            "approved_final_artifact_path",
+            "actor_id",
+            "confirmation_mode",
+        }
+        if set(receipt) != expected_fields:
+            raise ValueError("decision receipt fields are invalid")
+        if receipt["schema_version"] != "DesignLessonDecisionReceipt/v1":
+            raise ValueError("invalid decision receipt schema_version")
+        if receipt["review_id"] != review_id:
+            raise ValueError("decision receipt review_id mismatch")
+        if receipt["review_outcome"] not in {"publish", "no_publish"}:
+            raise ValueError("invalid decision receipt outcome")
+        if receipt["confirmation_mode"] != "single_confirmation":
+            raise ValueError("invalid decision receipt confirmation mode")
+        for field in ("review_id", "job_id", "working_copy_id", "actor_id"):
+            value = receipt[field]
+            if not isinstance(value, str):
+                raise ValueError(f"decision receipt {field} must be a string")
+            require_safe_id(value, field)
+        revision = receipt["reviewed_job_revision"]
+        if type(revision) is not int or revision < 0:
+            raise ValueError("decision receipt reviewed_job_revision is invalid")
+        for field in (
+            "package_sha256",
+            "review_card_sha256",
+            "final_model_sha256",
+        ):
+            value = receipt[field]
+            if not isinstance(value, str):
+                raise ValueError(f"decision receipt {field} must be a string")
+            self._require_sha256(value, field)
+        artifact_path = receipt["approved_final_artifact_path"]
+        if not isinstance(artifact_path, str) or not artifact_path.strip():
+            raise ValueError("decision receipt approved artifact path is required")
+
+        receipt_bytes = canonical_json(receipt).encode("utf-8")
+        receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+        receipt_path = self._path_candidates(review_id)["review_json"].parent / "decision-receipt.json"
+        if receipt_path.is_symlink():
+            raise ValueError("decision receipt path must not be a symlink")
+        if receipt_path.exists():
+            self._assert_regular_workspace_file(receipt_path, "decision receipt")
+            if receipt_path.read_bytes() != receipt_bytes:
+                raise ValueError("decision receipt already exists with different content")
+        else:
+            self._atomic_write(receipt_path, receipt_bytes)
+        return {
+            "schema_version": "DesignLessonDecisionReceiptResult/v1",
+            "review_id": review_id,
+            "review_outcome": receipt["review_outcome"],
+            "decision_receipt_sha256": receipt_sha256,
+            "decision_receipt_path": str(receipt_path),
+        }
+
+    def verify_decision_receipt(
+        self, review_id: str, expected_sha256: str
+    ) -> dict[str, Any]:
+        require_safe_id(review_id, "review_id")
+        self._require_sha256(expected_sha256, "decision receipt SHA-256")
+        receipt_path = self._path_candidates(review_id)["review_json"].parent / "decision-receipt.json"
+        self._assert_regular_workspace_file(receipt_path, "decision receipt")
+        contents = receipt_path.read_bytes()
+        actual_sha256 = hashlib.sha256(contents).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise ValueError("decision receipt SHA-256 changed")
+        try:
+            receipt = json.loads(contents.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("decision receipt is invalid") from exc
+        if canonical_json(receipt).encode("utf-8") != contents:
+            raise ValueError("decision receipt is noncanonical")
+        return {
+            "review_id": review_id,
+            "decision_receipt_sha256": actual_sha256,
+            "decision_receipt_path": str(receipt_path),
+            "receipt": receipt,
+        }
+
     @staticmethod
     def _review_card(
         package: dict[str, Any],
         evidence_summary: list[dict[str, Any]] | None = None,
         validation_summary: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if package.get("schema_version") == "DesignLessonScreeningPackage/v1":
+            card = {
+                "title": "No publishable Design Lesson",
+                "screening_summary": package["summary"],
+                "excluded_candidates": package["excluded_candidates"],
+            }
+            if evidence_summary is not None:
+                card["evidence_summary"] = evidence_summary
+            if validation_summary is not None:
+                card["validation_summary"] = validation_summary
+            return _redact_human_value(card)
+
         card = {
             "title": package["title"],
             "problem_summary": package["problem"]["summary"],
@@ -349,6 +474,48 @@ class DesignLessonReviewStore:
                 lines.append(f"- {text(key)}: {json_text(value[key])}")
 
         card = cls._review_card(package, evidence_summary, validation_summary)
+        if package.get("schema_version") == "DesignLessonScreeningPackage/v1":
+            lines = [
+                f"# Engineer review: {text(card['title'])}",
+                "",
+                "## Screening summary",
+                "",
+                text(card["screening_summary"]),
+                "",
+                "## Excluded candidates",
+                "",
+            ]
+            for item in card["excluded_candidates"]:
+                lines.extend(
+                    [
+                        f"### {text(item['candidate'])}",
+                        "",
+                        f"- Reason: `{text(item['reason_code'])}`",
+                        f"- Rationale: {text(item['rationale'])}",
+                        f"- Evidence refs: {json_text(item['evidence_refs'])}",
+                        "",
+                    ]
+                )
+            if evidence_summary is not None:
+                lines.extend(["## Evidence summary", ""])
+                for evidence in card["evidence_summary"]:
+                    lines.append(
+                        "- "
+                        + text(evidence["evidence_id"])
+                        + ": "
+                        + text(evidence["role"])
+                    )
+            if validation_summary is not None:
+                lines.extend(["", "## Validation summary", ""])
+                for validation in card["validation_summary"]:
+                    lines.append(
+                        "- "
+                        + text(validation["validation_kind"])
+                        + ": "
+                        + text(validation["status"])
+                    )
+            return "\n".join(lines) + "\n"
+
         lines = [
             f"# Engineer review: {text(card['title'])}",
             "",
@@ -450,14 +617,33 @@ class DesignLessonReviewStore:
         )
 
     def _validate_review(self, review: Any) -> dict[str, Any]:
-        if not isinstance(review, dict) or set(review) != _REVIEW_FIELDS:
+        if not isinstance(review, dict):
             raise ValueError("invalid review record")
-        if review["schema_version"] != "DesignLessonReview/v1":
+        schema_version = review.get("schema_version")
+        expected_fields = (
+            _REVIEW_V1_FIELDS
+            if schema_version == "DesignLessonReview/v1"
+            else _REVIEW_V2_FIELDS
+            if schema_version == "DesignLessonReview/v2"
+            else set()
+        )
+        if set(review) != expected_fields:
+            raise ValueError("invalid review record")
+        if schema_version not in {"DesignLessonReview/v1", "DesignLessonReview/v2"}:
             raise ValueError("invalid review schema_version")
-        for field in ("review_id", "lesson_id", "working_copy_id"):
+        review_outcome = review.get("review_outcome", "publish")
+        if review_outcome not in {"publish", "no_publish"}:
+            raise ValueError("invalid review outcome")
+        if review_outcome == "publish" and not isinstance(review["lesson_id"], str):
+            raise ValueError("invalid review lesson_id")
+        if review_outcome == "no_publish" and review["lesson_id"] is not None:
+            raise ValueError("no-publication review must not have lesson_id")
+        for field in ("review_id", "working_copy_id"):
             if not isinstance(review[field], str):
                 raise ValueError(f"invalid review {field}")
             require_safe_id(review[field], field)
+        if isinstance(review["lesson_id"], str):
+            require_safe_id(review["lesson_id"], "lesson_id")
         for field in ("package_sha256", "final_model_sha256", "review_card_sha256"):
             if not isinstance(review[field], str):
                 raise ValueError(f"invalid review {field}")

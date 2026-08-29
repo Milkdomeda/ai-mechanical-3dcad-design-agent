@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "design-lesson-screening-package-v1.schema.json",
+  "title": "Design Lesson Screening Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "screening_id",
+    "codex_session_id",
+    "source",
+    "summary",
+    "excluded_candidates",
+    "evidence_manifest"
+  ],
+  "$defs": {
+    "nonblankString": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "safeId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "evidenceRefList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/safeId"}
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "DesignLessonScreeningPackage/v1"},
+    "screening_id": {"$ref": "#/$defs/safeId"},
+    "codex_session_id": {"$ref": "#/$defs/nonblankString"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "organization_id",
+        "design_group_id",
+        "working_copy_id",
+        "change_set_ids",
+        "before_model_sha256",
+        "after_model_sha256"
+      ],
+      "properties": {
+        "organization_id": {"$ref": "#/$defs/nonblankString"},
+        "design_group_id": {"$ref": "#/$defs/nonblankString"},
+        "family_id": {"type": ["string", "null"]},
+        "working_copy_id": {"$ref": "#/$defs/nonblankString"},
+        "change_set_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonblankString"}
+        },
+        "before_model_sha256": {"$ref": "#/$defs/sha256"},
+        "after_model_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "summary": {"$ref": "#/$defs/nonblankString"},
+    "excluded_candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate", "reason_code", "rationale", "evidence_refs"],
+        "properties": {
+          "candidate": {"$ref": "#/$defs/nonblankString"},
+          "reason_code": {
+            "enum": [
+              "product_specific",
+              "insufficient_evidence",
+              "duplicate",
+              "no_material_learning",
+              "uncertain_applicability"
+            ]
+          },
+          "rationale": {"$ref": "#/$defs/nonblankString"},
+          "evidence_refs": {"$ref": "#/$defs/evidenceRefList"}
+        }
+      }
+    },
+    "evidence_manifest": {
+      "type": "array",
+      "minItems": 1,
+      "contains": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {"role": {"const": "geometry_validation"}}
+      },
+      "minContains": 1,
+      "items": {
+        "type": "object",
+        "required": ["evidence_id", "path", "role", "media_type", "sha256"],
+        "properties": {
+          "evidence_id": {"$ref": "#/$defs/safeId"},
+          "path": {"$ref": "#/$defs/nonblankString"},
+          "role": {
+            "enum": [
+              "source_before_model",
+              "source_after_model",
+              "geometry_validation",
+              "assembly_completeness_validation",
+              "fastener_interface_validation",
+              "mechanical_interface_validation",
+              "review_image",
+              "supporting_report"
+            ]
+          },
+          "media_type": {"$ref": "#/$defs/nonblankString"},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "working_copy_id": {"$ref": "#/$defs/nonblankString"},
+          "change_set_id": {"$ref": "#/$defs/nonblankString"},
+          "model_sha256": {"$ref": "#/$defs/sha256"},
+          "validation_kind": {"type": "string"}
+        }
+      }
+    }
+  }
+}

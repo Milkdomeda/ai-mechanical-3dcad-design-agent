@@ -116,6 +116,8 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_lesson_review_approve": request("design_knowledge"),
     "design_lesson_review_reject": request("design_knowledge"),
     "design_lesson_review_status": request("design_knowledge"),
+    "design_lesson_review_publish": request("design_knowledge"),
+    "design_lesson_review_no_publish": request("design_knowledge"),
     "design_lesson_stage": request("design_knowledge"),
     "design_lesson_staged_get": request("design_knowledge"),
     "design_lesson_approve": request("design_knowledge"),

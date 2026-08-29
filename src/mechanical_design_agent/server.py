@@ -204,6 +204,8 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "design_lesson_review_approve": _capability("design_knowledge"),
         "design_lesson_review_reject": _capability("design_knowledge"),
         "design_lesson_review_status": _capability("design_knowledge"),
+        "design_lesson_review_publish": _capability("design_knowledge"),
+        "design_lesson_review_no_publish": _capability("design_knowledge"),
         "design_lesson_stage": _capability("design_knowledge"),
         "design_lesson_staged_get": _capability("design_knowledge"),
         "design_lesson_approve": _capability("design_knowledge"),
@@ -1098,6 +1100,47 @@ def create_mcp(
         if type(retry) is not bool:
             raise ValueError("retry must be a boolean")
         return _json(service.design_lesson_review_status(review_id, retry=retry))
+
+    @mcp.tool()
+    def design_lesson_review_publish(
+        review_id: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
+        """Publish the displayed immutable Review Card using exactly `确认发布设计经验`; internal IDs are supplied by the agent."""
+        require_safe_id(review_id, "review_id")
+        if not isinstance(confirmation, str) or confirmation.strip() != "确认发布设计经验":
+            raise ValueError("confirmation must be exactly: 确认发布设计经验")
+        return _json(
+            service.design_lesson_review_publish(
+                review_id=review_id,
+                confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
+
+    @mcp.tool()
+    def design_lesson_review_no_publish(
+        review_id: str,
+        confirmation: str,
+        job_id: str = "",
+        expected_job_revision: int = -1,
+    ) -> str:
+        """Finalize the displayed screening card using exactly `确认无可发布设计经验` without creating shared knowledge."""
+        require_safe_id(review_id, "review_id")
+        if (
+            not isinstance(confirmation, str)
+            or confirmation.strip() != "确认无可发布设计经验"
+        ):
+            raise ValueError("confirmation must be exactly: 确认无可发布设计经验")
+        return _json(
+            service.design_lesson_review_no_publish(
+                review_id=review_id,
+                confirmation=confirmation,
+                **_optional_job_binding(job_id, expected_job_revision),
+            )
+        )
 
     @mcp.tool()
     def design_lesson_stage(
