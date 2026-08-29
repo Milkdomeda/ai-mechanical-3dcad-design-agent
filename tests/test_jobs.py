@@ -891,6 +891,8 @@ class _ManagerRepository:
         candidates = self.list_job_working_copies(**kwargs)
         if len(candidates) != 1 or candidates[0]["id"] != kwargs["working_copy_id"]:
             raise ValueError("working-copy reactivation candidate changed")
+        if candidates[0]["delivery_recovery_sha256"] != kwargs["verified_current_sha256"]:
+            raise ValueError("working-copy reactivation evidence changed")
         persisted["active_working_copy_id"] = kwargs["working_copy_id"]
         persisted["revision"] = int(persisted["revision"]) + 1
         persisted["updated_at"] = NOW
@@ -1049,6 +1051,8 @@ def _add_delivery_working_copy(
         "working_relative_path": working_path.relative_to(root).as_posix(),
         "working_sha256": hashlib.sha256(content).hexdigest(),
         "working_size_bytes": len(content),
+        "delivery_recovery_sha256": hashlib.sha256(content).hexdigest(),
+        "delivery_recovery_source": "working_copy_binding",
     }
     return working_path
 
@@ -1129,6 +1133,40 @@ def test_delivery_reactivation_rejects_changed_working_copy_bytes(tmp_path: Path
 
     assert captured.value.code == "JOB_WORKING_COPY_REACTIVATION_UNSAFE"
     assert repository.jobs[str(manifest.job_id)].get("active_working_copy_id") is None
+
+
+def test_delivery_reactivation_uses_latest_applied_change_hash_not_initial_binding(
+    tmp_path: Path,
+) -> None:
+    manager, repository = _manager(tmp_path)
+    manifest = _create_reopened_delivery_job(manager)
+    working_copy_id = "50000000-0000-4000-8000-000000000001"
+    working_path = _add_delivery_working_copy(
+        manager,
+        repository,
+        manifest,
+        working_copy_id=working_copy_id,
+        content=b"initial synthetic FCStd",
+    )
+    final_content = b"final synthetic FCStd after approved CAD changes"
+    working_path.write_bytes(final_content)
+    repository.working_copies[working_copy_id].update(
+        {
+            "delivery_recovery_sha256": hashlib.sha256(final_content).hexdigest(),
+            "delivery_recovery_source": "latest_applied_change_set",
+        }
+    )
+
+    restored = manager.reactivate_working_copy_for_delivery(
+        job_id=str(manifest.job_id),
+        expected_job_revision=manifest.revision,
+        working_copy_id=working_copy_id,
+        organization_id=ORGANIZATION_ID,
+        design_group_id=DESIGN_GROUP_ID,
+        actor_id=ACTOR_ID,
+    )
+
+    assert restored.active_working_copy_id == working_copy_id
 
 
 def _repair(manager: DesignJobManager, **kwargs: object):

@@ -1706,13 +1706,21 @@ class DesignJobManager:
                     "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
                     "the governed working-copy file is missing or unsafe",
                 ) from exc
+            recovery_sha256 = candidate.get("delivery_recovery_sha256")
+            recovery_source = candidate.get("delivery_recovery_source")
+            bound_size_mismatch = (
+                recovery_source == "working_copy_binding"
+                and candidate.get("working_size_bytes") != working_read.size_bytes
+            )
             if (
                 working_path != authoritative
                 or working_path.suffix.casefold() != ".fcstd"
                 or working_read.link_count != 1
                 or not working_read.content
-                or candidate.get("working_sha256") != working_read.sha256
-                or candidate.get("working_size_bytes") != working_read.size_bytes
+                or not isinstance(recovery_sha256, str)
+                or _SHA256.fullmatch(recovery_sha256) is None
+                or recovery_sha256 != working_read.sha256
+                or bound_size_mismatch
             ):
                 raise JobFailure(
                     "JOB_WORKING_COPY_REACTIVATION_UNSAFE",
@@ -1726,6 +1734,7 @@ class DesignJobManager:
                     organization_id=organization_id,
                     design_group_id=design_group_id,
                     actor_id=actor,
+                    verified_current_sha256=working_read.sha256,
                 )
             except KeyError as exc:
                 raise JobFailure(

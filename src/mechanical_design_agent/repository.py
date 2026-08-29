@@ -5300,7 +5300,15 @@ class PostgresRepository:
                 raise KeyError("unknown design_job_id or unauthorized")
             rows = connection.execute(
                 "SELECT id,job_id,organization_id,design_group_id,working_path,"
-                "working_relative_path,working_sha256,working_size_bytes "
+                "working_relative_path,working_sha256,working_size_bytes,"
+                "COALESCE((SELECT resulting_sha256 FROM design_change_sets c "
+                "WHERE c.working_copy_id=design_working_copies.id AND c.status='applied' "
+                "ORDER BY c.applied_at DESC,c.created_at DESC,c.id DESC LIMIT 1),"
+                "working_sha256) AS delivery_recovery_sha256,"
+                "CASE WHEN EXISTS (SELECT 1 FROM design_change_sets c "
+                "WHERE c.working_copy_id=design_working_copies.id AND c.status='applied') "
+                "THEN 'latest_applied_change_set' ELSE 'working_copy_binding' "
+                "END AS delivery_recovery_source "
                 "FROM design_working_copies WHERE job_id=%s AND organization_id=%s "
                 "AND design_group_id=%s ORDER BY created_at,id",
                 (job_id, organization_id, design_group_id),
@@ -5316,9 +5324,12 @@ class PostgresRepository:
         organization_id: str,
         design_group_id: str,
         actor_id: str,
+        verified_current_sha256: str,
     ) -> dict[str, Any]:
         if not isinstance(expected_revision, int) or expected_revision < 0:
             raise ValueError("expected_revision must be a non-negative integer")
+        if not re.fullmatch(r"[0-9a-f]{64}", verified_current_sha256):
+            raise ValueError("verified_current_sha256 must be a lowercase SHA-256")
         with self.connection() as connection, connection.transaction():
             job = connection.execute(
                 "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
@@ -5340,12 +5351,51 @@ class PostgresRepository:
             ):
                 raise ValueError("design Job is not ready for working-copy reactivation")
             candidates = connection.execute(
-                "SELECT id FROM design_working_copies WHERE job_id=%s "
+                "SELECT id,COALESCE((SELECT resulting_sha256 FROM design_change_sets c "
+                "WHERE c.working_copy_id=design_working_copies.id AND c.status='applied' "
+                "ORDER BY c.applied_at DESC,c.created_at DESC,c.id DESC LIMIT 1),"
+                "working_sha256) AS delivery_recovery_sha256 "
+                "FROM design_working_copies WHERE job_id=%s "
                 "AND organization_id=%s AND design_group_id=%s ORDER BY created_at,id FOR UPDATE",
                 (job_id, organization_id, design_group_id),
             ).fetchall()
             if len(candidates) != 1 or str(candidates[0]["id"]) != working_copy_id:
                 raise ValueError("working-copy reactivation candidate changed")
+            if candidates[0]["delivery_recovery_sha256"] != verified_current_sha256:
+                raise ValueError("working-copy reactivation evidence changed")
+            open_count = int(
+                connection.execute(
+                    "SELECT count(*) AS count FROM design_change_sets WHERE working_copy_id=%s "
+                    "AND status NOT IN ('applied','rejected','superseded','cancelled')",
+                    (working_copy_id,),
+                ).fetchone()["count"]
+            )
+            if open_count:
+                raise ValueError("delivery recovery is blocked by an open design change set")
+            summary = connection.execute(
+                "SELECT id FROM design_lesson_summaries WHERE working_copy_id=%s "
+                "ORDER BY created_at DESC,id DESC LIMIT 1",
+                (working_copy_id,),
+            ).fetchone()
+            if summary is None:
+                raise ValueError("delivery recovery requires a design lesson summary")
+            latest_by_kind = connection.execute(
+                "SELECT DISTINCT ON (validation_kind) validation_kind,status,working_sha256 "
+                "FROM validation_reports WHERE working_copy_id=%s "
+                "ORDER BY validation_kind,created_at DESC",
+                (working_copy_id,),
+            ).fetchall()
+            validations = {item["validation_kind"]: item for item in latest_by_kind}
+            for required_kind in ("geometry_model", "assembly_completeness"):
+                validation = validations.get(required_kind)
+                if (
+                    validation is None
+                    or validation["status"] != "passed"
+                    or validation["working_sha256"] != verified_current_sha256
+                ):
+                    raise ValueError(
+                        f"delivery recovery requires current {required_kind} validation"
+                    )
             row = connection.execute(
                 "UPDATE design_jobs SET active_working_copy_id=%s,revision=revision+1,updated_at=now() "
                 "WHERE id=%s AND revision=%s AND active_working_copy_id IS NULL "
