@@ -20,6 +20,7 @@ DATABASE_DEPLOYMENT_GUIDE = PROJECT_ROOT / "docs" / "DATABASE_DEPLOYMENT.md"
 FREECAD_GUI_MCP_GUIDE = PROJECT_ROOT / "docs" / "FREECAD_GUI_MCP_INTEGRATION.md"
 WINDOWS_RELEASE_GUIDE = PROJECT_ROOT / "docs" / "WINDOWS_RELEASE_ACCEPTANCE.md"
 DESIGN_JOB_GUIDE = PROJECT_ROOT / "docs" / "DESIGN_JOB_WORKSPACES.md"
+ENGINEER_LEARNING_GUIDE = PROJECT_ROOT / "docs" / "ENGINEER_LEARNING_PLAYBOOK.md"
 EXAMPLE_FAMILY = (
     PROJECT_ROOT / "examples" / "product_families" / "example-family.json"
 )
@@ -36,7 +37,7 @@ def test_public_identity_and_release_boundary() -> None:
     assert "coding agent" in text.lower()
     assert "does not include an embedded language-model client" in text.lower()
     assert (
-        "standalone llm orchestration is not included in version 0.4.0"
+        "standalone llm orchestration is not included in version 0.4.1"
         in text.lower()
     )
     assert "ai-mechanical-3dcad-design-agent" in text
@@ -72,6 +73,31 @@ def test_design_job_routing_is_public_and_precedes_model_lifecycle() -> None:
     assert "not installed" in normalized(README).casefold()
     assert "design_job_resolve" in skill
     assert "design_job_create" in skill
+
+
+def test_design_lesson_single_confirmation_contract_is_public() -> None:
+    agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    skill = (
+        PROJECT_ROOT
+        / ".agents"
+        / "skills"
+        / "mechanical-design-job-workspace"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    playbook = ENGINEER_LEARNING_GUIDE.read_text(encoding="utf-8")
+    combined = "\n".join((agents, skill, playbook))
+
+    for fragment in (
+        "确认发布设计经验",
+        "确认无可发布设计经验",
+        "design_lesson_review_publish",
+        "design_lesson_review_no_publish",
+        "reviewed-no-publishable-lesson",
+    ):
+        assert fragment in combined
+    assert "Model confirmation and Design Lesson publication are separate" in agents
+    assert "Never combine either Lesson decision with `模型设计确认`" in skill
+    assert "Report complete only for public status `published`" in playbook
 
 
 def test_design_job_workspace_guide_covers_routing_storage_and_recovery() -> None:

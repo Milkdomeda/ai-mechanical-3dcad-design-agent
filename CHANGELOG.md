@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1 - Unreleased
+
+- Simplify the default Design Lessons workflow to one engineer confirmation
+  after the complete immutable Review Card is displayed.
+- Add `design_lesson_review_publish` with automatic bounded
+  projection/retrieval completion and no repeated approval after durable
+  publication starts.
+- Add an immutable `reviewed-no-publishable-lesson` decision path that records
+  completed engineering screening without creating a Design Lesson or shared
+  knowledge projection.
+- Preserve existing Design Lesson approval, audit, recovery, supersession, and
+  revocation tools as backward-compatible expert surfaces.
 ## 0.4.0 - 2026-08-28
 
 - Accept the canonical `FreeCAD Document` archive comment emitted by official

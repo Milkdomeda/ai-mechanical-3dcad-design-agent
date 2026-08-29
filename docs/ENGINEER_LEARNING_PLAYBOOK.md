@@ -97,21 +97,33 @@ The default publication path is:
 design outcome -> design_lesson_review_context
 -> coding-agent summary when material and generalizable
 -> design_lesson_review_prepare -> one immutable review card
--> engineer decision -> storage, projection, and retrieval verification
+-> display the complete card -> one engineer decision
+-> storage, projection, and retrieval verification
 ```
 
 1. Gather before/after model hashes, change IDs, validation reports, measured
    facts, causes, corrections, prevention checks, applicability, explicit
    non-applicability, and evidence-bound neutral assertions.
-2. `design_lesson_review_context` returns the reviewable history. If it has no
-   material generalizable lesson, record no lesson.
+2. `design_lesson_review_context` returns the reviewable history. Remove
+   duplicates, unsupported claims, product-specific facts without reusable
+   rules, and uncertain applicability.
 3. `design_lesson_review_prepare` creates one immutable review card. The
-   engineer makes one batch decision; the default flow does not request
-   assertion-by-assertion approval.
-4. Approved storage continues to PostgreSQL, outbox projection, and retrieval
-   verification until the review is `stored-and-retrievable`.
-5. `design_lesson_review_status(retry=True)` may perform one bounded retry
-   using the already approved immutable card.
+   complete current card is displayed before the engineer decides. Requested
+   edits create a replacement card; they are not approval.
+4. For publishable content, the engineer says `确认发布设计经验` once and the
+   agent calls `design_lesson_review_publish` with internal identifiers.
+   Approved storage continues to PostgreSQL, outbox projection, and retrieval
+   verification. Report complete only for public status `published`.
+5. If the durable result is `publishing`,
+   `design_lesson_review_status(retry=True)` may perform bounded recovery using
+   the existing approval. Never ask for the same confirmation again.
+6. If no candidate is publishable, display the immutable screening card. The
+   engineer says `确认无可发布设计经验`; the resulting
+   `reviewed-no-publishable-lesson` record creates no Lesson or shared
+   projection.
+
+`模型设计确认` is a separate model decision and never publishes Design
+Lessons.
 
 All of these lesson operations reuse the originating `mechanical_design` Job.
 The staging package, immutable evidence, review card, publication receipt,

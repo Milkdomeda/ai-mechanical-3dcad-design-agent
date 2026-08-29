@@ -16,6 +16,8 @@ from mechanical_design_agent.design_lessons import (
     normalize_design_features,
     satisfying_conditions,
     validate_design_lesson_package,
+    validate_design_lesson_review_package,
+    validate_design_lesson_screening_package,
 )
 from mechanical_design_agent.package_resources import schemas_directory
 from mechanical_design_agent.secure_fs import validate_managed_path
@@ -134,6 +136,71 @@ def valid_evidence_item(path: str = "evidence.json") -> dict[str, str]:
         "model_sha256": "2" * 64,
         "validation_kind": "geometry_model",
     }
+
+
+def valid_screening_package() -> dict:
+    package = valid_package()
+    return {
+        "schema_version": "DesignLessonScreeningPackage/v1",
+        "screening_id": "DLS-001",
+        "codex_session_id": package["codex_session_id"],
+        "source": package["source"],
+        "summary": "The completed review found no material reusable lesson.",
+        "excluded_candidates": [
+            {
+                "candidate": "One-off mounting dimension",
+                "reason_code": "product_specific",
+                "rationale": "The value is unique to this delivered assembly.",
+                "evidence_refs": ["validation-evidence"],
+            }
+        ],
+        "evidence_manifest": package["evidence_manifest"],
+    }
+
+
+class DesignLessonScreeningValidationTests(unittest.TestCase):
+    def test_runtime_and_packaged_schema_accept_the_screening_contract(self) -> None:
+        package = valid_screening_package()
+        with schemas_directory() as schemas:
+            schema = json.loads(
+                (schemas / "design-lesson-screening-package-v1.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(package)), [])
+        self.assertEqual(validate_design_lesson_screening_package(package), package)
+        self.assertEqual(validate_design_lesson_review_package(package), package)
+
+    def test_screening_rejects_unknown_reason_and_evidence_reference(self) -> None:
+        package = valid_screening_package()
+        package["excluded_candidates"][0]["reason_code"] = "not-useful"
+        with self.assertRaisesRegex(ValueError, "unsupported screening reason_code"):
+            validate_design_lesson_screening_package(package)
+
+        package = valid_screening_package()
+        package["excluded_candidates"][0]["evidence_refs"] = ["missing"]
+        with self.assertRaisesRegex(ValueError, "evidence_refs.*evidence_id"):
+            validate_design_lesson_screening_package(package)
+
+    def test_review_staging_supports_no_publication_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            (workspace / "evidence.json").write_text("{}", encoding="utf-8")
+            store = DesignLessonStagingStore(workspace)
+
+            staged = store.stage_review(
+                valid_screening_package(), [valid_evidence_item()]
+            )
+            inspected = store.get_review(staged["package_sha256"])
+
+            self.assertIsNone(staged["lesson_id"])
+            self.assertEqual(staged["review_outcome"], "no_publish")
+            self.assertEqual(staged["review_subject_id"], "DLS-001")
+            self.assertEqual(inspected["status"], "verified-local-only")
+            self.assertEqual(
+                inspected["package"]["schema_version"],
+                "DesignLessonScreeningPackage/v1",
+            )
 
 
 class DesignLessonValidationTests(unittest.TestCase):

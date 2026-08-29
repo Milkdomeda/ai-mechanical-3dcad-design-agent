@@ -427,8 +427,25 @@ class MigrationTests(unittest.TestCase):
                     "014_design_job_knowledge.sql",
                     "015_product_family_match_decisions.sql",
                     "016_design_approval_envelopes.sql",
+                    "017_design_lesson_single_confirmation.sql",
                 ],
             )
+
+    def test_single_confirmation_migration_is_additive_and_fail_closed(self) -> None:
+        sql = _migration_text("017_design_lesson_single_confirmation.sql")
+        normalized = " ".join(sql.split())
+
+        assert "ADD COLUMN IF NOT EXISTS review_outcome text" in normalized
+        assert "SET review_outcome = 'publish'" in normalized
+        assert "ALTER COLUMN lesson_id DROP NOT NULL" in normalized
+        assert "reviewed-no-publishable-lesson" in sql
+        assert "ADD COLUMN IF NOT EXISTS confirmation_mode text" in normalized
+        assert "ADD COLUMN IF NOT EXISTS decision_receipt_sha256 char(64)" in normalized
+        assert "ADD COLUMN IF NOT EXISTS decision_receipt_path text" in normalized
+        assert "design_lesson_reviews_lesson_outcome_check" in sql
+        assert "design_lesson_reviews_no_publication_check" in sql
+        assert "design_lesson_reviews_decision_receipt_check" in sql
+        assert "published_design_lesson_id IS NULL" in normalized
 
     def test_approval_envelope_migration_is_scoped_audited_and_fail_closed(self) -> None:
         sql = _migration_text("016_design_approval_envelopes.sql")

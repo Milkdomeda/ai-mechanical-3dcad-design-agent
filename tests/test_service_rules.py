@@ -1279,6 +1279,14 @@ class FakeLessonMcpService:
         self.calls.append(("review_status", {"review_id": review_id, "retry": retry}))
         return {"status": "approved-retrieval-pending"}
 
+    def design_lesson_review_publish(self, **kwargs) -> dict:
+        self.calls.append(("review_publish", kwargs))
+        return {"status": "published"}
+
+    def design_lesson_review_no_publish(self, **kwargs) -> dict:
+        self.calls.append(("review_no_publish", kwargs))
+        return {"status": "reviewed-no-publishable-lesson"}
+
     def design_context_build(self, **kwargs) -> dict:
         self.calls.append(("context", kwargs))
         return {"approved_design_lessons": []}
@@ -1303,6 +1311,8 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
             "design_lesson_review_approve",
             "design_lesson_review_reject",
             "design_lesson_review_status",
+            "design_lesson_review_publish",
+            "design_lesson_review_no_publish",
         ):
             with self.subTest(name=name):
                 self.assertIn(name, self.mcp._tool_manager._tools)
@@ -1318,6 +1328,40 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
                 "confirmation",
                 "job_id",
                 "expected_job_revision",
+            ],
+        )
+
+    def test_default_publication_tools_require_one_simple_confirmation(self) -> None:
+        publish = self.tool("design_lesson_review_publish")
+        no_publish = self.tool("design_lesson_review_no_publish")
+
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            publish("DLR-001", "确认发布设计经验 DLR-001")
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            no_publish("DLR-002", "确认无可发布设计经验 DLR-002")
+        self.assertEqual(self.service.calls, [])
+
+        publish("DLR-001", " 确认发布设计经验 ", "JOB-001", 4)
+        no_publish("DLR-002", "确认无可发布设计经验")
+        self.assertEqual(
+            self.service.calls,
+            [
+                (
+                    "review_publish",
+                    {
+                        "review_id": "DLR-001",
+                        "confirmation": " 确认发布设计经验 ",
+                        "job_id": "JOB-001",
+                        "expected_job_revision": 4,
+                    },
+                ),
+                (
+                    "review_no_publish",
+                    {
+                        "review_id": "DLR-002",
+                        "confirmation": "确认无可发布设计经验",
+                    },
+                ),
             ],
         )
 
@@ -1387,6 +1431,11 @@ class McpDesignLessonBoundaryTests(unittest.TestCase):
             ("design_lesson_review_approve", ("../DLR-001", "Approved", "批准设计经验 ../DLR-001")),
             ("design_lesson_review_reject", ("../DLR-001", "Rejected", "拒绝设计经验 ../DLR-001")),
             ("design_lesson_review_status", ("../DLR-001", True)),
+            ("design_lesson_review_publish", ("../DLR-001", "确认发布设计经验")),
+            (
+                "design_lesson_review_no_publish",
+                ("../DLR-001", "确认无可发布设计经验"),
+            ),
         )
         for name, arguments in cases:
             with self.subTest(name=name, arguments=arguments):

@@ -337,6 +337,7 @@ class Neo4jProjection:
             "design_lesson_review.rejected",
             "design_lesson_review.invalid",
             "design_lesson_review.retrieval_verified",
+            "design_lesson_review.no_publish",
         }:
             self._project_design_lesson_review(
                 session,
@@ -657,7 +658,7 @@ class Neo4jProjection:
             "ON CREATE SET r.aggregate_version=-1 "
             "WITH r WHERE $force OR coalesce(r.aggregate_version,-1) < $aggregate_version "
             "SET r.status=$status,r.working_copy_id=$working_copy_id,"
-            "r.lesson_id=$lesson_id,r.job_id=$job_id,"
+            "r.lesson_id=$lesson_id,r.review_outcome=$review_outcome,r.job_id=$job_id,"
             "r.updated_at=datetime($occurred_at),"
             "r.aggregate_version=CASE "
             "WHEN coalesce(r.aggregate_version,-1) > $aggregate_version "
@@ -666,7 +667,8 @@ class Neo4jProjection:
             review_id=review_id,
             status=review["status"],
             working_copy_id=str(review["working_copy_id"]),
-            lesson_id=str(review["lesson_id"]),
+            lesson_id=(str(review["lesson_id"]) if review.get("lesson_id") else None),
+            review_outcome=review.get("review_outcome", "publish"),
             job_id=(str(review["job_id"]) if review.get("job_id") else None),
             occurred_at=occurred_at,
             aggregate_version=aggregate_version,

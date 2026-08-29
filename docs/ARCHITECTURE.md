@@ -74,6 +74,14 @@ intake, analysis, review, and publication use the same
 `product_family_onboarding` Job. Design Lessons remain in the originating
 mechanical Job. Product work never creates a Git worktree.
 
+After delivery, the agent prepares and displays one immutable Design Lesson
+Review Card. `确认发布设计经验` authorizes the unchanged card once; PostgreSQL
+stores the approval and outbox state before bounded Neo4j projection and
+retrieval verification. A durable pending publication needs no new human
+confirmation. `确认无可发布设计经验` records an immutable reviewed screening
+outcome in the same Job without creating a Lesson or `PUBLISHED_AS` relation.
+Model confirmation is a separate decision and cannot publish knowledge.
+
 PostgreSQL owns Job identity, status, phase, optimistic revision, lifecycle
 events, source and working-copy bindings, and knowledge provenance. The
 workspace projects that state under `jobs/<job-directory>/`. Each Job contains
@@ -107,7 +115,7 @@ provision loopback-only PostgreSQL/pgvector and Neo4j services for local and
 evaluation use, but it never owns, mounts, or executes migrations. The
 installed package owns PostgreSQL and Neo4j migration resources and the
 installed `mechanical-design database bootstrap` command applies and verifies
-them. Production provisioning remains outside the version 0.4.0 boundary. See
+them. Production provisioning remains outside the version 0.4.1 boundary. See
 [Database deployment](DATABASE_DEPLOYMENT.md).
 
 ## Model analysis and working copies

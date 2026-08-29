@@ -75,6 +75,25 @@ their implementation, schema, migrations, or tests is software development.
 For a mixed request, state the split: route the product portion through its Job
 and handle the software portion with the normal Git workflow.
 
+## Design Lesson decision
+
+After delivery, call `design_lesson_review_context` and filter candidates for
+material, generalizable, evidence-backed learning. Prepare and display the
+complete immutable Review Card before asking the engineer to decide. Requested
+edits create a replacement card and supersede the prior pending card.
+
+- For a publishable card, ask only `确认发布设计经验` and call
+  `design_lesson_review_publish` with the internal Review ID and Job binding.
+  Report complete only for `published`; retry `publishing` internally without
+  another confirmation.
+- If nothing remains publishable, display the immutable screening card, ask
+  only `确认无可发布设计经验`, and call
+  `design_lesson_review_no_publish`. This records
+  `reviewed-no-publishable-lesson` without creating shared knowledge.
+
+Never combine either Lesson decision with `模型设计确认`. Keep Review IDs,
+digests, and recovery polling out of the engineer's confirmation text.
+
 `superpowers:brainstorming` is an optional external capability for structured
 discovery. Do not bundle, install, configure, or count it as a project-owned
 Skill.

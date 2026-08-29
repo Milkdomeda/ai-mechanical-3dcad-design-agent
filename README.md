@@ -6,7 +6,7 @@ AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.4.0.
+0.4.1.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,10 +15,12 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.4.0 adds PostgreSQL-authoritative Design Intent Approval Envelopes,
-semantic authorization for autonomous in-envelope CAD repair, optional
-Product Family matching, canonical FreeCAD 1.1.3 FCStd archive acceptance, and
-safe non-interactive FreeCADCmd execution. It retains deterministic Design Job
+Version 0.4.1 adds a single-confirmation Design Lessons publication workflow
+with immutable reviewed-no-publication decisions. It retains the v0.4.0
+PostgreSQL-authoritative Design Intent Approval Envelopes, semantic
+authorization for autonomous in-envelope CAD repair, optional Product Family
+matching, canonical FreeCAD 1.1.3 FCStd archive acceptance, safe
+non-interactive FreeCADCmd execution, and deterministic Design Job
 workspaces, lifecycle and legacy migration, engineering knowledge workflows,
 standard-part provenance, validation resources, and package-owned database
 migrations. It also publishes project-owned agent instructions and skills for
@@ -271,11 +273,18 @@ The default post-delivery lesson workflow is:
 final-model delivery approval -> design_lesson_review_context
 -> material/generalizable summary when warranted
 -> design_lesson_review_prepare -> one immutable review card
--> engineer approval -> stored-and-retrievable
+-> display the complete card -> engineer says "确认发布设计经验" once
+-> published after storage, projection, and retrieval verification
 ```
 
-`design_lesson_review_status(retry=True)` may make one bounded retry after an
-approved projection/retrieval delay. The hash-bound `design_lesson_stage`,
+The agent calls `design_lesson_review_publish` with the internal Review ID; the
+engineer never copies it. A durable `publishing` result is retried through
+`design_lesson_review_status(retry=True)` without another confirmation. If no
+candidate survives engineering review, the agent displays the immutable
+screening card and `确认无可发布设计经验` records
+`reviewed-no-publishable-lesson` without creating shared knowledge. Model
+confirmation remains separate and never publishes a Lesson. The hash-bound
+`design_lesson_stage`,
 `design_lesson_staged_get`, `design_lesson_approve`, and
 `design_lesson_supersede` surfaces remain an expert/audit compatibility path.
 

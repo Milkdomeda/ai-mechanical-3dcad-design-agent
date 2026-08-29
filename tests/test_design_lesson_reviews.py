@@ -226,6 +226,7 @@ class _TrackedConnection:
                 actor_id,
                 supersedes_review_id,
                 approved_final_artifact_path,
+                review_outcome,
             ) = parameters
             row = {
                 "id": review_id,
@@ -242,6 +243,10 @@ class _TrackedConnection:
                 "package_path": package_path,
                 "created_by": actor_id,
                 "supersedes_review_id": supersedes_review_id,
+                "review_outcome": review_outcome,
+                "confirmation_mode": "legacy_review_id",
+                "decision_receipt_sha256": None,
+                "decision_receipt_path": None,
             }
             self.reviews[str(review_id)] = row
             return _Rows([row])
@@ -269,6 +274,22 @@ class _TrackedConnection:
                 status="invalid",
                 reviewed_by=reviewer_id,
                 reviewer_text=reviewer_text,
+            )
+            return _Rows([review])
+        if sql.startswith(
+            "UPDATE design_lesson_reviews SET status='reviewed-no-publishable-lesson'"
+        ):
+            reviewer_id, reviewer_text, receipt_sha256, receipt_path, review_id = parameters
+            review = self.reviews.get(str(review_id))
+            if review is None or review["status"] != "awaiting-engineer-review":
+                return _Rows()
+            review.update(
+                status="reviewed-no-publishable-lesson",
+                reviewed_by=reviewer_id,
+                reviewer_text=reviewer_text,
+                confirmation_mode="single_confirmation",
+                decision_receipt_sha256=receipt_sha256,
+                decision_receipt_path=receipt_path,
             )
             return _Rows([review])
         if sql.startswith("UPDATE design_lesson_reviews SET retrieval_probe=%s::jsonb,status='stored-and-retrievable'"):
@@ -403,13 +424,17 @@ def _review(review_id: str, *, status: str = "awaiting-engineer-review") -> dict
         "lesson_id": "DL-001",
         "package_sha256": "1" * 64,
         "review_card_sha256": "2" * 64,
-        "final_model_sha256": "3" * 64,
+        "final_model_sha256": "6" * 64,
         "approved_final_artifact_path": "/artifacts/approved-final.FCStd",
         "status": status,
         "review_path": f"/reviews/{review_id}/review.md",
         "package_path": f"/staging/{review_id}/package.json",
         "created_by": "engineer-001",
         "supersedes_review_id": None,
+        "review_outcome": "publish",
+        "confirmation_mode": "legacy_review_id",
+        "decision_receipt_sha256": None,
+        "decision_receipt_path": None,
     }
 
 
@@ -428,6 +453,7 @@ def _create(repository: PostgresRepository, **overrides):
         "package_path": "/staging/DLR-new-001/package.json",
         "actor_id": "engineer-001",
         "supersedes_review_id": None,
+        "review_outcome": "publish",
     }
     values.update(overrides)
     return repository.create_design_lesson_review(**values)
@@ -642,10 +668,27 @@ class _ReviewPreparationRepository:
             published_design_lesson_id=lesson["id"],
             reviewed_by=kwargs["reviewer_id"],
             reviewer_text=kwargs["reviewer_text"],
+            confirmation_mode=kwargs.get("confirmation_mode", "legacy_review_id"),
+            decision_receipt_sha256=kwargs.get("decision_receipt_sha256"),
+            decision_receipt_path=kwargs.get("decision_receipt_path"),
         )
         self.approved_assertion_count = len(package["atomic_assertions"])
         self.approve_calls.append(dict(kwargs))
         return copy.deepcopy(lesson)
+
+    def record_design_lesson_review_no_publish(self, **kwargs) -> dict:
+        review = self.reviews[kwargs["review_id"]]
+        if kwargs.get("pre_commit_verifier") is not None:
+            kwargs["pre_commit_verifier"]()
+        review.update(
+            status="reviewed-no-publishable-lesson",
+            reviewed_by=kwargs["reviewer_id"],
+            reviewer_text=kwargs["reviewer_text"],
+            confirmation_mode="single_confirmation",
+            decision_receipt_sha256=kwargs["decision_receipt_sha256"],
+            decision_receipt_path=kwargs["decision_receipt_path"],
+        )
+        return copy.deepcopy(review)
 
     def get_design_lesson(self, lesson_id: str, *, organization_id: str) -> dict:
         lesson = self.lessons.get(lesson_id)
@@ -969,6 +1012,72 @@ def test_review_store_prepares_a_redacted_human_card_with_every_assertion():
         for assertion in staged_inspection["package"]["atomic_assertions"]:
             for field in ("subject_ref", "predicate", "object_value", "constraint_kind"):
                 assert str(assertion[field]).replace("'", '"') in review["review_card_markdown"]
+
+
+def test_review_store_prepares_screening_card_and_idempotent_decision_receipt():
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary)
+        evidence_path = workspace / "evidence.json"
+        evidence_path.write_text("{}", encoding="utf-8")
+        lesson = _review_package()
+        screening = {
+            "schema_version": "DesignLessonScreeningPackage/v1",
+            "screening_id": "DLS-001",
+            "codex_session_id": lesson["codex_session_id"],
+            "source": lesson["source"],
+            "summary": "The review found no material reusable lesson.",
+            "excluded_candidates": [
+                {
+                    "candidate": "One-off mounting dimension",
+                    "reason_code": "product_specific",
+                    "rationale": "The value is unique to the delivered assembly.",
+                    "evidence_refs": ["validation-evidence"],
+                }
+            ],
+            "evidence_manifest": [],
+        }
+        evidence_item = {
+            "evidence_id": "validation-evidence",
+            "path": evidence_path.name,
+            "role": "geometry_validation",
+            "media_type": "application/json",
+            "working_copy_id": lesson["source"]["working_copy_id"],
+            "change_set_id": lesson["source"]["change_set_ids"][0],
+            "model_sha256": lesson["source"]["after_model_sha256"],
+            "validation_kind": "geometry_model",
+        }
+        staging = DesignLessonStagingStore(workspace)
+        staged = staging.stage_review(screening, [evidence_item])
+        review_store = DesignLessonReviewStore(workspace)
+        review = review_store.prepare(
+            "DLR-screening-001", staging.get_review(staged["package_sha256"])
+        )
+        receipt = {
+            "schema_version": "DesignLessonDecisionReceipt/v1",
+            "review_id": "DLR-screening-001",
+            "review_outcome": "no_publish",
+            "job_id": "JOB-001",
+            "reviewed_job_revision": 7,
+            "working_copy_id": lesson["source"]["working_copy_id"],
+            "package_sha256": staged["package_sha256"],
+            "review_card_sha256": review["review_card_sha256"],
+            "final_model_sha256": lesson["source"]["after_model_sha256"],
+            "approved_final_artifact_path": "artifacts/final.FCStd",
+            "actor_id": "engineer-001",
+            "confirmation_mode": "single_confirmation",
+        }
+
+        first = review_store.prepare_decision_receipt("DLR-screening-001", receipt)
+        repeated = review_store.prepare_decision_receipt("DLR-screening-001", receipt)
+
+        assert review["review_outcome"] == "no_publish"
+        assert review["lesson_id"] is None
+        assert review["publication_confirmation"] == "确认无可发布设计经验"
+        assert "One-off mounting dimension" in review["review_card_markdown"]
+        assert first["decision_receipt_sha256"] == repeated["decision_receipt_sha256"]
+        assert review_store.verify_decision_receipt(
+            "DLR-screening-001", first["decision_receipt_sha256"]
+        )["receipt"] == receipt
 
 
 def test_review_store_verify_rejects_a_card_changed_after_preparation():
@@ -1931,7 +2040,43 @@ def test_repository_preparation_inserts_awaiting_review_and_enqueues_event():
         "approved_final_artifact_path": "/artifacts/approved-final.FCStd",
         "status": "awaiting-engineer-review",
         "supersedes_review_id": None,
+        "review_outcome": "publish",
     }
+
+
+def test_repository_no_publication_is_terminal_audited_and_idempotent():
+    connection = _TrackedConnection()
+    review = _review("DLR-no-publish-001")
+    review.update(review_outcome="no_publish", lesson_id=None)
+    connection.reviews[review["id"]] = review
+    verifier_calls = []
+    with _repository_with(connection) as repository:
+        first = repository.record_design_lesson_review_no_publish(
+            review_id=review["id"],
+            reviewer_id="engineer-001",
+            reviewer_text="确认无可发布设计经验",
+            decision_receipt_sha256="7" * 64,
+            decision_receipt_path="knowledge/design-lessons/reviews/receipt.json",
+            pre_commit_verifier=lambda: verifier_calls.append("verified"),
+        )
+        repeated = repository.record_design_lesson_review_no_publish(
+            review_id=review["id"],
+            reviewer_id="engineer-001",
+            reviewer_text="确认无可发布设计经验",
+            decision_receipt_sha256="7" * 64,
+            decision_receipt_path="knowledge/design-lessons/reviews/receipt.json",
+        )
+
+    assert first["status"] == "reviewed-no-publishable-lesson"
+    assert repeated["decision_receipt_sha256"] == "7" * 64
+    assert verifier_calls == ["verified", "verified"]
+    assert [event["event_type"] for event in connection.outbox_events] == [
+        "design_lesson_review.no_publish"
+    ]
+    payload = json.loads(connection.outbox_events[0]["payload"])
+    assert payload["lesson_id"] is None
+    assert payload["review_outcome"] == "no_publish"
+    assert payload["decision_receipt_sha256"] == "7" * 64
 
 
 def test_repository_delivery_approval_persists_and_audits_exact_final_sha256():
@@ -2119,7 +2264,7 @@ def test_repository_replacement_locks_and_supersedes_predecessor_atomically():
     assert superseded_payload["design_group_id"] == "group-001"
     assert superseded_payload["package_sha256"] == "1" * 64
     assert superseded_payload["review_card_sha256"] == "2" * 64
-    assert superseded_payload["final_model_sha256"] == "3" * 64
+    assert superseded_payload["final_model_sha256"] == "6" * 64
     assert superseded_payload["supersedes_review_id"] is None
     assert superseded_payload["superseded_by_review_id"] == "DLR-new-001"
     assert prepared_payload["supersedes_review_id"] == "DLR-old-001"
@@ -2195,7 +2340,7 @@ def test_repository_rejects_a_new_review_without_an_immutable_artifact_binding()
     [
         ("design_group_id", "group-other"),
         ("working_copy_id", "working-other"),
-        ("lesson_id", "DL-other"),
+        ("final_model_sha256", "3" * 64),
     ],
 )
 def test_repository_replacement_rejects_unrelated_predecessor(field, value):
@@ -2204,7 +2349,7 @@ def test_repository_replacement_rejects_unrelated_predecessor(field, value):
     predecessor[field] = value
     connection.reviews["DLR-old-001"] = predecessor
     with _repository_with(connection) as repository:
-        with pytest.raises(ValueError, match="same design lesson set"):
+        with pytest.raises(ValueError, match="same delivered model"):
             _create(repository, supersedes_review_id="DLR-old-001")
 
     assert connection.reviews["DLR-old-001"]["status"] == "awaiting-engineer-review"
@@ -2525,6 +2670,76 @@ def test_service_review_approval_uses_one_confirmation_for_the_whole_package():
         assert approval_call["verified_review_card_sha256"] == review_row["review_card_sha256"]
         assert approval_call["verified_review_path"] == review_row["review_path"]
         assert approval_call["verified_package_path"] == review_row["package_path"]
+    finally:
+        temporary.cleanup()
+
+
+def test_service_default_publish_uses_simple_confirmation_and_stable_receipt():
+    temporary, service, package, evidence_items = _review_preparation_fixture()
+    try:
+        prepared = service.design_lesson_review_prepare(
+            package["source"]["working_copy_id"], package, evidence_items
+        )
+
+        result = service.design_lesson_review_publish(
+            review_id=prepared["review_id"],
+            confirmation=" 确认发布设计经验 ",
+        )
+        repeated = service.design_lesson_review_publish(
+            review_id=prepared["review_id"],
+            confirmation="确认发布设计经验",
+        )
+
+        assert prepared["publication_confirmation"] == "确认发布设计经验"
+        assert result["status"] == "published"
+        assert result["internal_status"] == "stored-and-retrievable"
+        assert result["publication_receipt_sha256"]
+        assert repeated["publication_receipt_sha256"] == result["publication_receipt_sha256"]
+        assert len(service.repository.approve_calls) == 1
+        assert service.repository.approve_calls[0]["confirmation_mode"] == "single_confirmation"
+    finally:
+        temporary.cleanup()
+
+
+def test_service_no_publication_records_review_without_creating_lesson():
+    temporary, service, package, evidence_items = _review_preparation_fixture()
+    try:
+        screening = {
+            "schema_version": "DesignLessonScreeningPackage/v1",
+            "screening_id": "DLS-001",
+            "codex_session_id": package["codex_session_id"],
+            "source": package["source"],
+            "summary": "No material reusable lesson remained after screening.",
+            "excluded_candidates": [
+                {
+                    "candidate": "One-off mounting dimension",
+                    "reason_code": "product_specific",
+                    "rationale": "The value is unique to this delivered assembly.",
+                    "evidence_refs": ["validation-evidence"],
+                }
+            ],
+            "evidence_manifest": [],
+        }
+        prepared = service.design_lesson_review_prepare(
+            package["source"]["working_copy_id"], screening, evidence_items
+        )
+
+        result = service.design_lesson_review_no_publish(
+            review_id=prepared["review_id"],
+            confirmation="确认无可发布设计经验",
+        )
+        repeated = service.design_lesson_review_no_publish(
+            review_id=prepared["review_id"],
+            confirmation="确认无可发布设计经验",
+        )
+
+        assert prepared["review_outcome"] == "no_publish"
+        assert result["status"] == "reviewed-no-publishable-lesson"
+        assert result["publication_receipt_sha256"]
+        assert repeated["publication_receipt_sha256"] == result["publication_receipt_sha256"]
+        assert service.repository.lessons == {}
+        assert service.repository.approve_calls == []
+        assert service.repository.approved_assertion_count == 0
     finally:
         temporary.cleanup()
 
