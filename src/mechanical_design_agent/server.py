@@ -17,9 +17,11 @@ from .bootstrap_runtime import BootstrapRuntime
 from .config import Settings
 from .context import DesignContextBuilder
 from .design_lessons import match_design_lesson, normalize_design_features
+from .engineering_obligations import validate_engineering_scope
 from .models import require_safe_id
 from .service import MechanicalDesignService
 from .job_errors import safe_job_error_json
+from .tool_profiles import ProfiledToolRegistrar, resolve_tool_profile
 from .workspace_bootstrap import BootstrapFailure
 
 
@@ -172,6 +174,9 @@ SERVICE_METHOD_CAPABILITIES: Mapping[str, CapabilityRequest] = MappingProxyType(
         "design_job_resolve": _capability("design_job_workspace"),
         "design_job_close": _capability("design_job_workspace"),
         "design_job_reopen": _capability("design_job_workspace"),
+        "design_job_obligations_resolve": _capability(
+            "design_job_workspace", "postgresql"
+        ),
         "product_family_onboarding_start": _capability("design_job_workspace"),
         "product_family_onboarding_analyze": _capability("design_job_workspace"),
         "product_family_onboarding_review": _capability("design_job_workspace"),
@@ -408,6 +413,7 @@ def create_mcp(
     runtime: BootstrapRuntime | None = None,
     product_family_id: str | None = None,
     service_factory: Callable[[object], Any] | None = None,
+    tool_profile: str | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
         cwd=Path.cwd(),
@@ -422,7 +428,10 @@ def create_mcp(
             service_factory=service_factory or MechanicalDesignService,
         )
     )
-    mcp = FastMCP("FreeCAD Mechanical Design Knowledge")
+    selected_profile = resolve_tool_profile(tool_profile)
+    mcp_server = FastMCP("FreeCAD Mechanical Design Knowledge")
+    registrar = ProfiledToolRegistrar(mcp_server, selected_profile)
+    mcp = registrar
 
     @mcp.tool()
     def design_system_status() -> str:
@@ -698,6 +707,33 @@ def create_mcp(
                 expected_revision=expected_revision,
                 phase=phase,
                 reason=reason,
+                confirmation=confirmation,
+            )
+        )
+
+    @mcp.tool()
+    def design_job_obligations_resolve(
+        job_id: str,
+        working_copy_id: str,
+        engineering_scope_json: str,
+        decisions_json: str,
+        confirmation: str = "",
+    ) -> str:
+        """Record exact-scope standard-parts and assembly conclusions for a Design Job."""
+        engineering_scope = _object(
+            engineering_scope_json, "engineering_scope_json"
+        )
+        decisions = _array(decisions_json, "decisions_json")
+        if not all(isinstance(item, dict) for item in decisions):
+            raise ValueError("decisions_json must contain only JSON objects")
+        return _job_json(
+            lambda: service.design_job_obligations_resolve(
+                job_id=require_safe_id(job_id, "job_id"),
+                working_copy_id=require_safe_id(
+                    working_copy_id, "working_copy_id"
+                ),
+                engineering_scope=engineering_scope,
+                decisions=decisions,
                 confirmation=confirmation,
             )
         )
@@ -1378,6 +1414,24 @@ def create_mcp(
         knowledge_used = _array(knowledge_used_json, "knowledge_used_json")
         if not all(isinstance(item, dict) for item in changes) or not all(isinstance(item, str) for item in knowledge_used):
             raise ValueError("invalid changes or knowledge_used payload")
+        approval_envelope_draft = (
+            _object(
+                approval_envelope_draft_json,
+                "approval_envelope_draft_json",
+            )
+            if approval_envelope_draft_json.strip()
+            else None
+        )
+        if selected_profile == "design" and approval_envelope_draft is not None:
+            design_intent = approval_envelope_draft.get("design_intent")
+            if not isinstance(design_intent, dict) or not isinstance(
+                design_intent.get("engineering_scope"), dict
+            ):
+                raise ValueError(
+                    "design profile approval envelope requires "
+                    "design_intent.engineering_scope"
+                )
+            validate_engineering_scope(design_intent["engineering_scope"])
         return _json(
             service.design_change_record(
                 working_copy_id=working_copy_id,
@@ -1385,14 +1439,7 @@ def create_mcp(
                 changes=changes,
                 knowledge_used=knowledge_used,
                 rationale=rationale,
-                approval_envelope_draft=(
-                    _object(
-                        approval_envelope_draft_json,
-                        "approval_envelope_draft_json",
-                    )
-                    if approval_envelope_draft_json.strip()
-                    else None
-                ),
+                approval_envelope_draft=approval_envelope_draft,
                 semantic_impact=(
                     _object(semantic_impact_json, "semantic_impact_json")
                     if semantic_impact_json.strip()
@@ -1619,7 +1666,8 @@ def create_mcp(
         """Replace only this module's Neo4j projection from authoritative PostgreSQL rows."""
         return _json(service.projection_rebuild(confirmation))
 
-    return mcp
+    registrar.assert_complete()
+    return mcp_server
 
 
 def build_server() -> FastMCP:

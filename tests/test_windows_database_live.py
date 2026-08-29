@@ -60,6 +60,7 @@ EXPECTED_POSTGRES_MIGRATIONS = (
     "015_product_family_match_decisions.sql",
     "016_design_approval_envelopes.sql",
     "017_design_lesson_single_confirmation.sql",
+    "018_design_job_obligations.sql",
 )
 
 

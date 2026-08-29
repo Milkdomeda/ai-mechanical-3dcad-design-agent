@@ -23,6 +23,12 @@ from .design_lessons import (
     PUBLISHED_SOURCE,
     validate_design_lesson_package,
 )
+from .engineering_obligations import (
+    engineering_scope_sha256,
+    require_obligation_gate,
+    validate_engineering_scope,
+    validate_obligation_decision,
+)
 from .hashing import file_sha256, stable_hash
 from .migrations import discover_postgres_migrations
 from .models import AssertionProposal, ScanEntry
@@ -2678,6 +2684,176 @@ class PostgresRepository:
             ).fetchone()
         return dict(row)
 
+    def latest_product_family_match_decision(
+        self,
+        *,
+        job_id: str,
+        working_copy_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM product_family_match_decisions WHERE job_id=%s "
+                "AND (%s::uuid IS NULL OR working_copy_id=%s OR working_copy_id IS NULL) "
+                "ORDER BY CASE WHEN working_copy_id=%s THEN 0 ELSE 1 END,created_at DESC,id DESC "
+                "LIMIT 1",
+                (job_id, working_copy_id, working_copy_id, working_copy_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_design_job_obligation_decisions(
+        self,
+        *,
+        organization_id: str,
+        design_group_id: str,
+        job_id: str,
+        working_copy_id: str,
+        engineering_scope: dict[str, Any],
+        decisions: list[dict[str, Any]],
+        actor_id: str,
+        confirmation: str = "",
+    ) -> list[dict[str, Any]]:
+        scope = validate_engineering_scope(engineering_scope)
+        scope_sha256 = engineering_scope_sha256(scope)
+        if not isinstance(decisions, list) or len(decisions) != 2:
+            raise ValueError(
+                "obligation resolution requires standard-parts and assembly decisions"
+            )
+        validated = [validate_obligation_decision(item, scope) for item in decisions]
+        if {item["obligation_kind"] for item in validated} != {
+            "standard_parts_assessment",
+            "assembly_assessment",
+        }:
+            raise ValueError("obligation resolution requires one decision of each kind")
+
+        rows: list[dict[str, Any]] = []
+        with self.connection() as connection, connection.transaction():
+            actor = connection.execute(
+                "SELECT * FROM actors WHERE id=%s AND organization_id=%s FOR UPDATE",
+                (actor_id, organization_id),
+            ).fetchone()
+            if actor is None:
+                raise PermissionError("obligation decision actor is outside the organization")
+            job = connection.execute(
+                "SELECT * FROM design_jobs WHERE id=%s AND organization_id=%s "
+                "AND design_group_id=%s FOR UPDATE",
+                (job_id, organization_id, design_group_id),
+            ).fetchone()
+            if job is None:
+                raise KeyError("unknown design_job_id or unauthorized")
+            working = connection.execute(
+                "SELECT * FROM design_working_copies WHERE id=%s AND job_id=%s "
+                "AND organization_id=%s AND design_group_id=%s FOR UPDATE",
+                (working_copy_id, job_id, organization_id, design_group_id),
+            ).fetchone()
+            if working is None:
+                raise KeyError("working copy is not bound to the Design Job")
+
+            for item in validated:
+                if (
+                    item["obligation_kind"] == "standard_parts_assessment"
+                    and item["outcome"] == "candidates_resolved"
+                ):
+                    part_count = connection.execute(
+                        "SELECT count(*) AS count FROM standard_part_records "
+                        "WHERE metadata->>'working_copy_id'=%s",
+                        (working_copy_id,),
+                    ).fetchone()
+                    if int(part_count["count"]) == 0:
+                        raise ValueError(
+                            "resolved standard-part candidates require a registered "
+                            "Job-bound standard part"
+                        )
+                if (
+                    item["obligation_kind"] == "standard_parts_assessment"
+                    and item["outcome"] == "approved_custom_exception"
+                ):
+                    if actor["role"] != "family_owner":
+                        raise PermissionError(
+                            "custom standard-part exceptions require a family_owner"
+                        )
+                    if confirmation.strip() != f"批准自制标准件例外 {scope_sha256}":
+                        raise ValueError(
+                            "custom standard-part exception requires the matching "
+                            "engineer confirmation"
+                        )
+                if (
+                    item["obligation_kind"] == "assembly_assessment"
+                    and item["outcome"] == "required_passed"
+                ):
+                    validation = connection.execute(
+                        "SELECT * FROM validation_reports WHERE working_copy_id=%s "
+                        "AND validation_kind='assembly_completeness' "
+                        "ORDER BY created_at DESC,id DESC LIMIT 1",
+                        (working_copy_id,),
+                    ).fetchone()
+                    if validation is None or validation["status"] != "passed":
+                        raise ValueError(
+                            "passed assembly assessment requires a passing assembly "
+                            "completeness validation"
+                        )
+
+            for item in sorted(validated, key=lambda value: value["obligation_kind"]):
+                predecessor = connection.execute(
+                    "SELECT * FROM design_job_obligation_decisions WHERE job_id=%s "
+                    "AND working_copy_id=%s AND obligation_kind=%s "
+                    "ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE",
+                    (job_id, working_copy_id, item["obligation_kind"]),
+                ).fetchone()
+                if predecessor is not None and all(
+                    (
+                        predecessor["scope_sha256"] == scope_sha256,
+                        predecessor["outcome"] == item["outcome"],
+                        predecessor["resolution_level"] == item["resolution_level"],
+                        predecessor["rationale"] == item["rationale"],
+                        list(predecessor.get("evidence_refs") or [])
+                        == item["evidence_refs"],
+                    )
+                ):
+                    rows.append(dict(predecessor))
+                    continue
+                row = connection.execute(
+                    "INSERT INTO design_job_obligation_decisions(organization_id,design_group_id,"
+                    "job_id,working_copy_id,obligation_kind,outcome,resolution_level,rationale,"
+                    "engineering_scope,scope_sha256,evidence_refs,supersedes_decision_id,created_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s) RETURNING *",
+                    (
+                        organization_id,
+                        design_group_id,
+                        job_id,
+                        working_copy_id,
+                        item["obligation_kind"],
+                        item["outcome"],
+                        item["resolution_level"],
+                        item["rationale"],
+                        json.dumps(scope, ensure_ascii=False),
+                        scope_sha256,
+                        json.dumps(item["evidence_refs"], ensure_ascii=False),
+                        predecessor["id"] if predecessor is not None else None,
+                        actor_id,
+                    ),
+                ).fetchone()
+                rows.append(dict(row))
+        return rows
+
+    def latest_design_job_obligation_decisions(
+        self,
+        *,
+        job_id: str,
+        working_copy_id: str,
+        scope_sha256: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        if scope_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", scope_sha256):
+            raise ValueError("scope_sha256 must be a lowercase SHA-256")
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT ON (obligation_kind) * "
+                "FROM design_job_obligation_decisions WHERE job_id=%s AND working_copy_id=%s "
+                "AND (%s::char(64) IS NULL OR scope_sha256=%s) "
+                "ORDER BY obligation_kind,created_at DESC,id DESC",
+                (job_id, working_copy_id, scope_sha256, scope_sha256),
+            ).fetchall()
+        return {str(row["obligation_kind"]): dict(row) for row in rows}
+
     def projection_models(self) -> list[dict[str, Any]]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -3699,6 +3875,104 @@ class PostgresRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _require_engineering_obligations(
+        self,
+        connection: Any,
+        *,
+        working_copy_id: str,
+        for_delivery: bool,
+    ) -> dict[str, Any] | None:
+        """Enforce v0.5 obligations when the approved envelope declares a scope.
+
+        Envelopes created before v0.5 have no engineering_scope and retain their
+        existing gates during the compatibility window.
+        """
+
+        working = connection.execute(
+            "SELECT w.*,j.family_id AS job_family_id FROM design_working_copies w "
+            "LEFT JOIN design_jobs j ON j.id=w.job_id WHERE w.id=%s",
+            (working_copy_id,),
+        ).fetchone()
+        if working is None:
+            raise KeyError(f"unknown working_copy_id: {working_copy_id}")
+        envelope = connection.execute(
+            "SELECT * FROM design_approval_envelopes WHERE working_copy_id=%s "
+            "AND status='active'",
+            (working_copy_id,),
+        ).fetchone()
+        design_intent = envelope.get("design_intent") if envelope is not None else None
+        raw_scope = (
+            design_intent.get("engineering_scope")
+            if isinstance(design_intent, dict)
+            else None
+        )
+        if raw_scope is None:
+            return None
+        scope = validate_engineering_scope(raw_scope)
+        scope_hash = engineering_scope_sha256(scope)
+        job_id = str(working.get("job_id") or "")
+        if not job_id:
+            raise ValueError("engineering obligations require a Design Job-bound working copy")
+
+        family_outcome: str | None = (
+            "matched"
+            if working.get("family_id") or working.get("job_family_id")
+            else None
+        )
+        if family_outcome is None:
+            match = connection.execute(
+                "SELECT * FROM product_family_match_decisions WHERE job_id=%s "
+                "AND (working_copy_id=%s OR working_copy_id IS NULL) "
+                "ORDER BY CASE WHEN working_copy_id=%s THEN 0 ELSE 1 END,"
+                "created_at DESC,id DESC LIMIT 1",
+                (job_id, working_copy_id, working_copy_id),
+            ).fetchone()
+            if match is not None:
+                family_outcome = {
+                    "authoritative_match": "matched",
+                    "unbound_no_match": "no_match",
+                }.get(str(match.get("status")))
+        if family_outcome is None:
+            family_count = connection.execute(
+                "SELECT count(*) AS count FROM product_families "
+                "WHERE organization_id=%s AND design_group_id=%s",
+                (working["organization_id"], working["design_group_id"]),
+            ).fetchone()
+            if int(family_count["count"]) == 0:
+                family_outcome = "not_configured"
+
+        receipt = connection.execute(
+            "SELECT * FROM design_retrieval_receipts WHERE working_copy_id=%s "
+            "ORDER BY created_at DESC,id DESC LIMIT 1",
+            (working_copy_id,),
+        ).fetchone()
+        knowledge_outcome = None
+        if receipt is not None:
+            knowledge_outcome = {
+                "completed": "completed_matches",
+                "completed_no_match": "completed_no_matches",
+            }.get(str(receipt.get("retrieval_status")))
+        decision_rows = connection.execute(
+            "SELECT DISTINCT ON (obligation_kind) * "
+            "FROM design_job_obligation_decisions WHERE job_id=%s "
+            "AND working_copy_id=%s AND scope_sha256=%s "
+            "ORDER BY obligation_kind,created_at DESC,id DESC",
+            (job_id, working_copy_id, scope_hash),
+        ).fetchall()
+        decisions = {str(row["obligation_kind"]): dict(row) for row in decision_rows}
+        require_obligation_gate(
+            scope=scope,
+            family_outcome=family_outcome,
+            knowledge_outcome=knowledge_outcome,
+            standard_parts_decision=decisions.get("standard_parts_assessment"),
+            assembly_decision=decisions.get("assembly_assessment"),
+            for_delivery=for_delivery,
+        )
+        return {
+            "scope_sha256": scope_hash,
+            "decisions": decisions,
+        }
+
     def authorize_change_mutation(
         self, change_set_id: str, actor_id: str
     ) -> dict[str, Any]:
@@ -3726,6 +4000,11 @@ class PostgresRepository:
             }
             require_mutation_authorization(
                 normalized_change, active_envelope_id=active_envelope_id
+            )
+            self._require_engineering_obligations(
+                connection,
+                working_copy_id=str(change["working_copy_id"]),
+                for_delivery=False,
             )
             decision = {
                 "status": "mutation_authorized",
@@ -4049,14 +4328,19 @@ class PostgresRepository:
             working_copy = connection.execute(
                 "SELECT * FROM design_working_copies WHERE id=%s", (working_copy_id,)
             ).fetchone()
-        self._validate_delivery_approval_scope(
-            actor=actor,
-            design_group=design_group,
-            working_copy=working_copy,
-            organization_id=organization_id,
-            design_group_id=design_group_id,
-            working_copy_id=working_copy_id,
-        )
+            self._validate_delivery_approval_scope(
+                actor=actor,
+                design_group=design_group,
+                working_copy=working_copy,
+                organization_id=organization_id,
+                design_group_id=design_group_id,
+                working_copy_id=working_copy_id,
+            )
+            self._require_engineering_obligations(
+                connection,
+                working_copy_id=working_copy_id,
+                for_delivery=True,
+            )
 
     def approve_delivery(
         self,

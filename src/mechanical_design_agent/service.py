@@ -24,6 +24,11 @@ from .design_lessons import (
     validate_design_lesson_package,
 )
 from .extractor import FreeCADExtractor
+from .engineering_obligations import (
+    build_obligation_read_model,
+    engineering_scope_sha256,
+    validate_engineering_scope,
+)
 from .family_matching import match_product_family
 from .hashing import file_sha256, stable_hash
 from .learning import family_statistics, generate_question_targets, parse_assertion_proposals
@@ -362,13 +367,152 @@ class MechanicalDesignService:
             organization_id=organization,
             design_group_id=group,
         )
-        return self._job_manifest_response(
+        response = self._job_manifest_response(
             self.design_jobs.get(
                 job_id=resolved_job_id,
                 organization_id=organization,
                 design_group_id=group,
             )
         )
+        if response.get("job_type") == "mechanical_design":
+            response["engineering_obligations"] = self._job_engineering_obligations(
+                response
+            )
+        return response
+
+    @staticmethod
+    def _public_obligation_decision(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "obligation_kind": str(row["obligation_kind"]),
+            "outcome": str(row["outcome"]),
+            "resolution_level": str(row["resolution_level"]),
+            "rationale": str(row["rationale"]),
+            "evidence_refs": list(row.get("evidence_refs") or []),
+        }
+
+    def _job_engineering_obligations(
+        self, job: dict[str, Any]
+    ) -> dict[str, Any]:
+        job_id = str(job.get("job_id") or job.get("id") or "")
+        working_copy_id = str(job.get("active_working_copy_id") or "") or None
+        organization_id = str(job["organization_id"])
+        design_group_id = str(job["design_group_id"])
+
+        family_outcome: str | None = "matched" if job.get("family_id") else None
+        family_decision = self.repository.latest_product_family_match_decision(
+            job_id=job_id,
+            working_copy_id=working_copy_id,
+        )
+        if family_outcome is None and family_decision is not None:
+            family_outcome = {
+                "authoritative_match": "matched",
+                "unbound_no_match": "no_match",
+            }.get(str(family_decision.get("status")))
+        if family_outcome is None and not self.repository.product_family_inventory(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        ):
+            family_outcome = "not_configured"
+
+        knowledge_outcome: str | None = None
+        scope: dict[str, Any] | None = None
+        standard_decision: dict[str, Any] | None = None
+        assembly_decision: dict[str, Any] | None = None
+        if working_copy_id is not None:
+            receipt = self.repository.latest_retrieval_receipt(working_copy_id)
+            if receipt is not None:
+                knowledge_outcome = {
+                    "completed": "completed_matches",
+                    "completed_no_match": "completed_no_matches",
+                }.get(str(receipt.get("retrieval_status")))
+            envelope = self.repository.get_active_approval_envelope(working_copy_id)
+            if envelope is not None:
+                design_intent = envelope.get("design_intent")
+                if isinstance(design_intent, dict) and isinstance(
+                    design_intent.get("engineering_scope"), dict
+                ):
+                    scope = validate_engineering_scope(
+                        design_intent["engineering_scope"]
+                    )
+            latest = self.repository.latest_design_job_obligation_decisions(
+                job_id=job_id,
+                working_copy_id=working_copy_id,
+                scope_sha256=(engineering_scope_sha256(scope) if scope else None),
+            )
+            if scope is None:
+                scopes = {
+                    str(row.get("scope_sha256"))
+                    for row in latest.values()
+                    if row.get("scope_sha256")
+                }
+                if len(scopes) == 1 and latest:
+                    scope = validate_engineering_scope(
+                        next(iter(latest.values()))["engineering_scope"]
+                    )
+                    latest = self.repository.latest_design_job_obligation_decisions(
+                        job_id=job_id,
+                        working_copy_id=working_copy_id,
+                        scope_sha256=engineering_scope_sha256(scope),
+                    )
+            if latest.get("standard_parts_assessment") is not None:
+                standard_decision = self._public_obligation_decision(
+                    latest["standard_parts_assessment"]
+                )
+            if latest.get("assembly_assessment") is not None:
+                assembly_decision = self._public_obligation_decision(
+                    latest["assembly_assessment"]
+                )
+
+        return build_obligation_read_model(
+            scope=scope,
+            family_outcome=family_outcome,
+            knowledge_outcome=knowledge_outcome,
+            standard_parts_decision=standard_decision,
+            assembly_decision=assembly_decision,
+        )
+
+    def design_job_obligations_resolve(
+        self,
+        *,
+        job_id: str,
+        working_copy_id: str,
+        engineering_scope: dict[str, Any],
+        decisions: list[dict[str, Any]],
+        confirmation: str = "",
+    ) -> dict[str, Any]:
+        """Record explicit adaptive conclusions without imposing an order."""
+
+        self._require_database()
+        organization_id, design_group_id = self._configured_job_scope()
+        resolved_job_id = self._resolve_job_reference(
+            job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        scope = validate_engineering_scope(engineering_scope)
+        rows = self.repository.record_design_job_obligation_decisions(
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+            job_id=resolved_job_id,
+            working_copy_id=working_copy_id,
+            engineering_scope=scope,
+            decisions=decisions,
+            actor_id=self.settings.actor_id,
+            confirmation=confirmation,
+        )
+        job = self.repository.get_design_job(
+            job_id=resolved_job_id,
+            organization_id=organization_id,
+            design_group_id=design_group_id,
+        )
+        return {
+            "schema_version": "EngineeringObligationResolution/v1",
+            "job_id": resolved_job_id,
+            "working_copy_id": working_copy_id,
+            "scope_sha256": engineering_scope_sha256(scope),
+            "decisions": [self._public_obligation_decision(row) for row in rows],
+            "engineering_obligations": self._job_engineering_obligations(job),
+        }
 
     def design_job_resolve(
         self,
