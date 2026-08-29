@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 - Unreleased
+## 0.5.0 - 2026-08-29
 
 - Add adaptive Product Family, knowledge-retrieval, standard-parts, and
   assembly obligations whose conclusions are mandatory but whose order and
