@@ -75,6 +75,24 @@ their implementation, schema, migrations, or tests is software development.
 For a mixed request, state the split: route the product portion through its Job
 and handle the software portion with the normal Git workflow.
 
+## Close adaptive engineering obligations
+
+Do not force every design through a fixed sequence. Instead, ensure that each
+cross-cutting engineering question has an explicit conclusion:
+
+- Product Family: `matched`, `no_match`, or `not_configured`;
+- knowledge retrieval: completed with matches or completed with no matches;
+- standard parts: screened or expanded with evidence;
+- assembly: `not_applicable`, `required_pending`, or `required_passed`.
+
+Put `EngineeringScope/v1` in the Design Intent and record its standard-parts
+and assembly conclusions with `design_job_obligations_resolve`. A custom
+single part can close both quickly as `not_applicable`. Standard candidates,
+multiple components, motion, or assembly interfaces expand only the applicable
+work. `required_pending` permits approved modeling; delivery still requires
+same-revision `required_passed` evidence. Scope changes invalidate prior
+scope-hash-bound conclusions.
+
 ## Design Lesson decision
 
 After delivery, call `design_lesson_review_context` and filter candidates for

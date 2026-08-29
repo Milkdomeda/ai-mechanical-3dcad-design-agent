@@ -2,7 +2,7 @@
 
 This guide describes the supported Docker Compose path for local development,
 evaluation, and release testing of AI Mechanical 3DCAD Design Agent version
-0.4.1. It is not a production deployment, high-availability design, backup
+0.5.0. It is not a production deployment, high-availability design, backup
 system, remote-access configuration, or managed-service recommendation.
 
 Compose provisions services. The installed Mechanical Design Agent owns schema migration
@@ -223,7 +223,7 @@ package-owned migration requires a new clean-machine build, first/second
 bootstrap, installed-wheel live integration, cleanup, and public artifact
 equivalence acceptance on every claimed platform.
 
-Version 0.4.1 does not define production secrets management, TLS termination,
+Version 0.5.0 does not define production secrets management, TLS termination,
 remote database exposure, backups, replication, high availability, monitoring,
 resource sizing, disaster recovery, rolling upgrades, or orchestration beyond
 this local and evaluation Compose boundary.

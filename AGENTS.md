@@ -51,6 +51,10 @@
 - Classify every managed model as `existing_model` or `new_design`.
 - For an existing STEP or FCStd model, create the working copy through the Mechanical Design Agent and do not edit it unless it is uniquely bound to `source_model_revision_id`. Treat the source model as read-only.
 - For a new design, create and register the controlled working copy before substantive modeling. Keep FCStd as the source of truth for designed parts and assemblies.
+- Treat Product Family resolution, knowledge retrieval, standard-parts assessment, and assembly assessment as independent engineering obligations, not a fixed A → B → C pipeline. Every obligation needs an explicit conclusion, but order and depth must remain proportional to the approved scope.
+- Put one strict `EngineeringScope/v1` snapshot in the first Design Intent. Record the component plan, sourcing class, deliverable kind, motion, and assembly interfaces; bind screening decisions to its SHA-256 with `design_job_obligations_resolve`.
+- A simple custom single part may close standard parts and assembly as `not_applicable`. A triggered standard component must be searched or explicitly excepted with evidence. An assembly may use `required_pending` to begin approved modeling, but delivery requires `required_passed` and same-revision evidence.
+- Never use `not_applicable` to bypass a scope trigger. If the scope changes, treat earlier standard-parts and assembly conclusions as stale and resolve the affected obligations again.
 - Before proposing or applying a CAD change, call `design_knowledge_retrieve` for the applicable organization, design group, family, model, and working copy. A completed receipt with no matches is acceptable; a missing or `not_executed` receipt is not.
 - Keep proposals, approvals, applied changes, validation evidence, and delivery records bound to the exact working-copy revision and file hash. Do not reuse stale evidence after any geometry or metadata change.
 - When a new proposal replaces or abandons an unapplied proposal, close the old change with `design_change_close` as `superseded` or `cancelled`. Never mark a proposal as applied merely to clear a delivery gate.

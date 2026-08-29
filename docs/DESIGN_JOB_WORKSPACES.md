@@ -53,6 +53,22 @@ family. Family discovery metadata is visible for matching, but specialized
 assertions, lessons, and analogous models remain excluded until binding is
 authorized.
 
+## Adaptive engineering obligations
+
+Every mechanical-design Job closes four engineering questions without forcing
+a universal order: Product Family resolution, knowledge retrieval,
+standard-parts assessment, and assembly assessment. `design_job_get` reports
+open, resolved, recommended, allowed, and blocked actions. The initial Design
+Intent supplies `EngineeringScope/v1`; `design_job_obligations_resolve` records
+the standard-parts and assembly conclusions for that exact scope hash.
+
+A one-component custom part with no motion or interfaces may resolve both as
+`not_applicable` immediately. Standard candidates require expanded evidence.
+Multiple components, assembly delivery, motion, or declared interfaces require
+an assembly conclusion; `required_pending` permits approved modeling but cannot
+satisfy delivery. Changed scope data invalidates the prior conclusions rather
+than mutating them.
+
 ## Directory contract
 
 Each ready Job is stored below the configured workspace at
