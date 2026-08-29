@@ -2,7 +2,7 @@
 
 > **Status:** Implementation plan awaiting user approval
 > **Date:** 2026-08-29
-> **Target release:** AI Mechanical 3DCAD Design Agent v0.5.0
+> **Target release:** AI Mechanical 3DCAD Design Agent v0.4.1
 > **Approved design:** `docs/superpowers/specs/2026-08-29-design-lessons-single-confirmation-publishing-design.md`
 
 ## Objective
@@ -30,6 +30,8 @@ verification succeed.
 - Do not add a background worker or a PostgreSQL/Neo4j distributed transaction.
 - Do not update the pinned FreeCAD MCP integration.
 - Do not push, tag, release, or merge without a later explicit authorization.
+- Treat this as one change stream in a combined v0.4.1 release. Other bug-fix
+  work will be merged separately, and this branch must not publish by itself.
 
 ## Contract details used by the implementation
 
@@ -383,7 +385,7 @@ valid engineering decisions.
 5. Run documentation and public-release-contract tests and commit the docs
    slice.
 
-## Task 10: Bump the single product version to 0.5.0 and run release gates
+## Task 10: Target version 0.4.1 and validate this feature branch
 
 **Files:**
 
@@ -398,10 +400,12 @@ valid engineering decisions.
 - Modify: `tests/test_windows_packaging.py`
 - Modify: any exact version fixtures located by `rg '0\.4\.0|v0\.4\.0'`
 
-1. Update the project version to `0.5.0` in the package source of truth and
+1. Update the project version to `0.4.1` in the package source of truth and
    synchronize every tested metadata copy, lockfile entry, release fixture,
-   README statement, and changelog entry. Do not change third-party dependency
-   versions as part of this feature.
+   README statement, and changelog entry. The changelog entry must identify
+   this Design Lessons feature as one part of the combined v0.4.1 release and
+   leave room for the independently developed bug fixes. Do not change
+   third-party dependency versions as part of this feature.
 2. Run focused feature and migration tests:
 
    ```bash
@@ -450,9 +454,29 @@ valid engineering decisions.
    generated Job artifacts, FCStd/STEP files, runtime knowledge, and private
    evidence. Verify `git status`, inspect the complete diff, and conduct one
    overall code review against the approved design and this plan.
-7. Commit the version/release-readiness slice. Stop before merge, push, tag, or
+7. Commit the version/feature-readiness slice. Stop before merge, push, tag, or
    release and report any live macOS/Windows gates that still require protected
-   infrastructure.
+   infrastructure. These results prove only this feature branch; they do not
+   authorize the combined release.
+
+## Deferred combined-main release gate
+
+This gate is intentionally outside feature implementation and begins only
+after the user confirms that this branch and the independent bug-fix work are
+ready to merge.
+
+1. Merge the approved change streams into `main` without dropping either
+   branch's tests, migration resources, changelog items, or version metadata.
+2. Resolve the final v0.4.1 changelog as one coherent release record covering
+   both the Design Lessons simplification and the separate bug fixes.
+3. On the resulting `main`, rerun the complete supported offline suite,
+   applicable live database/platform acceptance, wheel/sdist build, clean
+   install, MCP inventory, public-boundary scans, and `git diff --check`.
+4. Conduct one overall code review of the combined diff and verify the final
+   version is consistently `0.4.1` from the package source of truth through the
+   built artifacts.
+5. Stop for explicit authorization before push, tag, or GitHub release. Publish
+   v0.4.1 once; do not release this feature branch separately.
 
 ## Completion checklist
 
@@ -466,7 +490,8 @@ valid engineering decisions.
 - [ ] Old MCP contracts and migrated reviews remain compatible.
 - [ ] Migration 017 is included in source, wheel, sdist, bootstrap, and Windows manifests.
 - [ ] Agent instructions display the full card before asking for confirmation.
-- [ ] Version metadata is consistently 0.5.0.
+- [ ] Feature-branch version metadata targets 0.4.1.
 - [ ] Focused, complete offline, packaging, and public-boundary tests pass.
 - [ ] Applicable live database and protected-platform results are recorded.
+- [ ] Combined `main` is retested and reviewed after the other bug fixes merge.
 - [ ] No merge, push, tag, or release occurs without explicit authorization.

@@ -1,8 +1,8 @@
 # Design Lessons Single-Confirmation Publishing
 
-**Status:** Approved design draft for user review
+**Status:** Approved design; release coordination revised
 **Date:** 2026-08-29
-**Target release:** AI Mechanical 3DCAD Design Agent v0.5.0
+**Target release:** AI Mechanical 3DCAD Design Agent v0.4.1
 
 ## Purpose
 
@@ -393,9 +393,17 @@ authorization, and publication transitions remain software-enforced gates.
 
 ## Compatibility and release version
 
-This is an additive public MCP capability and a new default user workflow. It
-does not remove or silently change existing tool contracts. The appropriate
-release is v0.5.0 rather than a v0.4.x patch.
+This is an additive, backward-compatible MCP capability and a new default user
+workflow. It does not remove or silently change existing tool contracts. The
+selected release version is v0.4.1.
+
+Other independently developed bug fixes are expected to enter the same v0.4.1
+release. This feature branch owns only the Design Lessons change and its
+focused validation. It must not be released independently. After all approved
+change streams are merged into `main`, the combined `main` state must run the
+complete supported suite, package and installation checks, public-boundary
+checks, and one overall code review before the single v0.4.1 release is
+authorized.
 
 Compatibility requirements:
 
@@ -461,4 +469,5 @@ The feature is complete when:
 7. a reviewed no-publication outcome is auditable and creates no Lesson;
 8. existing clients and expert workflows remain compatible;
 9. the complete required test and package gates pass; and
-10. release documentation accurately describes v0.5.0 behavior and limits.
+10. the combined release documentation accurately describes v0.4.1 behavior,
+    bug fixes, and limits.
