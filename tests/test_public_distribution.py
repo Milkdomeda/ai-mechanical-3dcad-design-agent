@@ -51,6 +51,7 @@ EXPECTED_MCP_TOOL_NAMES = {
     "design_job_get",
     "design_job_list",
     "design_job_new_working_copy_create",
+    "design_job_obligations_resolve",
     "design_job_reopen",
     "design_job_resolve",
     "design_job_working_copy_create",
@@ -134,6 +135,7 @@ CLEAN_ENVIRONMENT_KEYS = {
     "MECH_DESIGN_PRODUCT_FAMILY_ID",
     "MECH_DESIGN_JOB_ID",
     "MECH_DESIGN_FAMILY_CONFIG",
+    "MECH_DESIGN_MCP_TOOL_PROFILE",
 }
 
 
@@ -188,7 +190,7 @@ def test_public_metadata_and_license_contract() -> None:
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert project["name"] == "ai-mechanical-3dcad-design-agent"
-    assert project["version"] == "0.4.1"
+    assert project["version"] == "0.5.0"
     assert project["description"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -203,8 +205,8 @@ def test_public_metadata_and_license_contract() -> None:
     assert hashlib.sha256(license_bytes).hexdigest() == LICENSE_SHA256
 
 
-def test_release_version_is_exactly_0_4_1_everywhere() -> None:
-    expected = "0.4.1"
+def test_release_version_is_exactly_0_5_0_everywhere() -> None:
+    expected = "0.5.0"
     project = tomllib.loads(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
@@ -327,7 +329,7 @@ def test_wheel_metadata_license_and_entrypoints(
         assert "third-party-components.toml" not in names
 
     assert metadata["Name"] == "ai-mechanical-3dcad-design-agent"
-    assert metadata["Version"] == "0.4.1"
+    assert metadata["Version"] == "0.5.0"
     assert metadata["Summary"] == (
         "Deterministic mechanical 3D CAD workflows, knowledge, validation, "
         "and MCP tools for coding agents"
@@ -449,7 +451,7 @@ def test_sdist_rebuilds_and_installs_without_repository_access(
     )
     assert imported.returncode == 0, imported.stderr
     version, module_path = imported.stdout.splitlines()
-    assert version == "0.4.1"
+    assert version == "0.5.0"
     assert Path(module_path).is_relative_to(venv)
 
     help_result = run([str(cli), "--help"], cwd=outside, environment=environment)

@@ -428,8 +428,26 @@ class MigrationTests(unittest.TestCase):
                     "015_product_family_match_decisions.sql",
                     "016_design_approval_envelopes.sql",
                     "017_design_lesson_single_confirmation.sql",
+                    "018_design_job_obligations.sql",
                 ],
             )
+
+    def test_design_job_obligation_migration_is_scoped_and_append_only(self) -> None:
+        sql = _migration_text("018_design_job_obligations.sql")
+        normalized = " ".join(sql.split())
+
+        assert "CREATE TABLE IF NOT EXISTS design_job_obligation_decisions" in sql
+        assert "scope_sha256 char(64) NOT NULL" in normalized
+        assert "engineering_scope jsonb NOT NULL" in normalized
+        assert "standard_parts_assessment" in sql
+        assert "assembly_assessment" in sql
+        assert "FOREIGN KEY (job_id,organization_id,design_group_id)" in normalized
+        assert (
+            "FOREIGN KEY (working_copy_id,job_id,organization_id,design_group_id)"
+            in normalized
+        )
+        assert "decisions are append-only" in sql
+        assert "BEFORE UPDATE OR DELETE" in normalized
 
     def test_single_confirmation_migration_is_additive_and_fail_closed(self) -> None:
         sql = _migration_text("017_design_lesson_single_confirmation.sql")

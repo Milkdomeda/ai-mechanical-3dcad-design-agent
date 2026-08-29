@@ -138,6 +138,9 @@ EXPECTED_SERVICE_METHOD_CAPABILITIES = {
     "design_job_new_working_copy_create": request(
         "design_job_workspace", "freecadcmd"
     ),
+    "design_job_obligations_resolve": request(
+        "design_job_workspace", "postgresql"
+    ),
     "design_change_record": request("cad_working_copy"),
     "design_change_review": request("cad_working_copy"),
     "design_approval_envelope_get": request("cad_working_copy"),

@@ -25,6 +25,23 @@ requests, extracts geometry, stores audit state, retrieves approved knowledge,
 and projects relationships. Semantic reasoning belongs to the connected coding
 agent or MCP client.
 
+## MCP exposure and engineering obligations
+
+The MCP registers one immutable tool profile at startup: `design`,
+`family-knowledge`, `maintenance`, or the backward-compatible `all`. Profiles
+hide unrelated schemas from the connected model; they do not delete Service
+operations or weaken PostgreSQL gates. Unknown profiles fail closed.
+
+Mechanical design is not encoded as one global sequence. PostgreSQL stores
+append-only standard-parts and assembly conclusions bound to a canonical
+`EngineeringScope/v1` SHA-256, while Product Family and retrieval outcomes are
+derived from their existing authoritative records. The read model can expose
+several allowed actions simultaneously. Scope triggers reject contradictory
+`not_applicable` conclusions; scope drift reopens the affected questions.
+Approved modeling may begin with an expanded assembly at `required_pending`,
+but delivery still requires `required_passed` plus the existing same-revision
+assembly and geometry validation gates.
+
 The previously recorded Windows integration boundary is Windows 11 x64 with
 CPython 3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit documented
 in [Windows release acceptance](WINDOWS_RELEASE_ACCEPTANCE.md). The v0.3 Design
@@ -115,7 +132,7 @@ provision loopback-only PostgreSQL/pgvector and Neo4j services for local and
 evaluation use, but it never owns, mounts, or executes migrations. The
 installed package owns PostgreSQL and Neo4j migration resources and the
 installed `mechanical-design database bootstrap` command applies and verifies
-them. Production provisioning remains outside the version 0.4.1 boundary. See
+them. Production provisioning remains outside the version 0.5.0 boundary. See
 [Database deployment](DATABASE_DEPLOYMENT.md).
 
 ## Model analysis and working copies

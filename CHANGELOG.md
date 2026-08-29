@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.4.1 - Unreleased
+## 0.5.0 - Unreleased
+
+- Add adaptive Product Family, knowledge-retrieval, standard-parts, and
+  assembly obligations whose conclusions are mandatory but whose order and
+  depth remain proportional to the approved design scope.
+- Add strict `EngineeringScope/v1` component plans, append-only scope-hash
+  decisions, stale-scope invalidation, and mutation/delivery enforcement.
+- Add `design`, `family-knowledge`, `maintenance`, and backward-compatible
+  `all` MCP exposure profiles; the recommended ordinary-design profile exposes
+  32 canonical tools without removing Service capabilities.
+- Add `design_job_obligations_resolve` and an additive adaptive obligation read
+  model to Design Job status.
 
 - Simplify the default Design Lessons workflow to one engineer confirmation
   after the complete immutable Review Card is displayed.

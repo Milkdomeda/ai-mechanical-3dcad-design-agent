@@ -6,7 +6,7 @@ AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.4.1.
+0.5.0.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,8 +15,10 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.4.1 adds a single-confirmation Design Lessons publication workflow
-with immutable reviewed-no-publication decisions. It retains the v0.4.0
+Version 0.5.0 adds adaptive engineering obligations and MCP tool-exposure
+profiles while retaining the single-confirmation Design Lessons workflow and
+immutable reviewed-no-publication decisions from the combined 0.4.1 changes.
+It retains the v0.4.0
 PostgreSQL-authoritative Design Intent Approval Envelopes, semantic
 authorization for autonomous in-envelope CAD repair, optional Product Family
 matching, canonical FreeCAD 1.1.3 FCStd archive acceptance, safe
@@ -49,6 +51,10 @@ contain no production credentials or real project data.
 - Provider-aware standard-part lookup and provenance.
 - FreeCAD model, mechanical-interface, and `AssemblyCompleteness/v2` validation.
 - Stable CLI and MCP tool schemas for coding agents and compatible MCP clients.
+- Adaptive Product Family, knowledge, standard-parts, and assembly conclusions
+  without imposing a fixed mechanical-design sequence.
+- Task-focused MCP profiles that reduce model-visible tool choice while the
+  complete compatibility surface remains available.
 
 ## Agent instructions and skills
 
@@ -234,11 +240,21 @@ ready.
 Select the workspace explicitly or with the modern environment setting:
 
 ```bash
-MECH_DESIGN_WORKSPACE=/path/to/mechanical-design-workspace mechanical-design-mcp
+MECH_DESIGN_WORKSPACE=/path/to/mechanical-design-workspace \
+MECH_DESIGN_MCP_TOOL_PROFILE=design \
+mechanical-design-mcp
 ```
 
 The MCP server exposes deterministic tools; semantic reasoning remains the
 responsibility of the connected coding agent or MCP client.
+
+`design` is the recommended profile for ordinary mechanical design and exposes
+32 canonical tools. `family-knowledge` focuses on Product Family onboarding and
+knowledge curation; `maintenance` exposes owner/administrative operations; and
+`all` preserves the complete backward-compatible surface. An unset profile
+defaults to `all`; an unknown profile fails closed at startup. Tool profiles
+change only model-visible schemas, not the underlying Service or engineering
+gates.
 
 ## Configurable runtime capabilities
 
@@ -266,6 +282,14 @@ model revision; new designs may be source-less. `design_knowledge_retrieve`
 builds `DesignContext/v2` and records its receipt. Specialized family knowledge
 is available only after explicit family authority; similarity never grants
 scope.
+
+The first Design Intent in the recommended `design` profile also carries an
+`EngineeringScope/v1` component plan. Product Family, retrieval, standard-part,
+and assembly obligations can be resolved in any sensible order. A simple
+custom plate can record `no_match`/`not_applicable` conclusions immediately; a
+mechanism expands standard-part and assembly work only when its scope triggers
+them. Scope-hash drift reopens affected conclusions, and delivery of an
+assembly requires same-revision passing evidence.
 
 The default post-delivery lesson workflow is:
 
