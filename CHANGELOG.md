@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 - 2026-08-30
+
+- Normalize lightweight design-root containment through the secure filesystem
+  backend so canonical Windows `\\?\` paths compare correctly with ordinary
+  drive-letter spellings without weakening workspace boundaries.
+- Use a valid synthetic x64 PE fixture for the cross-platform FreeCADCmd
+  bootstrap test so Windows retains its executable trust preflight.
+
 ## 0.6.0 - 2026-08-30
 
 - Make the lightweight filesystem-backed design session the default workflow,

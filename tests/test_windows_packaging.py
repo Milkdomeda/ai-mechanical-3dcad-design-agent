@@ -635,7 +635,7 @@ def test_windows_w4_prepares_and_proves_project_wheel_offline_cache() -> None:
         ) == {
             "all_inside_venv": True,
             "resources": sorted(REQUIRED_INSTALLED_RESOURCES),
-            "version": "0.6.0",
+            "version": "0.6.1",
         }
 
 
@@ -688,7 +688,7 @@ def test_windows_clean_installed_wheel_core_contract() -> None:
         assert inventory == {
             "all_inside_venv": True,
             "resources": sorted(REQUIRED_INSTALLED_RESOURCES),
-            "version": "0.6.0",
+            "version": "0.6.1",
         }
 
         initialized = run_checked(
