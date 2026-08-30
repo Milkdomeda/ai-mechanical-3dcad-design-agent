@@ -177,11 +177,15 @@ class LightweightDesignService:
         if not root.is_absolute():
             root = workspace / root
         try:
-            root.resolve(strict=False).relative_to(workspace)
+            relative_root = relative_managed_path(
+                root,
+                workspace,
+                allow_missing_leaf=True,
+            )
         except ValueError as exc:
             raise ValueError("design root must remain inside the workspace") from exc
         return ensure_managed_directory(
-            root, parents=True, exist_ok=True
+            workspace / relative_root, parents=True, exist_ok=True
         ).path
 
     def _root_for(self, design_id: str, *, must_exist: bool) -> Path:

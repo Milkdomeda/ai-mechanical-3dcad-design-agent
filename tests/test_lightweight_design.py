@@ -10,7 +10,7 @@ import pytest
 from mechanical_design_agent.config import LightweightDesignSettings
 from mechanical_design_agent.hashing import file_sha256
 from mechanical_design_agent.lightweight_design import LightweightDesignService
-from mechanical_design_agent.secure_fs import FileIdentity
+from mechanical_design_agent.secure_fs import FileIdentity, ManagedPath
 
 
 def _fcstd(*, object_name: str | None = None) -> bytes:
@@ -104,6 +104,44 @@ def test_new_design_creates_local_session_without_database(tmp_path: Path) -> No
     assert state["model"]["seed_sha256"] == file_sha256(root / "model.FCStd")
     assert (root / "validation").is_dir()
     assert (root / "output").is_dir()
+
+
+def test_design_root_containment_uses_backend_canonical_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    canonical_workspace = tmp_path / "canonical-workspace"
+    canonical_root = canonical_workspace / "designs"
+
+    monkeypatch.setattr(
+        "mechanical_design_agent.lightweight_design.validate_managed_path",
+        lambda path, allow_missing_leaf: ManagedPath(
+            canonical_workspace,
+            FileIdentity(volume=1, file_index=10),
+            canonical_workspace,
+        ),
+    )
+
+    def relative(path: Path, root: Path, *, allow_missing_leaf: bool) -> Path:
+        assert path == tmp_path / "designs"
+        assert root == canonical_workspace
+        assert allow_missing_leaf is True
+        return Path("designs")
+
+    monkeypatch.setattr(
+        "mechanical_design_agent.lightweight_design.relative_managed_path",
+        relative,
+    )
+    monkeypatch.setattr(
+        "mechanical_design_agent.lightweight_design.ensure_managed_directory",
+        lambda path, parents, exist_ok: ManagedPath(
+            canonical_root,
+            FileIdentity(volume=1, file_index=11),
+            canonical_workspace,
+        ),
+    )
+
+    assert service._ensure_root() == canonical_root
 
 
 def test_start_is_idempotent_for_matching_design(tmp_path: Path) -> None:

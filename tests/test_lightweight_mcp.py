@@ -15,6 +15,16 @@ def _tool(server: object, name: str):
     return server._tool_manager._tools[name].fn
 
 
+def _fake_x64_freecadcmd_bytes() -> bytes:
+    """Return the smallest fixture accepted by the Windows PE trust preflight."""
+    payload = bytearray(70)
+    payload[:2] = b"MZ"
+    payload[0x3C:0x40] = (64).to_bytes(4, "little")
+    payload[64:68] = b"PE\0\0"
+    payload[68:70] = (0x8664).to_bytes(2, "little")
+    return bytes(payload)
+
+
 def test_default_tools_use_injected_lightweight_services_without_legacy_startup() -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -76,7 +86,7 @@ def test_lightweight_bootstrap_settings_do_not_require_database(
     workspace = tmp_path / "workspace"
     initialize_workspace(workspace=workspace, actor_id="agent", dry_run=False)
     executable = tmp_path / "FreeCADCmd"
-    executable.write_bytes(b"reviewed executable")
+    executable.write_bytes(_fake_x64_freecadcmd_bytes())
     pinned = read_managed_file(executable)
     monkeypatch.setattr(
         "mechanical_design_agent.bootstrap_runtime.run_freecad_version",
