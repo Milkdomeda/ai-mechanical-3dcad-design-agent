@@ -10,7 +10,11 @@ import pytest
 from mechanical_design_agent.config import LightweightDesignSettings
 from mechanical_design_agent.hashing import file_sha256
 from mechanical_design_agent.lightweight_design import LightweightDesignService
-from mechanical_design_agent.secure_fs import FileIdentity, ManagedPath
+from mechanical_design_agent.secure_fs import (
+    FileIdentity,
+    ManagedPath,
+    same_managed_path,
+)
 
 
 def _fcstd(*, object_name: str | None = None) -> bytes:
@@ -96,7 +100,7 @@ def test_new_design_creates_local_session_without_database(tmp_path: Path) -> No
     root = tmp_path / "designs" / "basketball-carrier"
     state = json.loads((root / "design.json").read_text(encoding="utf-8"))
     assert result["status"] == "approved"
-    assert result["model_path"] == str(root / "model.FCStd")
+    assert same_managed_path(Path(str(result["model_path"])), root / "model.FCStd")
     assert state["schema_version"] == "LightweightDesignSession/v1"
     assert state["model_classification"] == "new_design"
     assert state["approval"] == {"state": "APPROVE", "text": "approved"}

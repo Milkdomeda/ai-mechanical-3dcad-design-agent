@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from mechanical_design_agent.bootstrap_runtime import BootstrapRuntime
-from mechanical_design_agent.secure_fs import read_managed_file
+from mechanical_design_agent.secure_fs import (
+    read_managed_file,
+    relative_managed_path,
+    same_managed_path,
+)
 from mechanical_design_agent.server import create_mcp
 from mechanical_design_agent.workspace_bootstrap import initialize_workspace
 
@@ -103,8 +107,12 @@ def test_lightweight_bootstrap_settings_do_not_require_database(
 
     settings = runtime.lightweight_design_settings()
 
-    assert settings.workspace == workspace
-    assert settings.design_root == workspace / "designs"
-    assert settings.freecadcmd == executable
+    assert same_managed_path(settings.workspace, workspace)
+    assert relative_managed_path(
+        settings.design_root,
+        settings.workspace,
+        allow_missing_leaf=True,
+    ) == Path("designs")
+    assert same_managed_path(settings.freecadcmd, executable)
     assert settings.freecadcmd_sha256 == pinned.sha256
     assert not hasattr(settings, "database_url")
