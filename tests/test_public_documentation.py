@@ -36,10 +36,7 @@ def test_public_identity_and_release_boundary() -> None:
     assert text.startswith("# AI Mechanical 3DCAD Design Agent")
     assert "coding agent" in text.lower()
     assert "does not include an embedded language-model client" in text.lower()
-    assert (
-        "standalone llm orchestration is not included in version 0.6.1"
-        in text.lower()
-    )
+    assert "does not replace engineering review" in text.lower()
     assert "ai-mechanical-3dcad-design-agent" in text
 
 
@@ -61,7 +58,7 @@ def test_lightweight_design_is_public_and_governance_is_optional() -> None:
     assert "design_record_result" in agents
     assert "optional `governed` profile" in agents
     assert "mechanical-design-job-workspace" in readme
-    assert "Three project-owned skills" in readme
+    assert "Three project-owned Agent Skills" in readme
     assert "`superpowers:brainstorming`" in readme
     assert "optional" in readme.casefold()
     assert "not bundled" in readme.casefold()
@@ -251,18 +248,18 @@ def test_public_readme_uses_modern_synthetic_commands() -> None:
     text = README.read_text(encoding="utf-8")
     for fragment in (
         "mechanical-design init",
+        "mechanical-design-mcp",
+    ):
+        assert fragment in text
+    deployment = DATABASE_DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
+    for fragment in (
         "mechanical-design family create",
         "--organization-id example-org",
         "--design-group-id example-design-group",
         "--family-id example-family",
         "mechanical-design status",
-        "mechanical-design doctor",
-        "mechanical-design-mcp",
     ):
-        assert fragment in text
-    for line in text.splitlines():
-        if "smoke-fixture" in line:
-            assert "--source" in line
+        assert fragment in deployment
 
 
 def test_env_example_is_comment_only_and_modern_first() -> None:

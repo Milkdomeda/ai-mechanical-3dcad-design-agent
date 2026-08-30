@@ -148,9 +148,6 @@ def test_release_version_is_exactly_0_6_1_everywhere() -> None:
     assert package["version"] == expected
     assert third_party["project_version"] == expected
     assert f'__version__ = "{expected}"' in init_text
-    assert f"Version {expected}" in (PROJECT_ROOT / "README.md").read_text(
-        encoding="utf-8"
-    )
     assert f"## {expected} -" in (PROJECT_ROOT / "CHANGELOG.md").read_text(
         encoding="utf-8"
     )

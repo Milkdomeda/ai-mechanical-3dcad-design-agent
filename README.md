@@ -2,125 +2,107 @@
 
 ![AI-generated mechanical CAD product showcase](docs/assets/ai-mechanical-design-showcase.gif)
 
-AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
-workflows, engineering knowledge, validation, and MCP tools for a coding agent
-or another compatible MCP client. The core package does not include an embedded
-language-model client. Standalone LLM orchestration is not included in version
-0.6.1.
+AI Mechanical 3DCAD Design Agent is an open-source framework for using coding
+agents and large language models to design mechanical parts and assemblies in
+FreeCAD. It combines AI reasoning with deterministic workspace management,
+standard-part selection, engineering knowledge, model validation, and
+traceable design results.
 
-The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
-compatibility surfaces remain stable: the Python package is
-`mechanical_design_agent`, the CLI is `mechanical-design`, and the MCP server is
-`mechanical-design-mcp`.
+The project provides the `mechanical-design` CLI and `mechanical-design-mcp`
+server. It works with a compatible coding agent and an external FreeCAD GUI MCP
+connection. The core package does not include an embedded language-model
+client, and it does not replace engineering review.
 
-## Release boundary
+## What it can do
 
-Version 0.6.1 uses the default lightweight workflow
-described below while preserving explicit governed compatibility.
+- Turn natural-language mechanical requirements into reviewable design intent
+  and controlled FreeCAD work.
+- Create a new design or resume an existing design in a stable workspace
+  directory, including read-only snapshots of supplied source CAD.
+- Use Product Family knowledge, prior Design Lessons, and approved engineering
+  context when they are available.
+- Find and register bearings, fasteners, gears, motors, profiles, guide rails,
+  and other standard components with source and SHA-256 provenance.
+- Drive interactive FreeCAD modeling through an external GUI MCP and use
+  FreeCADCmd for applicable extraction and verification tasks.
+- Validate geometry, dimensions, placements, interfaces, assemblies,
+  fasteners, BOM consistency, and exact-revision evidence.
+- Correct validation failures within the approved design intent and record the
+  final FCStd model with its validation report and visual evidence.
+- Review completed work and publish reusable Design Lessons into the governed
+  knowledge system.
 
-The default workflow is a lightweight AI mechanical-design experimentation
-path: one natural-language design approval, optional knowledge retrieval,
-direct FreeCAD modeling, exact-hash validation, automatic correction, and
-result recording in local filesystem state. PostgreSQL-backed Design Jobs,
-Change Sets, Approval Envelopes, mutation authorization, obligations, and
-delivery approval remain available only through the explicit `governed`
-compatibility profile. The distribution retains Product Family Knowledge,
-Design Lessons, standard-part provenance, validation resources, safe
-FreeCADCmd execution, and package-owned database migrations. It does not
-bundle a language model, CAD model library, generated design output, database
-services, or a FreeCAD GUI MCP integration.
+## Featured tools and capabilities
 
-See [Architecture](docs/ARCHITECTURE.md) for trust boundaries and the
-[Design Job workspace guide](docs/DESIGN_JOB_WORKSPACES.md) for routing,
-directory, migration, and recovery contracts. The
-[Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md) describes the
-operational knowledge workflow. A supported local and evaluation database path
-is documented in [Database deployment](docs/DATABASE_DEPLOYMENT.md). The public
-[environment template](.env.example) and
-[synthetic product-family example](examples/product_families/example-family.json)
-contain no production credentials or real project data.
+| Capability | Purpose |
+| --- | --- |
+| `design_start` | Creates or safely resumes one design workspace after the user approves the design intent. |
+| `design_knowledge_retrieve` | Retrieves applicable Product Family knowledge and Design Lessons without blocking ordinary design when no match exists. |
+| Standard-part tools | Inspect configured providers and register downloaded components with catalog provenance. |
+| `design_record_result` | Accepts a result only when the FCStd hash matches the validation report and Markdown/PNG evidence. |
+| Product Family workflow | Learns a product group, compares models, and publishes reviewed engineering knowledge. |
+| Design Lesson workflow | Filters, reviews, and publishes reusable lessons from completed design work. |
+| Governed workflow | Adds Design Jobs, approval envelopes, scope-bound obligations, lifecycle evidence, and delivery approval when stronger audit control is required. |
 
-## Capabilities
+The default `design` MCP profile exposes seven tools for ordinary design work.
+Additional `governed`, `family-knowledge`, `maintenance`, and `all` profiles
+keep specialized or administrative tools out of the model's normal tool list.
 
-- Explicit, idempotent workspace initialization with structured diagnostics.
-- Filesystem-backed `designs/<design-id>/` sessions with no database dependency.
-- Natural Chinese and English `APPROVE` / `REJECT` / `UNCLEAR` semantics.
-- Empty-workspace first use and explicit product-family creation/selection.
-- FreeCADCmd extraction and package-owned FreeCAD scripts for applicable
-  headless workflows.
-- PostgreSQL/pgvector authoritative storage and a rebuildable Neo4j projection.
-- Scoped `DesignContext/v2` retrieval, auditable learning, and design lessons.
-- Provider-aware standard-part lookup and provenance.
-- FreeCAD model, mechanical-interface, and `AssemblyCompleteness/v2` validation.
-- Stable CLI and MCP tool schemas for coding agents and compatible MCP clients.
-- Best-effort knowledge retrieval that does not block ordinary CAD when no
-  match exists or the optional backend is unavailable.
-- Task-focused MCP profiles that reduce model-visible tool choice while the
-  complete compatibility surface remains available.
-
-## Agent instructions and skills
-
-The repository root [`AGENTS.md`](AGENTS.md) defines the recommended operating
-boundary for coding agents. Three project-owned skills are included:
-
-- [`mechanical-design-job-workspace`](.agents/skills/mechanical-design-job-workspace/SKILL.md)
-  operates the optional governed compatibility workflow only. Ordinary CAD does
-  not use this skill or create a Design Job.
+Three project-owned Agent Skills are included:
 
 - [`freecad-standard-parts`](.agents/skills/freecad-standard-parts/SKILL.md)
-  selects and imports reusable standard mechanical components while preserving
-  catalog provenance and BOM metadata.
 - [`freecad-model-validation`](.agents/skills/freecad-model-validation/SKILL.md)
-  validates FCStd and STEP geometry, same-revision evidence, standard-part
-  provenance, and mandatory fastener installation contracts.
+- [`mechanical-design-job-workspace`](.agents/skills/mechanical-design-job-workspace/SKILL.md), for the optional governed workflow
 
-These skills are source-controlled project capabilities. They do not install
-themselves into a user's global agent environment.
-
-### Optional: Superpowers brainstorming
-
-The external [`superpowers:brainstorming`](https://github.com/obra/superpowers)
-skill is recommended for turning an incomplete mechanical-design request into
-reviewable requirements before modeling. It is optional, not bundled, not
-installed, and not required by this project.
-
-- **Codex App:** open **Plugins**, find **Superpowers** in the Coding category,
-  and choose **Install**.
-- **Codex CLI:** run `/plugins`, search for `superpowers`, and select
-  **Install Plugin**.
-
-See [Optional agent workflows](docs/OPTIONAL_AGENT_WORKFLOWS.md) for the scope,
-installation boundary, and fallback behavior.
+The external
+[`superpowers:brainstorming`](https://github.com/obra/superpowers) skill is an
+optional recommendation for requirement discovery. It is not bundled, not
+installed automatically, and not required.
 
 ## Architecture
 
 ![AI Mechanical 3DCAD Design Agent architecture](docs/assets/ai-mechanical-design-agent-architecture-v2.png)
 
-## FreeCAD integration boundary
+- The coding agent or LLM interprets requirements, makes engineering
+  decisions, and selects the appropriate tools.
+- The Mechanical Design MCP manages design state, knowledge, standard-part
+  provenance, validation bindings, and result records.
+- The external FreeCAD GUI MCP performs interactive inspection and CAD edits in
+  the user's running FreeCAD application.
+- FCStd files and evidence remain in the selected workspace. PostgreSQL is the
+  authoritative store for optional governed knowledge and lifecycle data;
+  Neo4j is a rebuildable relationship projection.
 
-A compatible external FreeCAD GUI MCP integration is required for the
-recommended interactive FreeCAD workflow. It is not bundled with the core
-Python distribution. Interactive viewing, selection, measurement, modeling,
-and modification inside the FreeCAD GUI depend on that external integration.
+See [Architecture and trust boundaries](docs/ARCHITECTURE.md) for the complete
+component and authority model.
 
-Bootstrap, configuration, knowledge, database, standard-part, and applicable
-headless/FreeCADCmd capabilities can operate without the GUI MCP. This project
-does not vendor or relicense an external FreeCAD GUI MCP.
+## Design process
 
-See the [FreeCAD GUI MCP integration boundary](docs/FREECAD_GUI_MCP_INTEGRATION.md)
-for the exact validated upstream identity, installation boundary, localhost
-security contract, and release acceptance matrix.
+```text
+Mechanical requirement
+        ↓
+Clarify function, interfaces, dimensions, loads, materials, and constraints
+        ↓
+Present the design intent and obtain user approval
+        ↓
+Create or resume the design workspace
+        ↓
+Retrieve applicable knowledge and evaluate standard components
+        ↓
+Model and inspect the part or assembly in FreeCAD
+        ↓
+Validate the exact FCStd revision and correct detected failures
+        ↓
+Record the final model, report, and visual evidence
+        ↓
+Optionally review and publish reusable Design Lessons
+```
 
-The previously recorded Windows integration boundary is Windows 11 x64,
-CPython 3.12, FreeCAD 1.1.3 x64, and the exact external MCP commit recorded
-above. The v0.3 Design Job live workflow requires a new protected-host run
-before release certification. See the
-[Windows release acceptance](docs/WINDOWS_RELEASE_ACCEPTANCE.md) guide for the
-fixed-NTFS, second-volume, wheel-first, protected-host, and portable ZIP
-limitations. No other Windows, Python, FreeCAD, architecture, or MCP version is
-implied.
+The depth of each activity follows the engineering problem. A simple mounting
+plate and a multi-component mechanism use the same design principles without
+being forced through identical analysis work.
 
-## Install
+## Install and run
 
 Python 3.12 or newer is required.
 
@@ -128,205 +110,77 @@ Python 3.12 or newer is required.
 python -m pip install ai-mechanical-3dcad-design-agent
 ```
 
-## Initialize a workspace
-
-The CLI uses an explicit workspace. Initialization creates only managed
-configuration and artifact directories; a new workspace contains zero product
-families.
+Initialize a workspace on macOS or Linux:
 
 ```bash
 mechanical-design init --workspace /path/to/mechanical-design-workspace
-```
-
-PowerShell uses the same CLI contract and native path syntax:
-
-```powershell
-mechanical-design init --workspace C:\path\to\mechanical-design-workspace
-$env:MECH_DESIGN_WORKSPACE = "C:\path\to\mechanical-design-workspace"
-```
-
-These path examples describe the portable configuration contract. Windows
-certification is limited to the exact boundary in the Windows release guide.
-
-## Optional: create and select a product family
-
-A Product Family is not required for an ordinary Design Job. Establish the
-organization and design-group scope independently when initializing a new
-workspace:
-
-```bash
-mechanical-design init \
-  --workspace /path/to/mechanical-design-workspace \
-  --organization-id example-org \
-  --design-group-id example-design-group
-```
-
-Create a family only when the design belongs to a reusable governed family:
-
-```bash
-mechanical-design family create \
-  --workspace /path/to/mechanical-design-workspace \
-  --organization-id example-org \
-  --organization-name "Example Organization" \
-  --design-group-id example-design-group \
-  --design-group-name "Example Design Group" \
-  --family-id example-family \
-  --family-name "Example Product Family" \
-  --set-default
-```
-
-The checked-in synthetic JSON is documentation only. It is never copied,
-auto-discovered, selected, or loaded as a runtime default.
-
-At request intake, `product_family_inventory` reads authorized discovery
-metadata from PostgreSQL and `product_family_match` records the match decision.
-An exact existing binding or approved identifier may authorize the family;
-descriptor-only candidates require user confirmation, and no credible match
-continues with a null family. `workspace_product_family_list` reports bootstrap
-JSON configuration only and is not the authoritative family inventory.
-
-## Lightweight design sessions
-
-Ordinary designs use `designs/<design-id>/design.json` and `model.FCStd` inside
-the selected workspace. `design_start` creates or idempotently resumes the
-session after one approval. Existing source CAD is snapshotted read-only.
-`design_record_result` marks completion only when the validation report and
-Markdown/PNG evidence match the exact current FCStd SHA-256.
-
-## Optional governed Design Jobs and legacy migration
-
-Design Jobs are retained for users who explicitly select the `governed`
-profile for audit-heavy or multi-user work. They are not prerequisites for an
-ordinary design and existing Job data is not migrated or deleted by the
-lightweight workflow.
-
-Upgrading a workspace that contains pre-Job working copies is an explicit,
-receipt-bound operation. First save the UTF-8 JSON dry-run output:
-
-```bash
-mechanical-design job migrate-legacy --dry-run --workspace /path/to/mechanical-design-workspace
-```
-
-Review that plan and its `receipt_sha256`, then apply the exact saved plan:
-
-```bash
-mechanical-design job migrate-legacy --apply \
-  --workspace /path/to/mechanical-design-workspace \
-  --plan-file /path/to/legacy-plan.json \
-  --receipt-sha256 <receipt-sha256> \
-  --confirmation "迁移旧设计 <receipt-sha256>"
-```
-
-Migration creates one independent Legacy Job per old working copy, verifies the
-FCStd bytes and hashes, retains the original file, and writes an immutable
-receipt in the new Job. It never guesses that two old designs should be merged.
-Repeated apply is idempotent; a changed source or plan is rejected. `job doctor`
-reports unmigrated, incomplete, and hash-divergent Legacy bindings.
-
-The complete new/resume/independent decision matrix, portable directory
-contract, macOS and PowerShell examples, Product Family and Design Lesson
-provenance rules, compatibility window, and recovery codes are documented in
-[Design Job workspaces](docs/DESIGN_JOB_WORKSPACES.md).
-
-## Status, diagnostics, and smoke validation
-
-```bash
-mechanical-design status --workspace /path/to/mechanical-design-workspace
-mechanical-design doctor --workspace /path/to/mechanical-design-workspace
-mechanical-design smoke-fixture --workspace /path/to/mechanical-design-workspace --source /path/to/model.FCStd
-```
-
-`status` and `doctor` report the four-state diagnostic model: `ok`, `warning`,
-`setup_required`, and `blocked`. Operational commands fail closed with a
-structured setup/configuration response when their required capability is not
-ready.
-
-## Start the MCP server
-
-Select the workspace explicitly or with the modern environment setting:
-
-```bash
-MECH_DESIGN_WORKSPACE=/path/to/mechanical-design-workspace \
-MECH_DESIGN_MCP_TOOL_PROFILE=design \
+export MECH_DESIGN_WORKSPACE=/path/to/mechanical-design-workspace
 mechanical-design-mcp
 ```
 
-The MCP server exposes deterministic tools; semantic reasoning remains the
-responsibility of the connected coding agent or MCP client.
+On Windows PowerShell:
 
-`design` is the default profile and exposes seven tools: system status,
-`design_start`, optional `design_knowledge_retrieve`, `design_record_result`,
-and the applicable standard-part tools. `governed` exposes the historical Job,
-change, approval, validation-record, and delivery lifecycle. `family-knowledge`
-focuses on Product Family onboarding and knowledge curation; `maintenance`
-exposes owner operations; and explicit `all` exposes the compatibility union.
-An unknown profile fails closed at startup.
-
-## Configurable runtime capabilities
-
-PostgreSQL/pgvector and Neo4j are supported configurable runtime capabilities.
-The installed package owns and loads their schema migrations. The public
-`compose.yaml` can provision loopback-only services for local and evaluation
-use; run it with an explicit protected env file, then run
-`mechanical-design database bootstrap` from the installed wheel. See the
-[database deployment guide](docs/DATABASE_DEPLOYMENT.md) for the exact
-`docker compose` flow, image digests, persistence, cleanup, and platform
-boundaries.
-
-This Compose path is not a production deployment. It does not define remote
-access, production secrets, backups, high availability, monitoring, or a
-managed database service. Job-CAD execution requires the exact official
-FreeCADCmd 1.1.3 executable plus an explicitly reviewed
-`MECH_DESIGN_FREECADCMD_SHA256`; discovery never substitutes version text for
-that pinned executable identity and digest.
-
-## Design and knowledge workflow
-
-The ordinary flow is:
-
-```text
-request -> clarification -> short proposal -> one approval
--> optional scoped knowledge -> CAD -> validation -> automatic correction
--> design_record_result -> final result
+```powershell
+mechanical-design init --workspace "D:\Mechanical Design Workspace"
+$env:MECH_DESIGN_WORKSPACE = "D:\Mechanical Design Workspace"
+mechanical-design-mcp
 ```
 
-`design_knowledge_retrieve` returns `DesignContext/v2` when the durable backend
-is available. Matches may improve the design; no match or an unavailable
-backend records a warning and continues unless the user explicitly required
-that named knowledge. Specialized family knowledge still requires authority;
-similarity never grants scope.
+The default MCP profile is `design`. Select another profile only for the
+corresponding workflow:
 
-Design Lesson publication is a separate, optional durable workflow:
-
-```text
-validated design -> design_lesson_review_context
--> material/generalizable summary when warranted
--> design_lesson_review_prepare -> one immutable review card
--> display the complete card -> engineer says "确认发布设计经验" once
--> published after storage, projection, and retrieval verification
+```bash
+MECH_DESIGN_MCP_TOOL_PROFILE=family-knowledge mechanical-design-mcp
 ```
 
-The agent calls `design_lesson_review_publish` with the internal Review ID; the
-engineer never copies it. A durable `publishing` result is retried through
-`design_lesson_review_status(retry=True)` without another confirmation. If no
-candidate survives engineering review, the agent displays the immutable
-screening card and `确认无可发布设计经验` records
-`reviewed-no-publishable-lesson` without creating shared knowledge. Model
-confirmation remains separate and never publishes a Lesson. The hash-bound
-`design_lesson_stage`,
-`design_lesson_staged_get`, `design_lesson_approve`, and
-`design_lesson_supersede` surfaces remain an expert/audit compatibility path.
+A compatible external FreeCAD GUI MCP is required for the recommended
+interactive FreeCAD workflow, including viewing, selection, measurement,
+modeling, and modification. It is not bundled with the core Python
+distribution. PostgreSQL/pgvector and Neo4j are optional for the default design
+workflow and are required for the applicable knowledge, Product Family, and
+governed capabilities.
 
-Completion uses mandatory exact-hash validation. FreeCAD model validation emits the
-model-detected fastener inventory bound to the same-revision FCStd SHA-256.
-`AssemblyCompleteness/v2` requires exactly-once fastened-joint assignment for
-every occurrence. Missing, duplicate, unknown, failed, or stale evidence is a
-mandatory model and assembly failure. `AssemblyCompleteness/v1` is rejected.
+The databases are configurable runtime capabilities. The public `compose.yaml`
+supports a loopback-only `docker compose` deployment for local and evaluation
+use; it is not a production deployment.
 
-## License boundary
+Use the public [environment template](.env.example) and follow:
 
-Project-owned source code is released under Apache License 2.0. Dependencies,
-external integrations, vendored components, submodules, and assets retain their
-own licenses and are not relicensed by this project. The machine-readable
-inventory is rendered into the public [Third-Party Notices](THIRD_PARTY_NOTICES.md);
-an entry in that index does not relicense a third-party component or CAD asset.
+- [FreeCAD GUI MCP integration](docs/FREECAD_GUI_MCP_INTEGRATION.md)
+- [Database deployment](docs/DATABASE_DEPLOYMENT.md)
+- [Windows release acceptance](docs/WINDOWS_RELEASE_ACCEPTANCE.md)
+
+## Operating boundaries
+
+- Supports macOS and Windows with Python 3.12 or newer. The current release
+  acceptance target is official FreeCAD 1.1.3.
+- The FreeCAD GUI MCP, language model, database services, CAD catalogs, and
+  generated design artifacts are not bundled with the Python package.
+- Local MCP and database services should remain bound to loopback interfaces;
+  remote access requires a separate security review.
+- Product Family association and durable knowledge services are optional for
+  ordinary design work.
+- Generated FCStd/STEP models, reports, screenshots, databases, credentials,
+  and customer-specific evidence remain outside the public source repository.
+- Validation proves the checks that ran against one exact model revision. It is
+  not finite-element analysis, manufacturing release, safety certification, or
+  legal confirmation of standards compliance.
+- Final engineering approval remains the responsibility of the user or an
+  authorized engineer.
+
+## Documentation
+
+- [Architecture and trust boundaries](docs/ARCHITECTURE.md)
+- [FreeCAD GUI MCP integration](docs/FREECAD_GUI_MCP_INTEGRATION.md)
+- [Design Job workspaces](docs/DESIGN_JOB_WORKSPACES.md)
+- [Engineer learning playbook](docs/ENGINEER_LEARNING_PLAYBOOK.md)
+- [Database deployment](docs/DATABASE_DEPLOYMENT.md)
+- [Optional agent workflows](docs/OPTIONAL_AGENT_WORKFLOWS.md)
+- [Windows release acceptance](docs/WINDOWS_RELEASE_ACCEPTANCE.md)
+- [Changelog](CHANGELOG.md)
+
+## License
+
+Project-owned source code is released under the Apache License 2.0. External
+dependencies, integrations, and assets retain their own licenses; see
+[Third-Party Notices](THIRD_PARTY_NOTICES.md).
