@@ -6,7 +6,7 @@ AI Mechanical 3DCAD Design Agent provides deterministic mechanical 3D CAD
 workflows, engineering knowledge, validation, and MCP tools for a coding agent
 or another compatible MCP client. The core package does not include an embedded
 language-model client. Standalone LLM orchestration is not included in version
-0.5.0.
+0.6.0.
 
 The public Python distribution is `ai-mechanical-3dcad-design-agent`. Existing
 compatibility surfaces remain stable: the Python package is
@@ -15,7 +15,7 @@ compatibility surfaces remain stable: the Python package is
 
 ## Release boundary
 
-Version 0.5.0 is being simplified around the default lightweight workflow
+Version 0.6.0 uses the default lightweight workflow
 described below while preserving explicit governed compatibility.
 
 The default workflow is a lightweight AI mechanical-design experimentation

@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "ai-mechanical-3dcad-design-agent"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp", extra = ["cli"] },

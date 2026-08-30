@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 - 2026-08-30
+
+- Make the lightweight filesystem-backed design session the default workflow,
+  with one natural-language approval followed by direct CAD mutation,
+  validation, bounded automatic correction, and result recording.
+- Add Chinese and English `APPROVE`, `REJECT`, and `UNCLEAR` approval semantics
+  without requiring a fixed confirmation phrase.
+- Keep Product Family Knowledge and Design Lessons as best-effort design inputs
+  that do not create lifecycle gates when no match or backend is available.
+- Move Design Jobs, Change Sets, Approval Envelopes, mutation authorization,
+  engineering obligations, and PostgreSQL lifecycle persistence into the
+  explicit `governed` compatibility profile.
+- Preserve standard-parts, FreeCAD/CadQuery modeling, model validation,
+  long-term knowledge storage, and existing governed APIs for compatibility.
+
 ## 0.5.0 - 2026-08-29
 
 - Add adaptive Product Family, knowledge-retrieval, standard-parts, and

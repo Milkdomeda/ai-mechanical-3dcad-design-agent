@@ -37,7 +37,7 @@ def test_public_identity_and_release_boundary() -> None:
     assert "coding agent" in text.lower()
     assert "does not include an embedded language-model client" in text.lower()
     assert (
-        "standalone llm orchestration is not included in version 0.5.0"
+        "standalone llm orchestration is not included in version 0.6.0"
         in text.lower()
     )
     assert "ai-mechanical-3dcad-design-agent" in text
