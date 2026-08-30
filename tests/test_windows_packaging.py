@@ -506,7 +506,7 @@ def test_w4_cache_preparation_uses_bound_python_same_cache_and_safe_stages(
 
 
 def _source_mcp_contract() -> dict[str, dict[str, object]]:
-    mcp = create_mcp()
+    mcp = create_mcp(tool_profile="all")
     return {
         name: tool.parameters
         for name, tool in sorted(mcp._tool_manager._tools.items())
@@ -741,6 +741,7 @@ def test_windows_clean_installed_wheel_core_contract() -> None:
 
         mcp_environment = dict(environment)
         mcp_environment["MECH_DESIGN_WORKSPACE"] = str(workspace)
+        mcp_environment["MECH_DESIGN_MCP_TOOL_PROFILE"] = "all"
         installed_contract, mcp_status, mcp_doctor = asyncio.run(
             _installed_mcp_contract(
                 installed.mcp,

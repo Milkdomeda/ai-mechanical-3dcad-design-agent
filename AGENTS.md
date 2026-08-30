@@ -35,39 +35,18 @@
 - Use `get_view` to inspect meaningful geometry changes. Confirm object names, placements, dimensions, shape state, and recompute results before advancing the design lifecycle.
 - The exact external FreeCAD GUI MCP identity is an integration boundary documented in `docs/FREECAD_GUI_MCP_INTEGRATION.md`; it is not vendored by the public repository. Change that accepted identity only in a dedicated maintenance change with provenance, license, security, compatibility, and regression review.
 
-## Product Job routing
+## Default lightweight design workflow
 
-- Treat a new design, existing model, resume, Product Family onboarding, or Design Lessons request as a product operation. A supplied Job UUID or display ID calls `design_job_get` for authorized state; do not treat that identity as a `design_job_resolve` query.
-- An explicitly independent demand calls `design_job_create` directly, even when similar Jobs exist. For continue/resume without an explicit ID, call `design_job_resolve` only for `active` and `blocked`: reuse the one same design candidate, return multiple candidates and stop, and with zero candidates clarify independent/new intent before creating. Never select or create from ambiguity.
-- New, existing, and resumed mechanical design use `mechanical_design`; Product Family intake/onboarding uses `product_family_onboarding`. Product Family review, knowledge, and database publication reuse that original onboarding Job. A Design Lesson uses only its originating `mechanical_design` Job; stop if the origin is missing or ambiguous and never create a replacement or onboarding Job.
-- Use `design_job_list`, `design_job_get`, `design_job_close`, or `design_job_reopen` only through the configured Mechanical Design MCP, never an arbitrary filesystem path, as Job identity.
-- Product work uses its Job workspace. Do not create a Git branch or Git worktree. Software changes to agent implementation, schemas, migrations, or tests may use the normal Git workflow. Explicitly split mixed product/software requests before acting.
-- Source snapshots, working copies, validation evidence, delivery records, Product Family knowledge, and Design Lessons must remain bound to their authoritative Job and expected revision. Preserve the resolved Job ID and stop when any required governed binding is unavailable or stale.
-- Product Family and Design Lesson database writes are Job operations. Changing their implementation or schema is software development.
-- Use `design_job_close` or `design_job_reopen` only with the exact current revision, reason, phase, and the user's matching confirmation. Do not provide confirmation on the user's behalf.
-
-## Managed model and change lifecycle
-
-- Classify every managed model as `existing_model` or `new_design`.
-- For an existing STEP or FCStd model, create the working copy through the Mechanical Design Agent and do not edit it unless it is uniquely bound to `source_model_revision_id`. Treat the source model as read-only.
-- For a new design, create and register the controlled working copy before substantive modeling. Keep FCStd as the source of truth for designed parts and assemblies.
-- Treat Product Family resolution, knowledge retrieval, standard-parts assessment, and assembly assessment as independent engineering obligations, not a fixed A → B → C pipeline. Every obligation needs an explicit conclusion, but order and depth must remain proportional to the approved scope.
-- Put one strict `EngineeringScope/v1` snapshot in the first Design Intent. Record the component plan, sourcing class, deliverable kind, motion, and assembly interfaces; bind screening decisions to its SHA-256 with `design_job_obligations_resolve`.
-- A simple custom single part may close standard parts and assembly as `not_applicable`. A triggered standard component must be searched or explicitly excepted with evidence. An assembly may use `required_pending` to begin approved modeling, but delivery requires `required_passed` and same-revision evidence.
-- Never use `not_applicable` to bypass a scope trigger. If the scope changes, treat earlier standard-parts and assembly conclusions as stale and resolve the affected obligations again.
-- Before proposing or applying a CAD change, call `design_knowledge_retrieve` for the applicable organization, design group, family, model, and working copy. A completed receipt with no matches is acceptable; a missing or `not_executed` receipt is not.
-- Keep proposals, approvals, applied changes, validation evidence, and delivery records bound to the exact working-copy revision and file hash. Do not reuse stale evidence after any geometry or metadata change.
-- When a new proposal replaces or abandons an unapplied proposal, close the old change with `design_change_close` as `superseded` or `cancelled`. Never mark a proposal as applied merely to clear a delivery gate.
-- Before the first substantive CAD mutation, record a complete Design Intent proposal with an Approval Envelope draft and obtain the user's explicit approval. The user may respond with the simple canonical `批准` or `修改方案`; keep internal change-set and envelope IDs in governed tool arguments and audit records rather than requiring the user to copy UUIDs.
-- After approval, record every CAD iteration with a complete semantic-impact declaration. Parameter tuning, feature details, clearance and interference repairs, geometry-validity repairs, validation-driven repairs, and implementation refinements may proceed autonomously only when `design_change_record` classifies them inside the active Approval Envelope.
-- Before every substantive CAD mutation, call `design_change_mutation_authorize` for the exact change set. Do not mutate when approval is absent, the envelope is stale, a material design-intent boundary is exceeded, or classification is incomplete or ambiguous.
-- Mechanism or architecture changes, key-interface or approved-function changes, exceeded explicit constraints, manufacturing-process or specified-material changes, new standard-part categories, and removed validation requirements require a successor Design Intent proposal and new user approval. Do not use percentage-only thresholds to decide materiality.
-- Do not call an approval or delivery operation on the user's behalf. Approval phrases must come from the user and match the operation being approved.
-- When the user confirms with “模型设计确认”, immediately summarize the material design lessons and call `design_confirmation_record`, even if another delivery gate is still pending. Continue the governed review and publication flow when the remaining gates become ready.
-- Model confirmation and Design Lesson publication are separate decisions. `模型设计确认` never approves or publishes a Design Lesson.
-- After delivery, call `design_lesson_review_context`, retain only material, generalizable, evidence-backed candidates, and prepare one immutable Review Card. Display the complete current card before requesting a decision. Treat requested edits or filtering as review feedback; prepare a replacement card and supersede the prior pending card.
-- For a publishable card, request only `确认发布设计经验`, keep the active Review ID and Job binding internal, and call `design_lesson_review_publish`. Report completion only for public status `published`. If status is `publishing`, retry the existing status path without requesting another confirmation.
-- If no candidate survives engineering review, display the complete immutable screening card, request only `确认无可发布设计经验`, and call `design_lesson_review_no_publish`. The terminal `reviewed-no-publishable-lesson` outcome must create no shared Design Lesson.
+- Ordinary new designs, existing-model edits, and resumptions use the default `design` MCP profile and one filesystem session under `designs/<design-id>/`. Do not create a Design Job, Working Copy record, Change Set, Approval Envelope, mutation authorization, engineering-obligation record, or delivery approval.
+- Classify the model as `new_design` or `existing_model`, clarify material geometry-affecting unknowns, present a short proposal, and obtain one natural-language approval. Treat clear Chinese or English approval as `APPROVE`, clear rejection as `REJECT`, and conditional, contradictory, or unknown language as `UNCLEAR`; never demand one canonical phrase.
+- After `APPROVE`, call `design_start`. The returned `model.FCStd` is the CAD source of truth. Existing FCStd/STEP inputs are snapshotted read-only; never edit the user's source file.
+- Call `design_knowledge_retrieve` before substantive modeling. Use applicable matches. A no-match or unavailable backend is nonblocking unless the user explicitly required a named Product Family or Design Lesson.
+- After approval, perform CAD edits and validation-driven corrections directly. Do not request another approval for parameter tuning, clearance repair, feature detail, or other implementation work inside the approved direction.
+- A changed function, mechanism, key interface, specified material, manufacturing process, or explicit user constraint requires conversational clarification and a new design-direction approval, not an enterprise lifecycle.
+- Validate the exact current FCStd, visually inspect it, correct failures automatically when safe, and call `design_record_result`. Only exact-hash passed evidence may set the session to `completed`.
+- The optional `governed` profile retains the historical Job/change/approval workflow for explicitly requested audit-heavy or multi-user work. It is never an ordinary-design prerequisite.
+- Product Family onboarding and Design Lesson publication remain durable knowledge workflows; they are not automatic post-design gates.
+- Model confirmation and Design Lesson publication are separate decisions.
 
 ## Standard parts and provenance
 
@@ -78,7 +57,7 @@
 - Never create or silently substitute custom geometry for a standard part unless the user explicitly requests or approves that exception. A machined derivative may be created only when it retains the base component's provenance and clearly records the derived operation.
 - Keep standard parts as separate reusable objects unless the manufacturing design explicitly requires a fused solid. Verify placements, quantities, interfaces, and BOM agreement.
 
-## Mandatory model validation and delivery gates
+## Mandatory model validation and result recording
 
 - After AI creation or any visible modification of an FCStd model, assembly, or imported STEP standard part, use `freecad-model-validation` before reporting the model complete.
 - Create an explicit validation specification from the approved requirements. Every numeric requirement must have units and a stated validation tolerance.
@@ -91,16 +70,17 @@
 
 ## Data and engineering-knowledge architecture
 
-- PostgreSQL is the authoritative store for identities, revisions, lifecycle events, approvals, validation bindings, design lessons, and retrieval state.
+- Filesystem JSON is authoritative for a single lightweight design session. PostgreSQL is not a prerequisite for CAD mutation.
+- PostgreSQL remains authoritative for durable Product Family Knowledge, Design Lessons, reviews, searchable assertions, and the optional governed lifecycle.
 - Neo4j is a rebuildable relationship projection, never the authority. Projection failure must not overwrite or contradict PostgreSQL state; use the outbox and idempotent rebuild workflow.
 - Keep database schemas, migrations, package-owned configuration, and installed resources deterministic and portable. Never require a developer's source checkout after installation.
 - Design knowledge must remain scoped by organization, design group, product family, model, applicability conditions, and authorization. Do not expose source-family incident details outside an explicitly authorized scope.
-- Publish design lessons only through the governed review and approval workflow. Preserve immutable evidence, supersession/revocation state, and retrieval verification.
+- Publish Design Lessons only when that separate durable workflow is explicitly requested. Preserve immutable evidence, supersession/revocation state, and retrieval verification.
 
 ## Development priorities
 
 - Prioritize reliable macOS and Windows installation, FreeCAD/FreeCADCmd discovery, local MCP connectivity, Docker database bootstrap, clean upgrades, and reproducible release acceptance.
-- Continue improving deterministic working-copy management, same-revision change and evidence binding, crash-safe locking, retry behavior, and clear recovery diagnostics.
+- Continue improving lightweight-session safety, exact-hash evidence binding, crash-safe locking, retry behavior, and clear recovery diagnostics.
 - Extend standard-part providers through portable configuration and truthful provenance rather than hard-coded product examples or machine-local catalogs.
 - Improve validation coverage for assemblies, joints, fasteners, fits, interfaces, interference, derived components, and delivery completeness without weakening mandatory gates.
 - Improve retrieval quality, applicability filtering, lesson review, publication, supersession, revocation, and projection recovery while keeping PostgreSQL authoritative.
@@ -119,7 +99,7 @@
 
 - Git tracks reusable Agent capabilities: source code, tests, migrations, schemas, portable configuration templates, project-owned skills, documentation, and reviewed project-wide rules.
 - Keep generated FCStd/STEP models, drawings, renders, screenshots, BOM exports, validation outputs, runtime databases, knowledge contents, caches, credentials, machine-local configuration, and customer or project-specific design evidence out of the public repository.
-- Store governed mechanical-design deliverables inside the originating ignored Job directory; use `output/` only for explicitly requested non-Job local exports. Do not commit a design artifact merely because it is final or approved.
+- Store ordinary design artifacts inside the ignored `designs/<design-id>/` session; governed compatibility artifacts remain in their originating ignored Job directory. Do not commit a design artifact merely because it is final or approved.
 - Store project-owned distributable skills under `.agents/skills/`. Keep temporary skill build directories and installed user-level skill copies out of Git.
 - Before publishing, scan for absolute paths, usernames, hostnames, secrets, private source identities, generated artifacts, and unapproved third-party content. Preserve license and provenance notices for every distributed dependency or asset.
 - Do not push, publish a package, move a release tag, or open a pull request unless the user explicitly requests that external action.

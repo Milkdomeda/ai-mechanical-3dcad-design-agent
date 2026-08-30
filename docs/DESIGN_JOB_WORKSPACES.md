@@ -1,5 +1,10 @@
 # Design Job workspaces
 
+> Optional compatibility workflow: ordinary CAD uses the default lightweight
+> `design` profile and `designs/<design-id>/`. Use this guide only when the
+> caller explicitly selects `governed` for audit-heavy or multi-user work, or
+> when maintaining existing Job data.
+
 A Design Job is the durable workspace for one product-design intent. Continue
 the same design in the same Job. Create another Job only when the user states
 that the requirement is independent. Product design is not software

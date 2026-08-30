@@ -1666,6 +1666,43 @@ class BootstrapRuntime:
             ),
         )
 
+    def lightweight_design_settings(self):
+        """Resolve local CAD settings without requiring PostgreSQL or Neo4j."""
+        from .config import LightweightDesignSettings
+
+        self.require_capability("lightweight_design", probe=False)
+        inspection = self._inspect()
+        assert inspection.manifest is not None
+        assert inspection.freecad_command is not None
+        assert inspection.freecad_candidate is not None
+        candidate = inspection.freecad_candidate
+        return LightweightDesignSettings(
+            workspace=inspection.manifest.workspace,
+            package_root=inspection.manifest.workspace,
+            design_root=inspection.manifest.workspace / "designs",
+            freecadcmd=inspection.freecad_command,
+            freecadcmd_sha256=candidate.sha256,
+            freecadcmd_identity=candidate.identity,
+            freecadcmd_version=candidate.version,
+        )
+
+    def lightweight_knowledge_scope(self) -> dict[str, str]:
+        """Return configured knowledge scope without opening a database connection."""
+        self.require_initialized("lightweight_design")
+        inspection = self._inspect()
+        assert inspection.manifest is not None
+        identity = inspection.manifest.raw.get("identity")
+        if not isinstance(identity, Mapping):
+            raise RuntimeError("configured knowledge scope is unavailable")
+        organization_id = str(identity.get("organization_id") or "").strip()
+        design_group_id = str(identity.get("design_group_id") or "").strip()
+        if not organization_id or not design_group_id:
+            raise RuntimeError("configured knowledge scope is unavailable")
+        return {
+            "organization_id": organization_id,
+            "design_group_id": design_group_id,
+        }
+
     def family_operational_settings(self) -> Settings:
         """Resolve settings for an operation whose subject is a Product Family."""
         request = CapabilityRequest(

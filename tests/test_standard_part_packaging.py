@@ -277,7 +277,11 @@ def test_clean_installed_wheel_standard_part_configuration_lifecycle() -> None:
             "source_code": "STANDARD_PART_CATALOG_READY",
         }
 
-        mcp_environment = {**environment, "MECH_DESIGN_WORKSPACE": str(workspace)}
+        mcp_environment = {
+            **environment,
+            "MECH_DESIGN_WORKSPACE": str(workspace),
+            "MECH_DESIGN_MCP_TOOL_PROFILE": "all",
+        }
         mcp_result = asyncio.run(
             installed_standard_part_mcp(mcp, cwd=outside, environment=mcp_environment)
         )

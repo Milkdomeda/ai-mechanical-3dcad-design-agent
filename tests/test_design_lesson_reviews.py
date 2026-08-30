@@ -4626,7 +4626,7 @@ def test_live_confirmed_to_retrievable_flow_is_atomic_projected_and_searchable()
             assert graph_row["review_status"] == "stored-and-retrievable"
             assert graph_row["lesson_status"] == "approved"
 
-            live_mcp = create_mcp(service=service)
+            live_mcp = create_mcp(service=service, tool_profile="all")
 
             def public_search(
                 features: dict, *, requested_organization_id: str = organization_id

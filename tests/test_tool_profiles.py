@@ -9,6 +9,7 @@ from mechanical_design_agent.tool_profiles import (
     ALL_TOOL_NAMES,
     DESIGN_TOOL_NAMES,
     FAMILY_KNOWLEDGE_TOOL_NAMES,
+    GOVERNED_TOOL_NAMES,
     MAINTENANCE_TOOL_NAMES,
     TOOL_PROFILE_ENV,
     resolve_tool_profile,
@@ -28,6 +29,7 @@ def test_all_profile_preserves_complete_public_inventory() -> None:
     ("profile", "expected"),
     [
         ("design", DESIGN_TOOL_NAMES),
+        ("governed", GOVERNED_TOOL_NAMES),
         ("family-knowledge", FAMILY_KNOWLEDGE_TOOL_NAMES),
         ("maintenance", MAINTENANCE_TOOL_NAMES),
     ],
@@ -40,16 +42,16 @@ def test_reduced_profiles_expose_exact_inventories(
 
 def test_design_profile_is_bounded_and_hides_expert_surfaces() -> None:
     visible = names("design")
-    assert len(visible) <= 32
+    assert len(visible) <= 8
     assert {
-        "design_job_obligations_resolve",
-        "product_family_match",
+        "design_start",
         "design_knowledge_retrieve",
-        "design_change_mutation_authorize",
-        "design_validation_record",
-        "design_delivery_approve",
+        "design_record_result",
     } <= visible
     assert not {
+        "design_job_obligations_resolve",
+        "design_change_mutation_authorize",
+        "design_delivery_approve",
         "design_working_copy_create",
         "design_lesson_stage",
         "standard_part_catalog_enable",
@@ -69,9 +71,9 @@ def test_environment_selects_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(server._tool_manager._tools) == set(FAMILY_KNOWLEDGE_TOOL_NAMES)
 
 
-def test_unset_profile_preserves_compatibility(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unset_profile_uses_lightweight_design(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(TOOL_PROFILE_ENV, raising=False)
-    assert resolve_tool_profile() == "all"
+    assert resolve_tool_profile() == "design"
 
 
 def test_unknown_profile_fails_closed() -> None:
@@ -84,7 +86,7 @@ def test_design_profile_requires_engineering_scope_in_design_intent() -> None:
         def design_change_record(self, **kwargs: object) -> dict[str, object]:
             return kwargs
 
-    server = create_mcp(service=Service(), tool_profile="design")
+    server = create_mcp(service=Service(), tool_profile="governed")
     invoke = server._tool_manager._tools["design_change_record"].fn
     draft = {
         "design_intent": {"summary": "mounting plate"},
