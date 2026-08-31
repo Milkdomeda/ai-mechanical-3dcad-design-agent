@@ -294,6 +294,77 @@ def test_publication_approval_publishes_the_exact_review_once(tmp_path: Path) ->
     ]["sha256"]
 
 
+def test_publication_can_select_one_numbered_lesson_without_mutating_source_card(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    root = _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    second = _candidate()
+    second["problem"] = "Cradle fit at the maximum permitted ball diameter"
+    confirmed = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="确认",
+        candidates=[_candidate(), second],
+    )
+    source_path = root / str(confirmed["review_relative_path"])
+    source_bytes = source_path.read_bytes()
+    publisher = _Publisher()
+
+    result = workflow.decide(
+        design_id="carrier",
+        decision_text="只同意发布2",
+        publisher=publisher,
+        selected_lesson_numbers=[2],
+    )
+
+    assert result["status"] == "published"
+    assert source_path.read_bytes() == source_bytes
+    published_card, published_sha256 = publisher.calls[0]
+    assert len(published_card["lessons"]) == 1
+    assert published_card["lessons"][0]["problem"] == second["problem"]
+    assert published_card["selection"] == {
+        "source_review_sha256": confirmed["review_sha256"],
+        "lesson_numbers": [2],
+    }
+    state = service.get("carrier")
+    assert state["lesson_review"]["review_sha256"] == published_sha256
+    assert state["model_status"] == "completed"
+
+
+def test_selected_publication_can_retry_the_same_numbered_selection(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    workflow.confirm(
+        design_id="carrier",
+        confirmation_text="确认",
+        candidates=[_candidate(), {**_candidate(), "problem": "Second lesson"}],
+    )
+
+    class FailingPublisher:
+        def publish_design_lesson_review(self, **_: object) -> dict[str, object]:
+            raise ConnectionError("database unavailable")
+
+    first = workflow.decide(
+        design_id="carrier",
+        decision_text="只同意发布2",
+        publisher=FailingPublisher(),
+        selected_lesson_numbers=[2],
+    )
+    second = workflow.decide(
+        design_id="carrier",
+        decision_text="只同意发布2",
+        publisher=_Publisher(),
+        selected_lesson_numbers=[2],
+    )
+
+    assert first["status"] == "publish_retry_required"
+    assert second["status"] == "published"
+
+
 def test_publication_rejection_is_local_and_idempotent(tmp_path: Path) -> None:
     service, workflow = _pending_workflow(tmp_path)
     publisher = _Publisher()

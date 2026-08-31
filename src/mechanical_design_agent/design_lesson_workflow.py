@@ -123,6 +123,7 @@ class DesignLessonWorkflow:
         design_id: str,
         decision_text: str,
         publisher: object,
+        selected_lesson_numbers: Sequence[int] | None = None,
     ) -> dict[str, object]:
         """Publish or decline the exact review card currently bound to a design."""
         decision = classify_approval(decision_text)
@@ -136,6 +137,8 @@ class DesignLessonWorkflow:
                 "status": review["status"],
                 "next_action": "clarify_publication_decision",
             }
+        if selected_lesson_numbers and decision != APPROVE:
+            raise ValueError("lesson selection is valid only with publication approval")
         if review["status"] == "published" and decision == APPROVE:
             return {
                 "schema_version": "DesignLessonDecisionResult/v1",
@@ -191,6 +194,29 @@ class DesignLessonWorkflow:
                 "next_action": "finish",
             }
 
+        if selected_lesson_numbers:
+            existing_selection = card.get("selection")
+            if isinstance(existing_selection, Mapping):
+                existing_numbers = existing_selection.get("lesson_numbers")
+                if existing_numbers != list(selected_lesson_numbers):
+                    raise ValueError(
+                        "a different lesson selection is already bound to this review"
+                    )
+            else:
+                card, relative_path, expected_sha256 = self._prepare_selected_review_card(
+                    context=context,
+                    source_card=card,
+                    source_sha256=str(expected_sha256),
+                    selected_lesson_numbers=selected_lesson_numbers,
+                )
+                self.sessions.record_lesson_review(
+                    design_id=design_id,
+                    model_sha256=str(context["model_sha256"]),
+                    status="review_pending",
+                    review_relative_path=relative_path,
+                    review_sha256=expected_sha256,
+                )
+
         publish = getattr(publisher, "publish_design_lesson_review", None)
         if not callable(publish):
             raise ValueError("knowledge publisher does not support Design Lessons")
@@ -242,6 +268,62 @@ class DesignLessonWorkflow:
             "resumed": bool(published.get("resumed", False)),
             "next_action": "finish",
         }
+
+    @staticmethod
+    def _prepare_selected_review_card(
+        *,
+        context: Mapping[str, object],
+        source_card: Mapping[str, object],
+        source_sha256: str,
+        selected_lesson_numbers: Sequence[int],
+    ) -> tuple[dict[str, object], str, str]:
+        lessons = source_card.get("lessons")
+        if not isinstance(lessons, list) or not lessons:
+            raise ValueError("review card has no selectable lessons")
+        normalized: list[int] = []
+        for number in selected_lesson_numbers:
+            if isinstance(number, bool) or not isinstance(number, int):
+                raise ValueError("selected lesson numbers must be integers")
+            if number < 1 or number > len(lessons):
+                raise ValueError("selected lesson number is outside the review card")
+            if number not in normalized:
+                normalized.append(number)
+        if not normalized:
+            raise ValueError("at least one lesson must be selected")
+
+        selected_card = _copy_json(dict(source_card), "source review card")
+        selected_card["review_id"] = (
+            f"{source_card['review_id']}-selected-"
+            + "-".join(str(number) for number in normalized)
+        )
+        selected_card["lessons"] = [lessons[number - 1] for number in normalized]
+        selected_card["selection"] = {
+            "source_review_sha256": source_sha256,
+            "lesson_numbers": normalized,
+        }
+        card_bytes = canonical_json(selected_card).encode("utf-8")
+        card_sha256 = hashlib.sha256(card_bytes).hexdigest()
+        design_root = validate_managed_path(
+            Path(str(context["design_root"])), allow_missing_leaf=False
+        ).path
+        review_root = validate_managed_path(
+            design_root / "lesson-review", allow_missing_leaf=False
+        ).path
+        review_path = review_root / (
+            "review-selected-" + "-".join(str(number) for number in normalized) + ".json"
+        )
+        if review_path.exists():
+            existing = read_managed_file(review_path)
+            if existing.content != card_bytes or existing.sha256 != card_sha256:
+                raise ValueError("an immutable selected review card already exists")
+        else:
+            atomic_publish_new(review_path, card_bytes)
+            set_managed_file_readonly(review_path)
+        return (
+            selected_card,
+            review_path.relative_to(design_root).as_posix(),
+            card_sha256,
+        )
 
     @staticmethod
     def _evaluate_candidates(

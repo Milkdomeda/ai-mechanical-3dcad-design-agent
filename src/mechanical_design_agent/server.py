@@ -289,13 +289,20 @@ def create_mcp(
         )
 
     @registrar.tool()
-    def design_lesson_decide(design_id: str, decision_text: str) -> str:
-        """Approve or decline publication of the displayed immutable review card."""
+    def design_lesson_decide(
+        design_id: str,
+        decision_text: str,
+        selected_lesson_numbers_json: str = "[]",
+    ) -> str:
+        """Approve all or selected review-card lessons, or decline publication."""
         return _tool_call(
             lambda: get_lessons().decide(
                 design_id=design_id,
                 decision_text=decision_text,
                 publisher=get_admin(),
+                selected_lesson_numbers=_array(
+                    selected_lesson_numbers_json, "selected_lesson_numbers_json"
+                ),
             )
         )
 

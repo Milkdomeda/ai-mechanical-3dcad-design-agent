@@ -20,7 +20,11 @@ from .standard_part_configuration import (
     load_standard_part_provider_catalog,
     load_standard_part_sources,
 )
-from .workspace_bootstrap import BootstrapFailure, read_workspace_manifest
+from .workspace_bootstrap import (
+    BootstrapFailure,
+    parse_selected_env_file,
+    read_workspace_manifest,
+)
 
 
 @dataclass(frozen=True)
@@ -42,9 +46,16 @@ class BootstrapRuntime:
         freecad_sha256: str = "",
         **_: object,
     ) -> "BootstrapRuntime":
+        effective_environment = dict(environ)
+        selected_env = parse_selected_env_file(
+            None, effective_environment, Path(cwd).resolve()
+        )
+        if selected_env is not None:
+            for key, entry in selected_env.values.items():
+                effective_environment.setdefault(key, entry.value)
         return cls(
             cwd=Path(cwd).resolve(),
-            environ=dict(environ),
+            environ=effective_environment,
             workspace_override=(
                 Path(workspace).expanduser().resolve() if workspace else None
             ),

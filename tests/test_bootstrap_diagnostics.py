@@ -53,3 +53,31 @@ def test_knowledge_scope_is_independent_of_product_family(tmp_path: Path) -> Non
         "organization_id": "org-001",
         "design_group_id": "group-001",
     }
+
+
+def test_runtime_loads_explicit_environment_file_without_shell_sourcing(
+    tmp_path: Path,
+) -> None:
+    initialize_workspace(
+        workspace=tmp_path,
+        actor_id="engineer",
+        organization_id="org-001",
+        design_group_id="group-001",
+        dry_run=False,
+    )
+    env_file = tmp_path / "settings with spaces.env"
+    env_file.write_text(
+        "MECH_DESIGN_DATABASE_URL=postgresql://example.invalid/knowledge\n"
+        "MECH_DESIGN_NEO4J_PASSWORD=secret-value\n",
+        encoding="utf-8",
+    )
+
+    runtime = BootstrapRuntime.from_process(
+        cwd=tmp_path,
+        environ={"MECH_DESIGN_ENV_FILE": str(env_file)},
+        workspace=tmp_path,
+    )
+    settings = runtime.knowledge_settings()
+
+    assert settings.database_url == "postgresql://example.invalid/knowledge"
+    assert settings.neo4j_password == "secret-value"
