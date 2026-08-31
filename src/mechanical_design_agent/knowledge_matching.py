@@ -41,4 +41,30 @@ def collect_design_terms(
     return tuple(sorted(terms))
 
 
-__all__ = ["collect_design_terms", "normalize_search_term"]
+def applicability_matches(
+    applicability: Mapping[str, object], features: Mapping[str, object]
+) -> bool:
+    if not isinstance(applicability, Mapping):
+        raise ValueError("applicability must be an object")
+    if not isinstance(features, Mapping):
+        raise ValueError("design features must be an object")
+    conditions = applicability.get("conditions", {})
+    if not isinstance(conditions, Mapping):
+        raise ValueError("applicability.conditions must be an object")
+    for key, expected in conditions.items():
+        if key not in features:
+            return False
+        actual = features[key]
+        if isinstance(expected, list):
+            if actual not in expected:
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+__all__ = [
+    "applicability_matches",
+    "collect_design_terms",
+    "normalize_search_term",
+]
