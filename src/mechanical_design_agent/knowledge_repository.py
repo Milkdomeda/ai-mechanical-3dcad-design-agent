@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import psycopg
 from psycopg.rows import dict_row
@@ -38,15 +38,22 @@ class KnowledgeScope:
 class KnowledgeRepository:
     """PostgreSQL authority for Product Family Knowledge and Design Lessons."""
 
-    def __init__(self, database_url: str, scope: KnowledgeScope) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        scope: KnowledgeScope,
+        *,
+        connect: Callable[..., Any] = psycopg.connect,
+    ) -> None:
         if not isinstance(database_url, str) or not database_url.strip():
             raise ValueError("database_url is required")
         self.database_url = database_url.strip()
         self.scope = scope
+        self._connect = connect
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
-        with psycopg.connect(self.database_url, row_factory=dict_row) as connection:
+        with self._connect(self.database_url, row_factory=dict_row) as connection:
             yield connection
 
     def apply_migrations(self, root: Path) -> dict[str, list[str]]:
