@@ -309,7 +309,7 @@ def build_long_term_export(
         search_terms = _string_list(row.get("search_terms"), "lesson search_terms")
         lesson = {
             "title": _required_text(row, "title", "design lesson"),
-            "problem": _required_text(row, "problem", "design lesson"),
+            "problem": _textual(row.get("problem"), "design lesson problem"),
             "root_causes": _copy(
                 row.get("root_causes") or [], "design lesson root causes"
             ),
