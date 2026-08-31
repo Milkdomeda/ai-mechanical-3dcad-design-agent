@@ -26,20 +26,12 @@ EXPECTED_MIGRATIONS = [
     "001_knowledge.sql",
 ]
 EXPECTED_NEO4J_MIGRATIONS = [
-    "001_constraints.cypher",
-    "002_design_lessons.cypher",
-    "003_projection_state.cypher",
+    "001_knowledge_projection.cypher",
 ]
 EXPECTED_NEO4J_CONSTRAINTS = [
-    "assertion_id_unique",
+    "knowledge_assertion_id_unique",
     "design_lesson_id_unique",
-    "family_id_unique",
-    "family_profile_id_unique",
-    "model_revision_id_unique",
-    "product_id_unique",
-    "projection_state_name_unique",
-    "source_node_key_unique",
-    "subfamily_id_unique",
+    "product_family_id_unique",
 ]
 
 

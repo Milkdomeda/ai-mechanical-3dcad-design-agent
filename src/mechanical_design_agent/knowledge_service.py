@@ -155,9 +155,6 @@ class KnowledgeService:
     def publish_design_lesson_review(self, **kwargs: object) -> dict[str, object]:
         return self.repository.publish_design_lesson_review(**kwargs)
 
-    def projection_sync(self, *, limit: int = 100) -> dict[str, object]:
-        return self.projection.sync(self.repository, limit=limit)
-
     def projection_rebuild(self, *, decision_text: str) -> dict[str, object]:
         if classify_approval(decision_text) != APPROVE:
             return {"status": "not_rebuilt", "decision_state": classify_approval(decision_text)}

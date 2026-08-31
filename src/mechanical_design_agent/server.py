@@ -443,11 +443,6 @@ def create_mcp(
         )
 
     @registrar.tool()
-    def projection_sync(limit: int = 100) -> str:
-        """Replay knowledge outbox events into Neo4j."""
-        return _tool_call(lambda: get_admin().projection_sync(limit=limit))
-
-    @registrar.tool()
     def projection_rebuild(decision_text: str) -> str:
         """Rebuild the Neo4j knowledge projection after explicit approval."""
         return _tool_call(

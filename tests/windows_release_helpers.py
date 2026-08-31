@@ -28,9 +28,7 @@ REQUIRED_INSTALLED_RESOURCES = frozenset(
         "freecad/validate_external_step.py",
         "freecad/validate_fastener_interfaces.py",
         "freecad/validate_mechanical_interfaces.py",
-        "migrations/neo4j/001_constraints.cypher",
-        "migrations/neo4j/002_design_lessons.cypher",
-        "migrations/neo4j/003_projection_state.cypher",
+        "migrations/neo4j/001_knowledge_projection.cypher",
         "migrations/postgres/001_knowledge.sql",
         "validation/step_component.json",
     }
@@ -68,15 +66,9 @@ DEDICATED_NEO4J_DISPOSABLE_CONFIRMATION = (
 )
 EXPECTED_NEO4J_CONSTRAINTS = frozenset(
     {
-        "assertion_id_unique",
+        "knowledge_assertion_id_unique",
         "design_lesson_id_unique",
-        "family_id_unique",
-        "family_profile_id_unique",
-        "model_revision_id_unique",
-        "product_id_unique",
-        "projection_state_name_unique",
-        "source_node_key_unique",
-        "subfamily_id_unique",
+        "product_family_id_unique",
     }
 )
 

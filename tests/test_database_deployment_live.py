@@ -24,9 +24,7 @@ EXPECTED_POSTGRES_MIGRATIONS = (
     "001_knowledge.sql",
 )
 EXPECTED_NEO4J_MIGRATIONS = (
-    "001_constraints.cypher",
-    "002_design_lessons.cypher",
-    "003_projection_state.cypher",
+    "001_knowledge_projection.cypher",
 )
 EXPECTED_POSTGRES_TABLES = {
     "knowledge_schema_migrations",

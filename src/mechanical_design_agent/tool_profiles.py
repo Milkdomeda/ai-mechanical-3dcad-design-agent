@@ -38,7 +38,6 @@ KNOWLEDGE_ADMIN_TOOL_NAMES = frozenset(
         "design_lesson_get",
         "design_lesson_supersede",
         "design_lesson_revoke",
-        "projection_sync",
         "projection_rebuild",
     }
 )

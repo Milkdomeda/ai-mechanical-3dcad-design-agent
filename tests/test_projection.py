@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from mechanical_design_agent.projection import Neo4jProjection
+import pytest
+
+from mechanical_design_agent.projection import Neo4jProjection, ProjectionUnavailableError
 
 
 class _Result:
@@ -41,33 +43,20 @@ class _Driver:
 
 
 class _Repository:
-    def __init__(self) -> None:
-        self.marked: list[int] = []
-
-    def pending_projection_events(self, *, limit: int):
-        assert limit == 100
-        return [
-            {
-                "id": 1,
-                "aggregate_type": "design_lesson",
-                "aggregate_id": "lesson-1",
-                "event_type": "published",
-                "payload": {},
-            }
-        ]
-
-    def projection_record(self, *, aggregate_type: str, aggregate_id: str):
-        assert aggregate_type == "design_lesson"
-        return {"id": aggregate_id, "status": "approved"}
-
-    def mark_projection_event(self, event_id: int) -> None:
-        self.marked.append(event_id)
-
     def projection_records(self):
         return {
-            "product_family": [{"id": "family-1", "status": "active"}],
-            "assertion": [],
-            "design_lesson": [{"id": "lesson-1", "status": "approved"}],
+            "product_family": [
+                {"id": f"family-{index}", "status": "active"}
+                for index in range(2)
+            ],
+            "assertion": [
+                {"id": f"assertion-{index}", "status": "active"}
+                for index in range(43)
+            ],
+            "design_lesson": [
+                {"id": f"lesson-{index}", "status": "active"}
+                for index in range(4)
+            ],
         }
 
 
@@ -78,16 +67,8 @@ def _projection(session: _Session) -> Neo4jProjection:
     return projection
 
 
-def test_outbox_event_is_marked_only_after_graph_write() -> None:
-    session = _Session()
-    repository = _Repository()
-
-    result = _projection(session).sync(repository)
-
-    assert result["status"] == "completed"
-    assert result["processed"] == 1
-    assert repository.marked == [1]
-    assert "MERGE (n:DesignLesson" in session.calls[0][0]
+def test_projection_has_no_incremental_sync_path() -> None:
+    assert not hasattr(Neo4jProjection, "sync")
 
 
 def test_rebuild_replaces_only_owned_knowledge_nodes() -> None:
@@ -97,22 +78,37 @@ def test_rebuild_replaces_only_owned_knowledge_nodes() -> None:
 
     assert result["authoritative_source"] == "postgresql"
     assert result["counts"] == {
-        "product_family": 1,
-        "assertion": 0,
-        "design_lesson": 1,
+        "product_family": 2,
+        "assertion": 43,
+        "design_lesson": 4,
     }
     assert "projection_owner" in session.calls[0][0]
     assert any("MERGE (n:ProductFamily" in query for query, _ in session.calls)
 
 
-def test_projection_failure_keeps_event_pending_without_leaking_details() -> None:
-    class FailingRepository(_Repository):
-        def projection_record(self, **_kwargs):
-            raise RuntimeError("private database path")
+def test_projection_status_redacts_unavailable_driver_details() -> None:
+    projection = Neo4jProjection("bolt://private-host", "neo4j", "secret")
+    projection._driver = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        ModuleNotFoundError("private neo4j module path")
+    )
 
-    repository = FailingRepository()
-    result = _projection(_Session()).sync(repository)
+    result = projection.status()
 
-    assert result["status"] == "needs_retry"
-    assert repository.marked == []
-    assert "private database path" not in str(result["failed"])
+    assert result == {
+        "status": "unavailable",
+        "warning": "Neo4j unavailable (ModuleNotFoundError)",
+    }
+    assert "private" not in result["warning"]
+
+
+def test_explicit_rebuild_raises_bounded_unavailable_error() -> None:
+    projection = Neo4jProjection("bolt://private-host", "neo4j", "secret")
+    projection._driver = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("private connection details")
+    )
+
+    with pytest.raises(ProjectionUnavailableError) as captured:
+        projection.rebuild(_Repository())
+
+    assert captured.value.code == "NEO4J_PROJECTION_UNAVAILABLE"
+    assert "private" not in str(captured.value)
