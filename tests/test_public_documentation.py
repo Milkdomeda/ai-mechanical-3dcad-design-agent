@@ -65,6 +65,10 @@ def test_architecture_keeps_cad_independent_from_knowledge_services() -> None:
     assert "It stores no design-session or CAD-edit state" in text
     assert "Knowledge outages never invalidate" in text
     assert "DesignLessonReviewCard/v1" in text
+    for table in ("product_families", "knowledge_assertions", "design_lessons"):
+        assert table in text
+    assert "Neo4j is optional" in text
+    assert "outbox" not in text.casefold()
 
 
 def test_external_freecad_boundary_is_documented() -> None:
@@ -85,9 +89,15 @@ def test_database_and_windows_guides_cover_supported_boundaries() -> None:
     database = normalized(DATABASE)
     for fragment in (
         "PostgreSQL",
-        "pgvector",
+        "no pgvector requirement",
         "Neo4j",
+        "pip install ai-mechanical-3dcad-design-agent[neo4j]",
         "mechanical-design knowledge bootstrap",
+        "knowledge-migrate --analyze-only",
+        "knowledge-migrate --execute",
+        "--cutover-env",
+        "read-only",
+        "output/",
         "loopback",
         "macOS",
         "PowerShell",
@@ -102,6 +112,18 @@ def test_database_and_windows_guides_cover_supported_boundaries() -> None:
         "knowledge",
     ):
         assert fragment in windows
+
+
+def test_public_knowledge_docs_describe_only_the_simplified_authority() -> None:
+    combined = "\n".join(normalized(path) for path in (README, ARCHITECTURE, DATABASE))
+    for forbidden in (
+        "knowledge outbox",
+        "projection state",
+        "review decisions",
+        "vector fields",
+        "pgvector, and Neo4j are required",
+    ):
+        assert forbidden not in combined.casefold()
 
 
 def test_public_readme_local_links_resolve_inside_project() -> None:

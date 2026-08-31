@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from mechanical_design_agent.config import KnowledgeSettings
+import mechanical_design_agent.database_bootstrap as database_bootstrap
+
 import database_deployment_helpers as deployment_helpers
 from database_deployment_helpers import (
     DeploymentGateError,
@@ -42,6 +45,40 @@ NEO4J_IMAGE = (
     "neo4j:2026.06.0@"
     "sha256:42fd5b9ead4dd4211f6f91bd831c358e4e2117367d04633fbf88682ca4792b30"
 )
+
+
+def test_postgres_bootstrap_does_not_require_optional_neo4j_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Repository:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def apply_migrations(self, _root: Path) -> dict[str, list[str]]:
+            return {"applied": ["001_knowledge.sql"], "skipped": []}
+
+    monkeypatch.setattr(database_bootstrap, "KnowledgeRepository", Repository)
+    monkeypatch.setattr(
+        database_bootstrap,
+        "Neo4jProjection",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("optional projection was constructed")
+        ),
+    )
+    settings = KnowledgeSettings(
+        workspace=tmp_path,
+        database_url="postgresql://unused/knowledge",
+        neo4j_uri="",
+        neo4j_user="",
+        neo4j_password="",
+        organization_id="org-1",
+        design_group_id="group-1",
+    )
+
+    result = database_bootstrap.bootstrap_knowledge_database(settings)
+
+    assert result["status"] == "ready"
+    assert result["neo4j"] == {"status": "not_configured"}
 
 
 def compose_text() -> str:
@@ -662,7 +699,11 @@ def test_public_deployment_guide_defines_knowledge_safety_contract() -> None:
     assert "Docker Desktop" in text
     assert "installed package owns schema migration" in text
     assert "loopback" in text
-    assert "001_knowledge_core.sql" in text
+    assert "001_knowledge.sql" in text
+    assert "product_families" in text
+    assert "knowledge_assertions" in text
+    assert "design_lessons" in text
+    assert "old database remains read-only" in text
     assert "select a fresh knowledge\ndatabase" in text
     assert "completed CAD model remains completed" in text
     assert "production" in text

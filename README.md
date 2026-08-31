@@ -46,8 +46,8 @@ Lesson publication are separate decisions.
   evidence.
 - Evaluate reusable lessons automatically after the user confirms the final
   model.
-- Store long-term Product Family Knowledge and Design Lessons in PostgreSQL,
-  with an outbox-driven Neo4j relationship projection.
+- Store long-term Product Family profiles, Knowledge Assertions, and Design
+  Lessons in PostgreSQL, with an optional rebuild-only Neo4j projection.
 
 ## MCP surfaces
 
@@ -65,8 +65,8 @@ The default `design` surface contains the complete design flow:
 - `standard_part_download_register`
 
 The separate `knowledge-admin` surface manages Product Family onboarding,
-knowledge review and search, Design Lesson supersession or revocation, and
-Neo4j projection recovery.
+knowledge search, Design Lesson supersession or revocation, and explicit
+Neo4j projection rebuilds.
 
 ## Architecture
 
@@ -75,8 +75,8 @@ authoritative `model.FCStd`, optional source snapshots, validation evidence,
 outputs, and an optional lesson review card. CAD creation and validation do not
 depend on PostgreSQL.
 
-PostgreSQL stores long-term knowledge, reviews, Design Lessons, and outbox
-events. Neo4j is rebuildable and never authoritative. See
+PostgreSQL stores only durable Product Families, Knowledge Assertions, and
+Design Lessons. Neo4j is optional, rebuildable, and never authoritative. See
 [Architecture and trust boundaries](docs/ARCHITECTURE.md).
 
 ## Install and run
@@ -109,8 +109,10 @@ MECH_DESIGN_MCP_TOOL_PROFILE=knowledge-admin mechanical-design-mcp
 ```
 
 The current acceptance target is official FreeCAD 1.1.3. Configure the exact
-`FreeCADCmd` path and SHA-256 in the workspace or environment. PostgreSQL,
-pgvector, and Neo4j are required only for durable knowledge operations.
+`FreeCADCmd` path and SHA-256 in the workspace or environment. PostgreSQL is
+needed only for durable knowledge operations. The baseline has no pgvector
+requirement. Install `ai-mechanical-3dcad-design-agent[neo4j]` only when the
+optional relationship projection is wanted.
 
 ## Project-owned Agent Skills
 
