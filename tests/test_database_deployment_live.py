@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
+import uuid
 
 import pytest
 import psycopg
@@ -11,8 +13,13 @@ from mechanical_design_agent.database_bootstrap import bootstrap_knowledge_datab
 from mechanical_design_agent.long_term_knowledge_target import (
     KnowledgeMigrationError,
     SimplifiedKnowledgePayload,
+    create_target_database,
     import_simplified_payload,
     validate_simplified_target,
+)
+from mechanical_design_agent.knowledge_repository import (
+    KnowledgeRepository,
+    KnowledgeScope,
 )
 from mechanical_design_agent.migrations import (
     neo4j_migrations_directory,
@@ -34,13 +41,10 @@ EXPECTED_POSTGRES_TABLES = {
 }
 EXPECTED_POSTGRES_INDEXES = {
     "product_families_scope_idx",
-    "product_families_terms_idx",
     "product_families_text_idx",
     "knowledge_assertions_scope_idx",
-    "knowledge_assertions_terms_idx",
     "knowledge_assertions_text_idx",
     "design_lessons_scope_idx",
-    "design_lessons_terms_idx",
     "design_lessons_text_idx",
 }
 
@@ -180,3 +184,38 @@ def test_simplified_import_is_idempotent_and_rejects_conflict() -> None:
         )
     with pytest.raises(KnowledgeMigrationError, match="TARGET_CONTENT_MISMATCH"):
         import_simplified_payload(database_url, payload)
+
+
+@pytest.mark.skipif(
+    os.environ.get("MECH_DESIGN_DOCKER_DATABASE_LIVE_CHILD") != "1",
+    reason="live long-term import requires an explicitly isolated child environment",
+)
+@pytest.mark.live_database
+def test_simplified_import_preserves_very_long_exact_terms() -> None:
+    source_database_url = os.environ["MECH_DESIGN_DATABASE_URL"]
+    target_database_url = create_target_database(
+        source_database_url,
+        f"long_term_{uuid.uuid4().hex}",
+    )
+    original = _live_payload()
+    long_term = "".join(
+        hashlib.sha256(str(index).encode("ascii")).hexdigest()
+        for index in range(100)
+    )
+    assertion = dict(original.knowledge_assertions[0])
+    assertion["search_terms"] = [long_term]
+    payload = SimplifiedKnowledgePayload(
+        source_export_sha256=original.source_export_sha256,
+        product_families=original.product_families,
+        knowledge_assertions=(assertion,),
+        design_lessons=original.design_lessons,
+    )
+
+    imported = import_simplified_payload(target_database_url, payload)
+    result = KnowledgeRepository(
+        target_database_url,
+        KnowledgeScope("live-test-org", "live-test-group"),
+    ).search(query=long_term, product_family_id="live-family")
+
+    assert imported.status == "imported"
+    assert [row["id"] for row in result["assertions"]] == ["live-assertion"]

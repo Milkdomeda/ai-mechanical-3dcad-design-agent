@@ -6,7 +6,7 @@
 
 **Architecture:** One new PostgreSQL baseline migration defines three typed business tables plus the migration ledger. A deterministic target transformer consumes the existing `LongTermKnowledgeExport/v1`, imports it transactionally, and validates canonical hashes without persistent import receipts. Repository search and `design_context_build` read PostgreSQL directly; Neo4j is an optional full-rebuild projection with no outbox dependency.
 
-**Tech Stack:** Python 3.12+, psycopg 3, PostgreSQL 18, PostgreSQL GIN/full-text search, pytest, optional Neo4j 5/6 driver.
+**Tech Stack:** Python 3.12+, psycopg 3, PostgreSQL 18, PostgreSQL scoped B-tree/full-text GIN search, pytest, optional Neo4j 5/6 driver.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-simplified-long-term-knowledge-schema-design.md`
 
@@ -193,22 +193,24 @@ CREATE TABLE design_lessons (
 
 CREATE INDEX product_families_scope_idx
     ON product_families(organization_id, design_group_id, status);
-CREATE INDEX product_families_terms_idx ON product_families USING gin(search_terms);
 CREATE INDEX product_families_text_idx
     ON product_families USING gin(to_tsvector('simple', search_text));
 
 CREATE INDEX knowledge_assertions_scope_idx
     ON knowledge_assertions(organization_id, design_group_id, product_family_id, status);
-CREATE INDEX knowledge_assertions_terms_idx ON knowledge_assertions USING gin(search_terms);
 CREATE INDEX knowledge_assertions_text_idx
     ON knowledge_assertions USING gin(to_tsvector('simple', search_text));
 
 CREATE INDEX design_lessons_scope_idx
     ON design_lessons(organization_id, design_group_id, product_family_id, status);
-CREATE INDEX design_lessons_terms_idx ON design_lessons USING gin(search_terms);
 CREATE INDEX design_lessons_text_idx
     ON design_lessons USING gin(to_tsvector('simple', search_text));
 ```
+
+Exact `search_terms` overlap is intentionally evaluated after the scoped
+B-tree filter. Do not GIN-index the raw arrays: canonical legacy terms can
+exceed PostgreSQL's per-index-entry limit and must remain byte-for-byte
+available for parity.
 
 Delete the other PostgreSQL migration resources and set `_EXPECTED_MIGRATIONS` to `("001_knowledge.sql",)`.
 

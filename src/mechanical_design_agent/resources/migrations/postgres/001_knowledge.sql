@@ -68,18 +68,15 @@ CREATE TABLE design_lessons (
 
 CREATE INDEX product_families_scope_idx
     ON product_families(organization_id, design_group_id, status);
-CREATE INDEX product_families_terms_idx ON product_families USING gin(search_terms);
 CREATE INDEX product_families_text_idx
     ON product_families USING gin(to_tsvector('simple', search_text));
 
 CREATE INDEX knowledge_assertions_scope_idx
     ON knowledge_assertions(organization_id, design_group_id, product_family_id, status);
-CREATE INDEX knowledge_assertions_terms_idx ON knowledge_assertions USING gin(search_terms);
 CREATE INDEX knowledge_assertions_text_idx
     ON knowledge_assertions USING gin(to_tsvector('simple', search_text));
 
 CREATE INDEX design_lessons_scope_idx
     ON design_lessons(organization_id, design_group_id, product_family_id, status);
-CREATE INDEX design_lessons_terms_idx ON design_lessons USING gin(search_terms);
 CREATE INDEX design_lessons_text_idx
     ON design_lessons USING gin(to_tsvector('simple', search_text));

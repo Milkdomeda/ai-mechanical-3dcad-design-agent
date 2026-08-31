@@ -141,10 +141,15 @@ Each business table keeps only indexes that serve a known query:
 
 - Product Families: B-tree `(organization_id, design_group_id, status)`;
 - Assertions and Lessons: B-tree `(organization_id, design_group_id, product_family_id, status)`;
-- each table: GIN on `search_terms` for normalized exact-term containment;
 - each table: expression GIN on `to_tsvector('simple', search_text)` for full-text fallback.
 
-The primary key and composite scoped uniqueness constraints provide their required indexes. No speculative indexes are added.
+Exact-term array overlap is evaluated after the scoped B-tree filter. The raw
+`search_terms` arrays are intentionally not GIN-indexed because canonical
+legacy terms may exceed PostgreSQL's per-index-entry size limit; retaining the
+complete term is required for deterministic parity. The current bounded
+knowledge corpus does not justify a derived hash or prefix index. The primary
+key and composite scoped uniqueness constraints provide their required
+indexes. No speculative indexes are added.
 
 Search order is deterministic:
 

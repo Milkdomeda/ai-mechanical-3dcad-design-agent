@@ -58,8 +58,11 @@ PostgreSQL contains exactly three durable business tables:
   provenance, exact terms, and supersession state.
 
 `knowledge_schema_migrations` is the only technical deployment table. Exact
-normalized terms are checked before expression-indexed PostgreSQL full-text
-search. The baseline does not require pgvector.
+normalized terms are checked after scoped B-tree filtering and before
+expression-indexed PostgreSQL full-text search. Raw exact-term arrays are not
+indexed because imported terms may exceed PostgreSQL's index-entry limit and
+must remain complete for deterministic parity. The baseline does not require
+pgvector.
 
 It stores no design-session or CAD-edit state. A previous database layout is
 not modified automatically; initialize a new knowledge database when the
