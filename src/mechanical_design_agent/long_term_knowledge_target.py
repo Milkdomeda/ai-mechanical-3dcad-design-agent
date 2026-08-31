@@ -350,11 +350,18 @@ def _read_target_collections(connection: Any) -> dict[str, list[dict[str, object
         "FROM design_lessons ORDER BY id"
     ).fetchall()
     return {
-        "product_families": [_copy(dict(row), "target product family") for row in families],
-        "knowledge_assertions": [
-            _copy(dict(row), "target knowledge assertion") for row in assertions
-        ],
-        "design_lessons": [_copy(dict(row), "target design lesson") for row in lessons],
+        "product_families": sorted(
+            (_copy(dict(row), "target product family") for row in families),
+            key=lambda row: str(row["id"]),
+        ),
+        "knowledge_assertions": sorted(
+            (_copy(dict(row), "target knowledge assertion") for row in assertions),
+            key=lambda row: str(row["id"]),
+        ),
+        "design_lessons": sorted(
+            (_copy(dict(row), "target design lesson") for row in lessons),
+            key=lambda row: str(row["id"]),
+        ),
     }
 
 

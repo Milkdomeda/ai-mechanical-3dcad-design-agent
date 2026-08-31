@@ -30,6 +30,38 @@ def expected_payload():
     return build_simplified_payload(expected_export())
 
 
+class _CollectionResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _OutOfOrderCollectionConnection:
+    def __init__(self) -> None:
+        payload = expected_payload()
+        self._collections = iter(
+            (
+                list(reversed(payload.product_families)),
+                list(reversed(payload.knowledge_assertions)),
+                list(reversed(payload.design_lessons)),
+            )
+        )
+
+    def execute(self, _query):
+        return _CollectionResult(next(self._collections))
+
+
+def test_target_collection_read_normalizes_database_collation_order() -> None:
+    collections = target_module._read_target_collections(
+        _OutOfOrderCollectionConnection()
+    )
+
+    for rows in collections.values():
+        assert [row["id"] for row in rows] == sorted(row["id"] for row in rows)
+
+
 class _FakeTarget:
     def __init__(self) -> None:
         self.url = "postgresql:///disposable_target"

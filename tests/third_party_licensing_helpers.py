@@ -320,6 +320,16 @@ def locked_dependency_closure(root: Path, group: str) -> dict[str, str]:
     runtime = _closure(packages, list(project.get("dependencies", [])))
     if group == "runtime":
         return runtime
+    if group == "neo4j-extra":
+        optional = _closure(
+            packages,
+            list(project.get("optional-dependencies", {}).get("neo4j", [])),
+        )
+        return {
+            name: version
+            for name, version in optional.items()
+            if name not in runtime
+        }
     if group == "test":
         test = _closure(
             packages,
