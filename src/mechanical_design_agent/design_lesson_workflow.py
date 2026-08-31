@@ -57,8 +57,8 @@ class DesignLessonWorkflow:
         )
         if confirmation["confirmation_state"] != APPROVE:
             return {
-                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 **confirmation,
+                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 "lesson_review_status": "not_evaluated",
             }
 
@@ -73,8 +73,8 @@ class DesignLessonWorkflow:
                 warning="candidate validation requires correction",
             )
             return {
-                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 **confirmation,
+                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 "lesson_review_status": "candidate_errors",
                 "candidate_errors": errors,
                 "screened_candidates": screened,
@@ -88,8 +88,8 @@ class DesignLessonWorkflow:
                 status="no_material_lessons",
             )
             return {
-                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 **confirmation,
+                "schema_version": "DesignConfirmationAndLearningResult/v1",
                 "lesson_review_status": "no_material_lessons",
                 "screened_candidates": screened,
                 "next_action": "finish",
@@ -108,8 +108,8 @@ class DesignLessonWorkflow:
             review_sha256=card_sha256,
         )
         return {
-            "schema_version": "DesignConfirmationAndLearningResult/v1",
             **confirmation,
+            "schema_version": "DesignConfirmationAndLearningResult/v1",
             "lesson_review_status": "review_pending",
             "review_card": card,
             "review_relative_path": relative_path,

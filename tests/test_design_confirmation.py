@@ -171,6 +171,7 @@ def test_material_lesson_creates_one_immutable_review_card(tmp_path: Path) -> No
         candidates=[_candidate()],
     )
 
+    assert result["schema_version"] == "DesignConfirmationAndLearningResult/v1"
     review_path = root / str(result["review_relative_path"])
     assert result["lesson_review_status"] == "review_pending"
     assert result["next_action"] == "request_lesson_publication_decision"
