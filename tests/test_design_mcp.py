@@ -139,3 +139,9 @@ def test_design_settings_do_not_require_database(
     assert same_managed_path(settings.freecadcmd, executable)
     assert settings.freecadcmd_sha256 == pinned.sha256
     assert not hasattr(settings, "database_url")
+
+
+def test_knowledge_admin_has_no_generic_durable_review_tool() -> None:
+    server = create_mcp(knowledge_service=object(), tool_profile="knowledge-admin")
+
+    assert "knowledge_review" not in server._tool_manager._tools

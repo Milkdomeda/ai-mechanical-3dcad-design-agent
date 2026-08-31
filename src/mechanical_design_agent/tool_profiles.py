@@ -34,7 +34,6 @@ KNOWLEDGE_ADMIN_TOOL_NAMES = frozenset(
         "product_family_onboarding_publish",
         "product_family_onboarding_status",
         "knowledge_search",
-        "knowledge_review",
         "design_lesson_search",
         "design_lesson_get",
         "design_lesson_supersede",

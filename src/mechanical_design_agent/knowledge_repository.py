@@ -10,13 +10,63 @@ from typing import Any, Callable, Iterator, Mapping
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from .migrations import discover_postgres_migrations
+from .knowledge_matching import collect_design_terms, normalize_search_term
 from .models import canonical_json, require_safe_id
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _EXPECTED_MIGRATIONS = ("001_knowledge.sql",)
+
+
+def _json_copy(value: object, label: str) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must contain finite JSON values") from exc
+
+
+def _search_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for key in sorted(value, key=str):
+            result.extend(_search_values(str(key)))
+            result.extend(_search_values(value[key]))
+        return result
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            result.extend(_search_values(item))
+        return result
+    if isinstance(value, (bool, int, float)):
+        return [str(value)]
+    return []
+
+
+def _search_text(*values: object) -> str:
+    text = " ".join(_search_values(values))
+    normalized = " ".join(text.split())
+    if not normalized:
+        raise ValueError("knowledge record has no searchable text")
+    return normalized
+
+
+def _normalized_strings(value: object, label: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{label} must be a list of strings")
+    return sorted(
+        {
+            normalized
+            for item in value
+            if (normalized := normalize_search_term(item))
+        }
+    )
 
 
 class KnowledgeDatabaseError(RuntimeError):
@@ -127,9 +177,7 @@ class KnowledgeRepository:
     ) -> dict[str, object]:
         if not _SHA256.fullmatch(review_sha256):
             raise ValueError("review_sha256 must be lowercase 64-hex")
-        card = json.loads(
-            json.dumps(review_card, ensure_ascii=False, allow_nan=False)
-        )
+        card = _json_copy(dict(review_card), "review card")
         if not isinstance(card, dict) or card.get("schema_version") != (
             "DesignLessonReviewCard/v1"
         ):
@@ -144,76 +192,101 @@ class KnowledgeRepository:
         if not isinstance(decision_text, str) or not decision_text.strip():
             raise ValueError("decision_text is required")
 
+        expected_rows: list[dict[str, object]] = []
+        for index, lesson in enumerate(lessons, start=1):
+            if not isinstance(lesson, Mapping):
+                raise ValueError("review card lessons must be objects")
+            copied = _json_copy(dict(lesson), "review card lesson")
+            lesson_id = f"lesson-{review_sha256[:16]}-{index}"
+            family_id = copied.pop("product_family_id", None)
+            copied.pop("scope", None)
+            search_terms = _normalized_strings(
+                copied.pop("search_terms", []), "lesson search_terms"
+            )
+            raw_applicability = copied.pop("applicability", {})
+            if isinstance(raw_applicability, Mapping):
+                applicability = _json_copy(
+                    dict(raw_applicability), "lesson applicability"
+                )
+            elif isinstance(raw_applicability, str):
+                applicability = (
+                    {"summary": raw_applicability.strip()}
+                    if raw_applicability.strip()
+                    else {}
+                )
+            else:
+                raise ValueError("lesson applicability must be an object or string")
+            evidence = copied.pop("evidence", [])
+            provenance = {
+                "source_review_sha256": review_sha256,
+                "decision_text": decision_text.strip(),
+                "source_review_id": card["review_id"],
+                "evidence": evidence,
+            }
+            expected_rows.append(
+                {
+                    "id": lesson_id,
+                    "product_family_id": family_id,
+                    "content": copied,
+                    "applicability": applicability,
+                    "provenance": provenance,
+                    "search_terms": search_terms,
+                    "search_text": _search_text(
+                        copied, applicability, provenance, search_terms
+                    ),
+                    "status": "active",
+                    "supersedes_id": None,
+                }
+            )
+
         with self.connection() as connection, connection.transaction():
             existing = connection.execute(
-                "SELECT review_sha256 FROM design_lesson_reviews "
-                "WHERE review_sha256=%s",
-                (review_sha256,),
-            ).fetchone()
+                "SELECT id,product_family_id,content,applicability,provenance,"
+                "search_terms,search_text,status,supersedes_id FROM design_lessons "
+                "WHERE organization_id=%s AND design_group_id=%s "
+                "AND provenance->>'source_review_sha256'=%s ORDER BY id",
+                (
+                    self.scope.organization_id,
+                    self.scope.design_group_id,
+                    review_sha256,
+                ),
+            ).fetchall()
             if existing:
-                rows = connection.execute(
-                    "SELECT id FROM design_lessons WHERE review_sha256=%s ORDER BY id",
-                    (review_sha256,),
-                ).fetchall()
+                if canonical_json([dict(row) for row in existing]) != canonical_json(
+                    expected_rows
+                ):
+                    raise ValueError(
+                        "Design Lessons already exist with different canonical content"
+                    )
                 return {
                     "publication_id": review_sha256,
                     "review_sha256": review_sha256,
-                    "lesson_ids": [row["id"] for row in rows],
+                    "lesson_ids": [row["id"] for row in expected_rows],
                     "resumed": True,
                 }
-            connection.execute(
-                "INSERT INTO design_lesson_reviews"
-                "(review_sha256,organization_id,design_group_id,product_family_id,"
-                "review_card,decision,decision_text) "
-                "VALUES (%s,%s,%s,NULL,%s::jsonb,'approved',%s)",
-                (
-                    review_sha256,
-                    self.scope.organization_id,
-                    self.scope.design_group_id,
-                    canonical_json(card),
-                    decision_text.strip(),
-                ),
-            )
-            lesson_ids: list[str] = []
-            for index, lesson in enumerate(lessons, start=1):
-                if not isinstance(lesson, dict):
-                    raise ValueError("review card lessons must be objects")
-                lesson_id = f"lesson-{review_sha256[:16]}-{index}"
-                family_id = lesson.get("product_family_id")
-                search_terms = lesson.get("search_terms")
-                if not isinstance(search_terms, list) or not all(
-                    isinstance(value, str) for value in search_terms
-                ):
-                    raise ValueError("lesson search_terms are invalid")
+            for row in expected_rows:
                 connection.execute(
-                    "INSERT INTO design_lessons"
-                    "(id,review_sha256,organization_id,design_group_id,"
-                    "product_family_id,lesson,search_terms,applicability) "
-                    "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb)",
+                    "INSERT INTO design_lessons("
+                    "id,organization_id,design_group_id,product_family_id,content,"
+                    "applicability,provenance,search_terms,search_text,status,"
+                    "supersedes_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL)",
                     (
-                        lesson_id,
-                        review_sha256,
+                        row["id"],
                         self.scope.organization_id,
                         self.scope.design_group_id,
-                        family_id,
-                        canonical_json(lesson),
-                        search_terms,
-                        canonical_json(
-                            {"summary": lesson.get("applicability", "")}
-                        ),
+                        row["product_family_id"],
+                        Jsonb(row["content"]),
+                        Jsonb(row["applicability"]),
+                        Jsonb(row["provenance"]),
+                        row["search_terms"],
+                        row["search_text"],
+                        row["status"],
                     ),
                 )
-                connection.execute(
-                    "INSERT INTO knowledge_outbox"
-                    "(aggregate_type,aggregate_id,event_type,payload) "
-                    "VALUES ('design_lesson',%s,'published',%s::jsonb)",
-                    (lesson_id, canonical_json({"lesson_id": lesson_id})),
-                )
-                lesson_ids.append(lesson_id)
         return {
             "publication_id": review_sha256,
             "review_sha256": review_sha256,
-            "lesson_ids": lesson_ids,
+            "lesson_ids": [row["id"] for row in expected_rows],
             "resumed": False,
         }
 
@@ -231,34 +304,234 @@ class KnowledgeRepository:
             raise ValueError("family_name and decision_text are required")
         if not all(isinstance(value, str) and value.strip() for value in aliases):
             raise ValueError("aliases must contain nonblank strings")
-        knowledge_json = canonical_json(dict(knowledge))
+        copied_knowledge = _json_copy(dict(knowledge), "Product Family Knowledge")
+        raw_assertions = copied_knowledge.pop("assertions", [])
+        if not isinstance(raw_assertions, list):
+            raise ValueError("knowledge.assertions must be a list")
+        normalized_aliases = sorted({str(value).strip() for value in aliases})
+        family_terms = sorted(
+            {
+                normalize_search_term(family_name),
+                *[normalize_search_term(value) for value in normalized_aliases],
+                *_normalized_strings(
+                    copied_knowledge.get("retrieval_terms"),
+                    "knowledge.retrieval_terms",
+                ),
+            }
+            - {""}
+        )
+        family_row = {
+            "id": family_id,
+            "canonical_name": family_name.strip(),
+            "aliases": normalized_aliases,
+            "profile": copied_knowledge,
+            "search_terms": family_terms,
+            "search_text": _search_text(
+                family_name, normalized_aliases, family_terms, copied_knowledge
+            ),
+            "status": "active",
+        }
+        assertion_rows: list[dict[str, object]] = []
+        for raw in raw_assertions:
+            if not isinstance(raw, Mapping):
+                raise ValueError("knowledge assertions must be objects")
+            assertion = _json_copy(dict(raw), "knowledge assertion")
+            subject = assertion.get("subject")
+            predicate = assertion.get("predicate")
+            if not isinstance(subject, str) or not subject.strip():
+                raise ValueError("knowledge assertion subject is required")
+            if not isinstance(predicate, str) or not predicate.strip():
+                raise ValueError("knowledge assertion predicate is required")
+            if "object" not in assertion and "object_value" not in assertion:
+                raise ValueError("knowledge assertion object is required")
+            object_value = assertion.get("object", assertion.get("object_value"))
+            applicability = _json_copy(
+                assertion.get("applicability") or {}, "assertion applicability"
+            )
+            evidence = _json_copy(assertion.get("evidence") or [], "assertion evidence")
+            search_terms = _normalized_strings(
+                assertion.get("search_terms"), "assertion search_terms"
+            )
+            digest_input = {
+                "subject": subject.strip(),
+                "predicate": predicate.strip(),
+                "object_value": object_value,
+                "applicability": applicability,
+                "evidence": evidence,
+                "search_terms": search_terms,
+            }
+            digest = hashlib.sha256(
+                canonical_json(digest_input).encode("utf-8")
+            ).hexdigest()
+            assertion_id = f"{family_id[:101]}-assertion-{digest[:16]}"
+            assertion_rows.append(
+                {
+                    "id": assertion_id,
+                    "product_family_id": family_id,
+                    **digest_input,
+                    "search_text": _search_text(
+                        subject,
+                        predicate,
+                        object_value,
+                        applicability,
+                        evidence,
+                        search_terms,
+                    ),
+                    "status": "active",
+                    "supersedes_id": None,
+                }
+            )
+        assertion_rows.sort(key=lambda row: str(row["id"]))
+        if len({str(row["id"]) for row in assertion_rows}) != len(assertion_rows):
+            raise ValueError("duplicate Product Family assertions are not allowed")
         with self.connection() as connection, connection.transaction():
             existing = connection.execute(
-                "SELECT id,status FROM product_families WHERE id=%s",
-                (family_id,),
+                "SELECT id,canonical_name,aliases,profile,search_terms,search_text,status "
+                "FROM product_families WHERE organization_id=%s "
+                "AND design_group_id=%s AND id=%s",
+                (
+                    self.scope.organization_id,
+                    self.scope.design_group_id,
+                    family_id,
+                ),
             ).fetchone()
             if existing:
-                return {"family_id": family_id, "status": existing["status"], "resumed": True}
+                existing_family = dict(existing)
+                if canonical_json(existing_family) != canonical_json(family_row):
+                    raise ValueError("Product Family already exists with different content")
+                existing_assertions = connection.execute(
+                    "SELECT id,product_family_id,subject,predicate,object_value,"
+                    "applicability,evidence,search_terms,search_text,status,supersedes_id "
+                    "FROM knowledge_assertions WHERE organization_id=%s "
+                    "AND design_group_id=%s AND product_family_id=%s ORDER BY id",
+                    (
+                        self.scope.organization_id,
+                        self.scope.design_group_id,
+                        family_id,
+                    ),
+                ).fetchall()
+                if canonical_json([dict(row) for row in existing_assertions]) != (
+                    canonical_json(assertion_rows)
+                ):
+                    raise ValueError(
+                        "Product Family assertions already exist with different content"
+                    )
+                return {
+                    "family_id": family_id,
+                    "assertion_ids": [row["id"] for row in assertion_rows],
+                    "status": existing["status"],
+                    "resumed": True,
+                }
             connection.execute(
                 "INSERT INTO product_families"
-                "(id,organization_id,design_group_id,canonical_name,aliases,knowledge) "
-                "VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
+                "(id,organization_id,design_group_id,canonical_name,aliases,profile,"
+                "search_terms,search_text,status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     family_id,
                     self.scope.organization_id,
                     self.scope.design_group_id,
-                    family_name.strip(),
-                    canonical_json(aliases),
-                    knowledge_json,
+                    family_row["canonical_name"],
+                    family_row["aliases"],
+                    Jsonb(family_row["profile"]),
+                    family_row["search_terms"],
+                    family_row["search_text"],
+                    family_row["status"],
                 ),
             )
-            connection.execute(
-                "INSERT INTO knowledge_outbox"
-                "(aggregate_type,aggregate_id,event_type,payload) "
-                "VALUES ('product_family',%s,'published',%s::jsonb)",
-                (family_id, canonical_json({"family_id": family_id})),
-            )
-        return {"family_id": family_id, "status": "active", "resumed": False}
+            for row in assertion_rows:
+                connection.execute(
+                    "INSERT INTO knowledge_assertions("
+                    "id,organization_id,design_group_id,product_family_id,subject,"
+                    "predicate,object_value,applicability,evidence,search_terms,"
+                    "search_text,status,supersedes_id) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL)",
+                    (
+                        row["id"],
+                        self.scope.organization_id,
+                        self.scope.design_group_id,
+                        family_id,
+                        row["subject"],
+                        row["predicate"],
+                        Jsonb(row["object_value"]),
+                        Jsonb(row["applicability"]),
+                        Jsonb(row["evidence"]),
+                        row["search_terms"],
+                        row["search_text"],
+                        row["status"],
+                    ),
+                )
+        return {
+            "family_id": family_id,
+            "assertion_ids": [row["id"] for row in assertion_rows],
+            "status": "active",
+            "resumed": False,
+        }
+
+    @staticmethod
+    def _family_match(row: Mapping[str, object], match_kind: str) -> dict[str, object]:
+        return {
+            "knowledge_id": row["id"],
+            "kind": "product_family",
+            **dict(row),
+            "match_kind": match_kind,
+        }
+
+    def match_product_family(
+        self,
+        *,
+        query: str,
+        design_features: Mapping[str, object],
+        requested_family_id: str | None = None,
+    ) -> dict[str, object] | None:
+        terms = collect_design_terms(query, design_features)
+        columns = (
+            "id,canonical_name,aliases,profile,search_terms,search_text,status"
+        )
+        with self.connection() as connection:
+            if requested_family_id:
+                require_safe_id(requested_family_id, "requested_family_id")
+                row = connection.execute(
+                    f"SELECT {columns} FROM product_families "
+                    "WHERE organization_id=%s AND design_group_id=%s "
+                    "AND status='active' AND id=%s",
+                    (
+                        self.scope.organization_id,
+                        self.scope.design_group_id,
+                        requested_family_id,
+                    ),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Product Family does not exist in this scope")
+                return self._family_match(row, "explicit_id")
+            if not terms:
+                return None
+            exact = connection.execute(
+                f"SELECT {columns} FROM product_families "
+                "WHERE organization_id=%s AND design_group_id=%s AND status='active' "
+                "AND search_terms && %s::text[] ORDER BY id LIMIT 2",
+                (
+                    self.scope.organization_id,
+                    self.scope.design_group_id,
+                    list(terms),
+                ),
+            ).fetchall()
+            if len(exact) > 1:
+                raise ValueError("Product Family exact-term match is ambiguous")
+            if exact:
+                return self._family_match(exact[0], "exact_term")
+            text_query = " ".join(terms)
+            rows = connection.execute(
+                f"SELECT {columns} FROM product_families "
+                "WHERE organization_id=%s AND design_group_id=%s AND status='active' "
+                "AND to_tsvector('simple',search_text) "
+                "@@ plainto_tsquery('simple',%s) ORDER BY id LIMIT 1",
+                (
+                    self.scope.organization_id,
+                    self.scope.design_group_id,
+                    text_query,
+                ),
+            ).fetchall()
+        return self._family_match(rows[0], "full_text") if rows else None
 
     def search(
         self,
@@ -267,22 +540,33 @@ class KnowledgeRepository:
         product_family_id: str | None = None,
         limit: int = 20,
     ) -> dict[str, object]:
-        if not query.strip():
+        terms = collect_design_terms(query, {})
+        if not terms:
             raise ValueError("query is required")
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        lesson_family_clause = "AND product_family_id=%s" if product_family_id else ""
-        lesson_parameters: list[object] = [
-            self.scope.organization_id,
-            self.scope.design_group_id,
-        ]
-        if product_family_id:
-            lesson_parameters.append(product_family_id)
-        lesson_parameters.extend([query.strip(), limit])
+        normalized_query = " ".join(terms)
+        family_clause = (
+            "AND (product_family_id=%s OR product_family_id IS NULL)"
+            if product_family_id
+            else ""
+        )
+
+        def scoped_parameters() -> list[object]:
+            parameters: list[object] = [
+                self.scope.organization_id,
+                self.scope.design_group_id,
+            ]
+            if product_family_id:
+                parameters.append(product_family_id)
+            parameters.extend([list(terms), normalized_query, limit])
+            return parameters
+
         with self.connection() as connection:
             if product_family_id:
                 families = connection.execute(
-                    "SELECT id,canonical_name,aliases,knowledge,status "
+                    "SELECT id,canonical_name,aliases,profile,search_terms,"
+                    "search_text,status "
                     "FROM product_families WHERE organization_id=%s "
                     "AND design_group_id=%s AND status='active' AND id=%s LIMIT %s",
                     (
@@ -294,57 +578,85 @@ class KnowledgeRepository:
                 ).fetchall()
             else:
                 families = connection.execute(
-                    "SELECT id,canonical_name,aliases,knowledge,status "
+                    "SELECT id,canonical_name,aliases,profile,search_terms,"
+                    "search_text,status "
                     "FROM product_families WHERE organization_id=%s "
                     "AND design_group_id=%s AND status='active' "
-                    "AND to_tsvector('simple',canonical_name || ' ' || aliases::text "
-                    "|| ' ' || knowledge::text) @@ plainto_tsquery('simple',%s) "
+                    "AND (search_terms && %s::text[] OR "
+                    "to_tsvector('simple',search_text) "
+                    "@@ plainto_tsquery('simple',%s)) "
                     "ORDER BY id LIMIT %s",
                     (
                         self.scope.organization_id,
                         self.scope.design_group_id,
-                        query.strip(),
+                        list(terms),
+                        normalized_query,
                         limit,
                     ),
                 ).fetchall()
+            assertions = connection.execute(
+                "SELECT id,product_family_id,subject,predicate,object_value,"
+                "applicability,evidence,search_terms,status,supersedes_id "
+                "FROM knowledge_assertions WHERE organization_id=%s "
+                "AND design_group_id=%s AND status='active' "
+                f"{family_clause} "
+                "AND (search_terms && %s::text[] OR "
+                "to_tsvector('simple',search_text) "
+                "@@ plainto_tsquery('simple',%s)) ORDER BY id LIMIT %s",
+                tuple(scoped_parameters()),
+            ).fetchall()
             lessons = connection.execute(
-                "SELECT id,lesson,product_family_id,status FROM design_lessons "
+                "SELECT id,product_family_id,content,applicability,provenance,"
+                "search_terms,status,supersedes_id FROM design_lessons "
                 "WHERE organization_id=%s AND design_group_id=%s "
-                "AND status='approved' "
-                f"{lesson_family_clause} "
-                "AND search_document @@ plainto_tsquery('simple',%s) "
-                "ORDER BY ts_rank(search_document,plainto_tsquery('simple',%s)) DESC,id "
-                "LIMIT %s",
-                tuple(
-                    lesson_parameters[:-1]
-                    + [query.strip(), lesson_parameters[-1]]
-                ),
+                "AND status='active' "
+                f"{family_clause} "
+                "AND (search_terms && %s::text[] OR "
+                "to_tsvector('simple',search_text) "
+                "@@ plainto_tsquery('simple',%s)) ORDER BY id LIMIT %s",
+                tuple(scoped_parameters()),
             ).fetchall()
         family_matches = [
             {"knowledge_id": row["id"], "kind": "product_family", **dict(row)}
             for row in families
         ]
+        assertion_matches = [
+            {
+                "assertion_id": row["id"],
+                "knowledge_id": row["id"],
+                "kind": "knowledge_assertion",
+                **dict(row),
+            }
+            for row in assertions
+        ]
         lesson_matches = [
-            {"design_lesson_ref": row["id"], "kind": "design_lesson", **dict(row)}
+            {
+                "design_lesson_ref": row["id"],
+                "knowledge_id": row["id"],
+                "kind": "design_lesson",
+                **dict(row),
+            }
             for row in lessons
         ]
         return {
             "schema_version": "KnowledgeSearchResult/v1",
             "status": (
                 "completed_matches"
-                if family_matches or lesson_matches
+                if family_matches or assertion_matches or lesson_matches
                 else "completed_no_match"
             ),
             "families": family_matches,
+            "assertions": assertion_matches,
             "lessons": lesson_matches,
-            "matches": [*family_matches, *lesson_matches],
+            "matches": [*family_matches, *assertion_matches, *lesson_matches],
         }
 
     def get_design_lesson(self, lesson_id: str) -> dict[str, object]:
         require_safe_id(lesson_id, "lesson_id")
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT id,lesson,product_family_id,status,supersedes_id,created_at "
+                "SELECT id,content,applicability,provenance,search_terms,"
+                "product_family_id,status,supersedes_id,created_at "
                 "FROM design_lessons WHERE id=%s AND organization_id=%s "
                 "AND design_group_id=%s",
                 (
@@ -375,7 +687,7 @@ class KnowledgeRepository:
             row = connection.execute(
                 "UPDATE design_lessons SET status=%s,supersedes_id=%s "
                 "WHERE id=%s AND organization_id=%s AND design_group_id=%s "
-                "AND status='approved' RETURNING id,status,supersedes_id",
+                "AND status='active' RETURNING id,status,supersedes_id",
                 (
                     status,
                     replacement_lesson_id,
@@ -385,36 +697,8 @@ class KnowledgeRepository:
                 ),
             ).fetchone()
             if not row:
-                raise ValueError("approved Design Lesson does not exist in this scope")
-            connection.execute(
-                "INSERT INTO knowledge_outbox"
-                "(aggregate_type,aggregate_id,event_type,payload) "
-                "VALUES ('design_lesson',%s,%s,%s::jsonb)",
-                (lesson_id, status, canonical_json({"lesson_id": lesson_id})),
-            )
+                raise ValueError("active Design Lesson does not exist in this scope")
         return dict(row)
-
-    def pending_projection_events(self, *, limit: int = 100) -> list[dict[str, object]]:
-        if not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
-        with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT id,aggregate_type,aggregate_id,event_type,payload "
-                "FROM knowledge_outbox WHERE projected_at IS NULL "
-                "ORDER BY id LIMIT %s",
-                (limit,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def mark_projection_event(self, event_id: int) -> None:
-        with self.connection() as connection, connection.transaction():
-            row = connection.execute(
-                "UPDATE knowledge_outbox SET projected_at=now() "
-                "WHERE id=%s AND projected_at IS NULL RETURNING id",
-                (event_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError("projection event is missing or already completed")
 
     def projection_record(
         self, *, aggregate_type: str, aggregate_id: str

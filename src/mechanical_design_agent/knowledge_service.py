@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .approval_semantics import APPROVE, REJECT, classify_approval
+from .approval_semantics import APPROVE, classify_approval
 from .product_family_knowledge import ProductFamilyKnowledgeService
 
 
@@ -79,21 +79,6 @@ class KnowledgeService:
             ),
             limit=int(filters.get("limit", 20)),
         )
-
-    def knowledge_review(
-        self, *, review_id: str, decision_text: str
-    ) -> dict[str, object]:
-        decision = classify_approval(decision_text)
-        return {
-            "schema_version": "KnowledgeReviewDecision/v1",
-            "review_id": review_id,
-            "decision_state": decision,
-            "status": (
-                "approved"
-                if decision == APPROVE
-                else "rejected" if decision == REJECT else "not_reviewed"
-            ),
-        }
 
     def design_lesson_search(
         self, *, query: str, features: Mapping[str, object], limit: int

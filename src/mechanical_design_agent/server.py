@@ -403,15 +403,6 @@ def create_mcp(
         )
 
     @registrar.tool()
-    def knowledge_review(review_id: str, decision_text: str) -> str:
-        """Record a natural-language knowledge review decision."""
-        return _tool_call(
-            lambda: get_admin().knowledge_review(
-                review_id=review_id, decision_text=decision_text
-            )
-        )
-
-    @registrar.tool()
     def design_lesson_search(
         query: str, features_json: str = "{}", limit: int = 20
     ) -> str:
