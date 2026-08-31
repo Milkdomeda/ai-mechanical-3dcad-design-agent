@@ -48,3 +48,8 @@ only-include = [
 
 [tool.pyright]
 pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+markers = [
+    "live_database: requires the explicitly isolated disposable database harness",
+]

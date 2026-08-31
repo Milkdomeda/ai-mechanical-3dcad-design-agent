@@ -23,9 +23,7 @@ NEO4J_USER = os.environ.get("MECH_DESIGN_NEO4J_USER", "").strip()
 NEO4J_PASSWORD = os.environ.get("MECH_DESIGN_NEO4J_PASSWORD", "").strip()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MIGRATIONS = [
-    "001_knowledge_core.sql",
-    "002_knowledge_search.sql",
-    "003_knowledge_projection.sql",
+    "001_knowledge.sql",
 ]
 EXPECTED_NEO4J_MIGRATIONS = [
     "001_constraints.cypher",

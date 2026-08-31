@@ -31,9 +31,7 @@ REQUIRED_INSTALLED_RESOURCES = frozenset(
         "migrations/neo4j/001_constraints.cypher",
         "migrations/neo4j/002_design_lessons.cypher",
         "migrations/neo4j/003_projection_state.cypher",
-        "migrations/postgres/001_knowledge_core.sql",
-        "migrations/postgres/002_knowledge_search.sql",
-        "migrations/postgres/003_knowledge_projection.sql",
+        "migrations/postgres/001_knowledge.sql",
         "validation/step_component.json",
     }
 )

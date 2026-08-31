@@ -16,11 +16,7 @@ from .models import canonical_json, require_safe_id
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_EXPECTED_MIGRATIONS = (
-    "001_knowledge_core.sql",
-    "002_knowledge_search.sql",
-    "003_knowledge_projection.sql",
-)
+_EXPECTED_MIGRATIONS = ("001_knowledge.sql",)
 
 
 class KnowledgeDatabaseError(RuntimeError):
