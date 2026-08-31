@@ -655,18 +655,16 @@ def test_windows_d3_runner_has_fail_closed_installed_deployment_contract() -> No
     assert "MECH_DESIGN_WINDOWS_NEO4J_ADMIN_PASSWORD =" not in text
 
 
-def test_public_deployment_guide_retains_d3_safety_contract() -> None:
+def test_public_deployment_guide_defines_knowledge_safety_contract() -> None:
     text = DATABASE_DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
 
-    assert "Windows 11 x64" in text
-    assert "CPython 3.12 x64" in text
+    assert "Python 3.12" in text
     assert "Docker Desktop" in text
-    assert "fixed NTFS" in text
-    assert "installed Mechanical Design Agent owns schema migration" in text
-    assert "UUID" in text
+    assert "installed package owns schema migration" in text
     assert "loopback" in text
-    assert "Raw logs" in text
-    assert "migrations" in text
+    assert "001_knowledge_core.sql" in text
+    assert "select a fresh knowledge\ndatabase" in text
+    assert "completed CAD model remains completed" in text
     assert "production" in text
 
 

@@ -22,34 +22,18 @@ import zipfile
 REQUIRED_INSTALLED_RESOURCES = frozenset(
     {
         "config/standard_part_providers.json",
-        "freecad/create_empty_working_copy.py",
+        "freecad/create_empty_model.py",
         "freecad/extract_model_manifest.py",
-        "freecad/normalize_working_copy.py",
+        "freecad/normalize_model.py",
         "freecad/validate_external_step.py",
         "freecad/validate_fastener_interfaces.py",
         "freecad/validate_mechanical_interfaces.py",
         "migrations/neo4j/001_constraints.cypher",
         "migrations/neo4j/002_design_lessons.cypher",
         "migrations/neo4j/003_projection_state.cypher",
-        "migrations/postgres/001_init.sql",
-        "migrations/postgres/002_design_lessons.sql",
-        "migrations/postgres/003_design_lesson_hardening.sql",
-        "migrations/postgres/004_validation_report_digest.sql",
-        "migrations/postgres/005_design_lesson_reviews.sql",
-        "migrations/postgres/006_delivery_approval_binding.sql",
-        "migrations/postgres/007_review_immutable_snapshots.sql",
-        "migrations/postgres/008_drop_legacy_snapshot_constraints.sql",
-        "migrations/postgres/009_design_lifecycle_closure.sql",
-        "migrations/postgres/010_design_jobs.sql",
-        "migrations/postgres/011_design_job_working_copies.sql",
-        "migrations/postgres/012_design_job_binding_hardening.sql",
-        "migrations/postgres/013_design_job_binding_security.sql",
-        "migrations/postgres/014_design_job_knowledge.sql",
-        "migrations/postgres/015_product_family_match_decisions.sql",
-        "migrations/postgres/016_design_approval_envelopes.sql",
-        "migrations/postgres/017_design_lesson_single_confirmation.sql",
-        "migrations/postgres/018_design_job_obligations.sql",
-        "schemas/design-lesson-package-v1.schema.json",
+        "migrations/postgres/001_knowledge_core.sql",
+        "migrations/postgres/002_knowledge_search.sql",
+        "migrations/postgres/003_knowledge_projection.sql",
         "validation/step_component.json",
     }
 )
@@ -100,26 +84,17 @@ EXPECTED_NEO4J_CONSTRAINTS = frozenset(
 
 WINDOWS_INSTALLED_WHEEL_LIVE_BUNDLE = (
     "tests/windows_release_helpers.py",
-    "tests/test_windows_database_live.py",
     "tests/test_migrations.py",
-    "tests/test_design_lifecycle.py",
     "tests/test_design_lesson_repository.py",
-    "tests/test_design_lesson_outbox.py",
-    "tests/test_design_lesson_projection.py",
-    "tests/test_design_lesson_reviews.py",
+    "tests/test_projection.py",
+    "tests/test_product_family_knowledge.py",
 )
 
 WINDOWS_INSTALLED_WHEEL_LIVE_NODE_IDS = (
-    "tests/test_windows_database_live.py::test_installed_postgres_migration_contract",
-    "tests/test_windows_database_live.py::test_installed_neo4j_migration_contract",
-    "tests/test_migrations.py::LiveMigrationConcurrencyTests",
-    "tests/test_design_lifecycle.py::LiveSourceRevisionResolutionTests",
-    "tests/test_design_lesson_repository.py::PostgresDesignLessonLifecycleConcurrencyTests",
-    "tests/test_design_lesson_repository.py::PostgresDesignLessonRepositoryTests",
-    "tests/test_design_lesson_outbox.py::LiveOutboxLeaseTests",
-    "tests/test_windows_database_live.py::test_installed_neo4j_rebuild_projection_state_and_scoped_retrieval",
-    "tests/test_design_lesson_projection.py::LiveDesignLessonProjectionSafetyTests",
-    "tests/test_design_lesson_reviews.py::test_live_confirmed_to_retrievable_flow_is_atomic_projected_and_searchable",
+    "tests/test_migrations.py",
+    "tests/test_design_lesson_repository.py",
+    "tests/test_projection.py",
+    "tests/test_product_family_knowledge.py",
 )
 
 
@@ -1258,7 +1233,7 @@ import json
 from pathlib import Path
 import mechanical_design_agent
 from mechanical_design_agent.migrations import neo4j_migrations_directory, postgres_migrations_directory
-from mechanical_design_agent.package_resources import freecad_scripts_directory, schemas_directory, standard_part_provider_config, validation_resources_directory
+from mechanical_design_agent.package_resources import freecad_scripts_directory, standard_part_provider_config, validation_resources_directory
 
 venv = Path(__import__('sys').argv[1]).resolve()
 resources = []
@@ -1269,9 +1244,6 @@ with postgres_migrations_directory() as root:
 with neo4j_migrations_directory() as root:
     root = root.resolve(); paths.append(root)
     resources.extend('migrations/neo4j/' + item.name for item in sorted(root.glob('*.cypher')))
-with schemas_directory() as root:
-    root = root.resolve(); paths.append(root)
-    resources.extend('schemas/' + item.name for item in sorted(root.glob('*.json')))
 with validation_resources_directory() as root:
     root = root.resolve(); paths.append(root)
     resources.extend('validation/' + item.name for item in sorted(root.glob('*.json')))

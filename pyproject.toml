@@ -1,7 +1,7 @@
 [project]
 name = "ai-mechanical-3dcad-design-agent"
-version = "0.6.1"
-description = "Deterministic mechanical 3D CAD workflows, knowledge, validation, and MCP tools for coding agents"
+version = "0.7.0"
+description = "AI mechanical CAD design, validation, reusable knowledge, and MCP tools for coding agents"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
@@ -40,7 +40,6 @@ only-include = [
     "third-party-components.toml",
     "docs/ARCHITECTURE.md",
     "docs/DATABASE_DEPLOYMENT.md",
-    "docs/DESIGN_JOB_WORKSPACES.md",
     "docs/ENGINEER_LEARNING_PLAYBOOK.md",
     "docs/FREECAD_GUI_MCP_INTEGRATION.md",
     "docs/WINDOWS_RELEASE_ACCEPTANCE.md",

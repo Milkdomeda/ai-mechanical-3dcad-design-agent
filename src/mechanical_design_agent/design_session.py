@@ -151,7 +151,7 @@ class DesignSessionService:
         with freecad_scripts_directory() as scripts:
             completed = run_freecad_script(
                 self.settings.freecadcmd,
-                scripts / "create_empty_working_copy.py",
+                scripts / "create_empty_model.py",
                 [destination],
                 timeout_seconds=120,
                 expected_sha256=self.settings.freecadcmd_sha256,
@@ -168,7 +168,7 @@ class DesignSessionService:
         with freecad_scripts_directory() as scripts:
             completed = run_freecad_script(
                 self.settings.freecadcmd,
-                scripts / "normalize_working_copy.py",
+                scripts / "normalize_model.py",
                 [source, destination],
                 timeout_seconds=900,
                 expected_sha256=self.settings.freecadcmd_sha256,

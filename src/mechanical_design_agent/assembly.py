@@ -10,7 +10,7 @@ def _load_fastener_model_evidence(
     manifest: dict[str, Any],
 ) -> tuple[set[str], list[str]]:
     """Load one authoritative, same-revision FreeCAD fastener inventory."""
-    expected_sha = str(manifest.get("working_sha256", ""))
+    expected_sha = str(manifest.get("model_sha256", ""))
     inventories: list[set[str]] = []
     failures: list[str] = []
     evidence_items = manifest.get("fastener_geometry_checks", [])
@@ -85,11 +85,11 @@ def _load_fastener_model_evidence(
         valid = (
             evidence.get("status") == "passed"
             and evidence.get("validator") == "freecad-model-validation"
-            and evidence.get("working_sha256") == expected_sha
+            and evidence.get("model_sha256") == expected_sha
             and report.get("status") == "passed"
             and report.get("validator") == "freecad-model-validation"
             and report.get("kind") == "FCStd"
-            and report.get("working_sha256") == expected_sha
+            and report.get("model_sha256") == expected_sha
             and summary.get("fasteners_detected") == len(object_ids)
             and coverage.get("mandatory") is True
             and coverage.get("status") == "passed"
@@ -262,10 +262,10 @@ def validate_assembly_completeness(manifest: dict[str, Any]) -> dict[str, Any]:
         if (
             evidence.get("status") != "passed"
             or evidence.get("validator") != "freecad-mechanical-interface-validation"
-            or evidence.get("working_sha256") != manifest.get("working_sha256")
+            or evidence.get("model_sha256") != manifest.get("model_sha256")
             or report.get("status") != "passed"
             or report.get("validator") != "freecad-mechanical-interface-validation"
-            or report.get("working_sha256") != manifest.get("working_sha256")
+            or report.get("model_sha256") != manifest.get("model_sha256")
             or not evidence_interface_ids
             or not evidence_interface_ids.issubset(passed_report_ids)
             or not evidence_interface_ids.issubset(critical_interface_ids)

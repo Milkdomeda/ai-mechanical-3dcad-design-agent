@@ -16,9 +16,6 @@ from public_release_helpers import (
     materialize_public_projection,
     read_public_text_files,
 )
-from windows_release_helpers import WINDOWS_INSTALLED_WHEEL_LIVE_BUNDLE
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_README_ASSETS = {
     Path("docs/assets/ai-mechanical-design-agent-architecture-v2.png"):
@@ -37,7 +34,7 @@ CAD_OR_REPORT_SUFFIXES = {
     ".gif",
     ".pdf",
 }
-PRIVATE_PATH_PARTS = {"output", "jobs", "knowledge", "vendor", ".env" + ".local"}
+PRIVATE_PATH_PARTS = {"designs", "output", "knowledge", "vendor", ".env" + ".local"}
 EXPECTED_PUBLIC_CI = (".github/workflows/windows.yml",)
 EXPECTED_PUBLIC_SCRIPTS = (
     "scripts/windows_database_deployment_acceptance.ps1",
@@ -46,7 +43,7 @@ EXPECTED_PUBLIC_SCRIPTS = (
 EXPECTED_PROJECT_SKILL_SOURCE_TREES = (
     ".agents/skills/freecad-model-validation",
     ".agents/skills/freecad-standard-parts",
-    ".agents/skills/mechanical-design-job-workspace",
+    ".agents/skills/mechanical-design",
 )
 REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/database_deployment_helpers.py",
@@ -54,7 +51,6 @@ REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/test_database_deployment_live.py",
 }
 REQUIRED_WINDOWS_PUBLIC_TESTS = {
-    "tests/test_windows_database_live.py",
     "tests/test_windows_freecad_discovery.py",
     "tests/test_windows_freecad_gui_mcp_live.py",
     "tests/test_windows_packaging.py",
@@ -74,7 +70,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "third-party-components.toml" in manifest.root_files
     assert "compose.yaml" in manifest.root_files
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
-    assert "docs/DESIGN_JOB_WORKSPACES.md" in manifest.public_docs
+    assert "docs/ENGINEER_LEARNING_PLAYBOOK.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
     assert ".agents/skills/README.md" in manifest.public_docs
     assert all(
@@ -85,7 +81,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "tests/test_third_party_licensing.py" in manifest.public_tests
     assert "tests/freecad_gui_mcp_live_helpers.py" in manifest.public_tests
     assert "tests/test_freecad_gui_mcp_integration_live.py" in manifest.public_tests
-    assert "tests/test_design_job_freecad_live.py" in manifest.public_tests
+    assert "tests/test_design_confirmation.py" in manifest.public_tests
     assert "tests/test_agent_skills.py" in manifest.public_tests
     assert manifest.source_trees == (
         *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
@@ -96,7 +92,6 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert manifest.public_scripts == EXPECTED_PUBLIC_SCRIPTS
     assert REQUIRED_WINDOWS_PUBLIC_TESTS <= set(manifest.public_tests)
     assert REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS <= set(manifest.public_tests)
-    assert set(WINDOWS_INSTALLED_WHEEL_LIVE_BUNDLE) <= set(manifest.public_tests)
     assert "tests/**" not in manifest.public_tests
     assert len(manifest.public_tests) == len(set(manifest.public_tests))
 
@@ -104,13 +99,9 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert Path("public-repository.toml") in files
     assert Path("examples/product_families/example-family.json") in files
     assert Path("src/mechanical_design_agent/__init__.py") in files
-    assert Path(".agents/skills/mechanical-design-job-workspace/SKILL.md") in files
+    assert Path(".agents/skills/mechanical-design/SKILL.md") in files
     assert (
-        Path(".agents/skills/mechanical-design-job-workspace/agents/openai.yaml")
-        in files
-    )
-    assert (
-        Path(".agents/skills/mechanical-design-job-workspace/references/job-contract.md")
+        Path(".agents/skills/mechanical-design/agents/openai.yaml")
         in files
     )
     assert Path("compose.yaml") in files
@@ -164,15 +155,15 @@ def test_manifest_explicitly_excludes_private_development_content() -> None:
         assert path in excluded
 
 
-def test_repository_ignores_runtime_job_and_release_artifacts() -> None:
+def test_repository_ignores_runtime_design_and_release_artifacts() -> None:
     rules = {
         line.strip()
         for line in (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
-    assert {"/jobs/", "/output/", "/dist/"} <= rules
+    assert {"/designs/", "/output/", "/dist/"} <= rules
     tracked = subprocess.run(
-        ["git", "ls-files", "jobs", "output", "dist"],
+        ["git", "ls-files", "designs", "output", "dist"],
         cwd=PROJECT_ROOT,
         check=True,
         capture_output=True,

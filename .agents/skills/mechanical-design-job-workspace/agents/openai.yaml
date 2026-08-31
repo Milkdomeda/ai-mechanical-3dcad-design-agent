@@ -1,6 +1,0 @@
-interface:
-  display_name: "Mechanical Design Job Workspace"
-  short_description: "Optional governed Design Job workflow"
-  default_prompt: "Use $mechanical-design-job-workspace for this explicitly governed FreeCAD product request."
-policy:
-  allow_implicit_invocation: false

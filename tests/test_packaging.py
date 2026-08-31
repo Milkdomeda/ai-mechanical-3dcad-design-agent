@@ -23,24 +23,9 @@ NEO4J_USER = os.environ.get("MECH_DESIGN_NEO4J_USER", "").strip()
 NEO4J_PASSWORD = os.environ.get("MECH_DESIGN_NEO4J_PASSWORD", "").strip()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MIGRATIONS = [
-    "001_init.sql",
-    "002_design_lessons.sql",
-    "003_design_lesson_hardening.sql",
-    "004_validation_report_digest.sql",
-    "005_design_lesson_reviews.sql",
-    "006_delivery_approval_binding.sql",
-    "007_review_immutable_snapshots.sql",
-    "008_drop_legacy_snapshot_constraints.sql",
-    "009_design_lifecycle_closure.sql",
-    "010_design_jobs.sql",
-    "011_design_job_working_copies.sql",
-    "012_design_job_binding_hardening.sql",
-    "013_design_job_binding_security.sql",
-    "014_design_job_knowledge.sql",
-    "015_product_family_match_decisions.sql",
-    "016_design_approval_envelopes.sql",
-    "017_design_lesson_single_confirmation.sql",
-    "018_design_job_obligations.sql",
+    "001_knowledge_core.sql",
+    "002_knowledge_search.sql",
+    "003_knowledge_projection.sql",
 ]
 EXPECTED_NEO4J_MIGRATIONS = [
     "001_constraints.cypher",
@@ -61,8 +46,8 @@ EXPECTED_NEO4J_CONSTRAINTS = [
 
 
 @unittest.skipUnless(
-    DATABASE_URL,
-    "MECH_DESIGN_DATABASE_URL is not configured; installed-wheel migration test skipped",
+    DATABASE_URL and NEO4J_URI and NEO4J_USER and NEO4J_PASSWORD,
+    "knowledge services are not configured; installed-wheel migration test skipped",
 )
 class InstalledWheelMigrationTests(unittest.TestCase):
     def test_installed_wheel_migrates_a_fresh_postgresql_database(self) -> None:
@@ -159,7 +144,11 @@ class InstalledWheelMigrationTests(unittest.TestCase):
                 migrate_environment.pop("MECH_DESIGN_ENV_FILE", None)
                 workspace = root / "workspace"
                 initialized = subprocess.run(
-                    [str(cli), "init", "--workspace", str(workspace)],
+                    [
+                        str(cli), "init", "--workspace", str(workspace),
+                        "--actor", "packaging-test", "--organization", "example-org",
+                        "--design-group", "example-group",
+                    ],
                     cwd=root,
                     env=migrate_environment,
                     capture_output=True,
@@ -171,7 +160,7 @@ class InstalledWheelMigrationTests(unittest.TestCase):
                     initialized.stderr + initialized.stdout,
                 )
                 result = subprocess.run(
-                    [str(cli), "migrate", "--workspace", str(workspace)],
+                    [str(cli), "knowledge", "bootstrap", "--workspace", str(workspace)],
                     cwd=root,
                     env=migrate_environment,
                     capture_output=True,
@@ -179,13 +168,13 @@ class InstalledWheelMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 self.assertEqual(
-                    json.loads(result.stdout),
+                    json.loads(result.stdout)["postgresql"],
                     {"applied": EXPECTED_MIGRATIONS, "skipped": []},
                 )
 
                 with psycopg.connect(database_url) as connection:
                     ledger = connection.execute(
-                        "SELECT version,filename FROM schema_migrations ORDER BY version"
+                        "SELECT version,filename FROM knowledge_schema_migrations ORDER BY version"
                     ).fetchall()
                 self.assertEqual(
                     [(int(version), filename) for version, filename in ledger],

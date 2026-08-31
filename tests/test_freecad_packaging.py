@@ -27,13 +27,13 @@ EXPECTED_FREECAD_SHA256 = os.environ.get(
     "MECH_DESIGN_FREECADCMD_SHA256", ""
 ).strip().lower()
 EXPECTED_SCRIPTS = {
-    "create_empty_working_copy.py": "934dae14266e0d3fb47080b7637c47f1b04642447a358bdf71a03d9489b60b61",
+    "create_empty_model.py": "f0bf474d56ff1652786a0e53c168ba83beadc8369af867322d3a4cdaf892a062",
     "extract_model_manifest.py": "cc63c6d6a9281259bb238c5c8d118115f3fb99c03b6a3ea09863bbe0ecfb267d",
-    "normalize_working_copy.py": "eb3fa4ff50a6f16903720f340b4bb3e8469504d7295e1821bccbaf4417ad9539",
+    "normalize_model.py": "295de05c0f86a0fafd69df4911e101e3aaa326be86b999816c8a461f74a39a04",
     "validate_external_step.py": "f069b4c32b82c3a9016ba95e6dc59ceee4749c0b0501087c2992410d717ec7cd",
     "validate_fastener_interfaces.py": "1defe089214c6ac9a6b89893c05cfcfe6e2576a7b36ee7e737d98e0ababe099b",
     "validate_mechanical_interfaces.py": "a92fbc4f759d98ba5ad75ea721c6a9a52884eef56c9a3c36fce81ad771c247bf",
-    "validate_working_copy.py": "683dcccc27d846eff47bb63ef0de4b1deffa4a0ffd69436f441729f53cd371b5",
+    "validate_model.py": "e1ac0a683f15cf5c960476a33e7c29358057dd7272c618a6b3a06125baa01f96",
 }
 
 
@@ -51,7 +51,7 @@ class FreeCADPackageResourceTests(unittest.TestCase):
 
     def test_new_design_seed_uses_only_native_non_scripted_objects(self) -> None:
         with freecad_scripts_directory() as scripts:
-            source = (scripts / "create_empty_working_copy.py").read_text(
+            source = (scripts / "create_empty_model.py").read_text(
                 encoding="utf-8"
             )
 
@@ -187,7 +187,7 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                 "        raise RuntimeError(name + ': ' + result.stderr[-4000:] + result.stdout[-4000:])\n"
                 "    return result\n"
                 "def validate(path, nonce):\n"
-                "    result = execute('validate_working_copy.py', [path, nonce], 900)\n"
+                "    result = execute('validate_model.py', [path, nonce], 900)\n"
                 "    prefix = 'MECHANICAL_DESIGN_FCSTD_VALIDATION_V1 '\n"
                 "    if result.stderr or not result.stdout.startswith(prefix) or result.stdout.count('\\n') != 1:\n"
                 "        raise RuntimeError('unexpected validation process output')\n"
@@ -195,9 +195,9 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                 "    if payload['nonce'] != nonce:\n"
                 "        raise RuntimeError('validation nonce mismatch')\n"
                 "    return payload\n"
-                "execute('create_empty_working_copy.py', [source], 120)\n"
+                "execute('create_empty_model.py', [source], 120)\n"
                 "source_before = hashlib.sha256(source.read_bytes()).hexdigest()\n"
-                "execute('normalize_working_copy.py', [source, normalized], 120)\n"
+                "execute('normalize_model.py', [source, normalized], 120)\n"
                 "source_after = hashlib.sha256(source.read_bytes()).hexdigest()\n"
                 "execute('extract_model_manifest.py', [source, source_manifest], 900)\n"
                 "execute('extract_model_manifest.py', [normalized, normalized_manifest], 900)\n"
@@ -248,8 +248,8 @@ class InstalledWheelFreeCADE2ETests(unittest.TestCase):
                     "source_unchanged": True,
                     "source_manifest": "ModelManifest/v2",
                     "normalized_manifest": "ModelManifest/v2",
-                    "source_validation": "MechanicalDesignWorkingCopyValidation/v2",
-                    "normalized_validation": "MechanicalDesignWorkingCopyValidation/v2",
+                    "source_validation": "MechanicalDesignModelValidation/v1",
+                    "normalized_validation": "MechanicalDesignModelValidation/v1",
                     "loaded": [
                         "validate_external_step.py",
                         "validate_fastener_interfaces.py",

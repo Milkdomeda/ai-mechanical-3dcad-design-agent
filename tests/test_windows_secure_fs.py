@@ -414,7 +414,7 @@ def test_native_windows_lock_serializes_processes_on_both_volumes(
     secure_fs = importlib.import_module("mechanical_design_agent.secure_fs")
     context = multiprocessing.get_context("spawn")
     for root in native_ntfs_roots:
-        lock = root / ".working-copy.lock"
+        lock = root / ".design-session.lock"
         ready = context.Event()
         process = context.Process(target=_hold_lock, args=(str(lock), ready))
         process.start()
@@ -425,37 +425,6 @@ def test_native_windows_lock_serializes_processes_on_both_volumes(
         process.join(timeout=10)
         assert process.exitcode == 0
         assert elapsed >= 0.75
-
-
-def test_native_windows_job_containment_rejects_junctions(
-    native_ntfs_roots: tuple[Path, Path],
-) -> None:
-    jobs = importlib.import_module("mechanical_design_agent.jobs")
-    for root in native_ntfs_roots:
-        job_root = root / "JOB-20260823-001-unicode-空间"
-        job_root.mkdir()
-        analysis = job_root / "analysis"
-        analysis.mkdir()
-        external = root / "external-job-victim"
-        external.mkdir()
-        junction = analysis / "escape"
-        result = subprocess.run(
-            ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(external)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr or result.stdout
-        try:
-            with pytest.raises(jobs.JobFailure) as captured:
-                jobs.managed_job_path(
-                    job_root=job_root,
-                    relative_path="analysis/escape/model.FCStd",
-                    allow_missing_leaf=True,
-                )
-            assert captured.value.code == "JOB_PATH_UNSAFE"
-        finally:
-            junction.rmdir()
 
 
 def test_native_windows_pinned_managed_reads_and_enumeration_reject_reparse_points(

@@ -9,8 +9,8 @@ from mechanical_design_agent.assembly import validate_assembly_completeness
 def _manifest(report_path: str):
     return {
         "schema_version": "AssemblyCompleteness/v2",
-        "working_copy_id": "00000000-0000-0000-0000-000000000011",
-        "working_sha256": "a" * 64,
+        "design_id": "assembly-example",
+        "model_sha256": "a" * 64,
         "ground_component_id": "base",
         "components": [
             {"id": "base", "bom_item_id": "B1", "role": "ground", "interface_level": "detailed"},
@@ -38,7 +38,7 @@ def _manifest(report_path: str):
             "id": "FG1",
             "status": "passed",
             "validator": "freecad-model-validation",
-            "working_sha256": "a" * 64,
+            "model_sha256": "a" * 64,
             "report_path": report_path,
         }],
         "design_boundary": [{"id": "drive", "interface": "shaft", "owner": "customer", "status": "open"}],
@@ -53,7 +53,7 @@ class AssemblyCompletenessTests(unittest.TestCase):
             "status": "passed",
             "validator": "freecad-model-validation",
             "kind": "FCStd",
-            "working_sha256": "a" * 64,
+            "model_sha256": "a" * 64,
             "summary": {"fasteners_detected": 3},
             "fastener_inventory": [
                 {"object_id": "Bolt_001", "contract_check_id": "fastener.Bolt_001.contract"},
@@ -131,7 +131,7 @@ class AssemblyCompletenessTests(unittest.TestCase):
 
     def test_stale_model_validation_report_fails(self):
         report = json.loads(self.report_path.read_text(encoding="utf-8"))
-        report["working_sha256"] = "b" * 64
+        report["model_sha256"] = "b" * 64
         self.report_path.write_text(json.dumps(report), encoding="utf-8")
         result = validate_assembly_completeness(_manifest(str(self.report_path)))
         failed = {item["id"] for item in result["checks"] if item["status"] == "failed"}

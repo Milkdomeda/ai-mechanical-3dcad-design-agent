@@ -1,41 +1,16 @@
 {
-  "aliases": [],
+  "aliases": [
+    "example product line"
+  ],
   "design_group_id": "example-design-group",
-  "design_group_name": "Example Design Group",
-  "design_policy": {
-    "approval_before_delivery": true,
-    "priority": "existing-product-modification-first",
-    "working_copy_required": true
-  },
-  "expected_initial_models": {
-    "maximum": 9,
-    "minimum": 1
-  },
   "family_id": "example-family",
   "family_name": "Example Product Family",
-  "family_owner_actor_id": "example-user",
-  "knowledge_scope_policy": "family-isolated-explicit-promotion",
-  "library_root": null,
-  "minimum_distinct_models_for_generalization": 3,
+  "onboarding_id": "example-family-onboarding",
   "organization_id": "example-org",
-  "organization_name": "Example Organization",
-  "question_batch_limit": 5,
-  "schema_version": "product-family-bootstrap/v1",
-  "source_formats": [
-    ".step",
-    ".stp",
-    ".FCStd"
-  ],
-  "specialized_context_policy": "explicit-family-authorization-only",
-  "status": "awaiting-source-folder",
-  "subfamily": null,
-  "subfamily_mode": "discover-and-confirm",
-  "validation_policy": {
-    "basic_engineering_calculations": true,
-    "fem_required": false,
-    "geometry": true,
-    "interfaces": true,
-    "rules": true,
-    "units": true
-  }
+  "source_references": [
+    {
+      "identity": "example-model-collection",
+      "kind": "reviewed-cad-set"
+    }
+  ]
 }

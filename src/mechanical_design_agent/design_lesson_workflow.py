@@ -198,6 +198,7 @@ class DesignLessonWorkflow:
             published = publish(
                 review_card=card,
                 review_sha256=str(expected_sha256),
+                decision_text=decision_text,
             )
         except Exception as exc:
             warning = f"knowledge publication unavailable ({type(exc).__name__})"

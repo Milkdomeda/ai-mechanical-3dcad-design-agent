@@ -56,7 +56,7 @@ def test_environment_can_select_knowledge_administration(
     )
 
 
-@pytest.mark.parametrize("removed", ["governed", "all", "maintenance"])
-def test_removed_surfaces_fail_closed(removed: str) -> None:
+@pytest.mark.parametrize("invalid", ["unknown", "all", "maintenance"])
+def test_unknown_surfaces_fail_closed(invalid: str) -> None:
     with pytest.raises(ValueError, match="design or knowledge-admin"):
-        create_mcp(tool_profile=removed)
+        create_mcp(tool_profile=invalid)

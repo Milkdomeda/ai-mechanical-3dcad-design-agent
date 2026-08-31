@@ -6,6 +6,5 @@ __pycache__/
 .coverage
 data/
 /designs/
-/jobs/
 /output/
 /dist/

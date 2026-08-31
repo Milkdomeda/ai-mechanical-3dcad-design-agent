@@ -547,21 +547,20 @@ def _extract_with_installed_wheel(
     )
     workspace = attempt_root / "extractor workspace"
     workspace.mkdir()
-    family = workspace / "unused-family.json"
-    family.write_text("{}\n", encoding="utf-8")
     manifest_path = workspace / "manifest.json"
     script = "\n".join(
         (
             "import json, sys",
             "from pathlib import Path",
-            "from mechanical_design_agent.config import Settings",
-            "from mechanical_design_agent.extractor import FreeCADExtractor",
-            "workspace, source, output, freecadcmd, family = map(Path, sys.argv[1:])",
-            "settings = Settings(workspace=workspace, package_root=workspace, database_url='', "
-            "neo4j_uri='', neo4j_user='', neo4j_password='', freecadcmd=freecadcmd, "
-            "actor_id='example-user', artifact_root=workspace / 'artifacts', family_config_path=family)",
-            "manifest = FreeCADExtractor(settings).extract(source, output)",
-            "print(json.dumps(manifest, sort_keys=True))",
+            "from mechanical_design_agent.freecad_runner import run_freecad_script",
+            "from mechanical_design_agent.package_resources import freecad_scripts_directory",
+            "from mechanical_design_agent.secure_fs import read_managed_file",
+            "workspace, source, output, freecadcmd = map(Path, sys.argv[1:5])",
+            "pin = read_managed_file(freecadcmd)",
+            "with freecad_scripts_directory() as resources:",
+            "    result = run_freecad_script(freecadcmd, resources / 'extract_model_manifest.py', [source, output], timeout_seconds=900, expected_sha256=pin.sha256, expected_identity=pin.identity, controlled_directory=workspace.parent)",
+            "if result.returncode != 0: raise RuntimeError(result.stderr or result.stdout)",
+            "print(json.dumps(json.loads(output.read_text(encoding='utf-8')), sort_keys=True))",
         )
     )
     before = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -575,7 +574,6 @@ def _extract_with_installed_wheel(
             str(source),
             str(manifest_path),
             str(env.freecadcmd),
-            str(family),
         ],
         cwd=outside,
         environment=environment,

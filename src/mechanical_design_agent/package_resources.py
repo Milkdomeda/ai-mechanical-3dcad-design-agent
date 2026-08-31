@@ -14,12 +14,6 @@ def _resource_directory(name: str) -> Iterator[Path]:
 
 
 @contextmanager
-def schemas_directory() -> Iterator[Path]:
-    with _resource_directory("schemas") as root:
-        yield root
-
-
-@contextmanager
 def validation_resources_directory() -> Iterator[Path]:
     with _resource_directory("validation") as root:
         yield root

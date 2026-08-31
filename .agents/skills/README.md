@@ -3,7 +3,7 @@
 This directory contains exactly three agent skills maintained and released by
 the AI Mechanical 3DCAD Design Agent project:
 
-- `mechanical-design-job-workspace`
+- `mechanical-design`
 - `freecad-standard-parts`
 - `freecad-model-validation`
 

@@ -16,6 +16,10 @@ from .bootstrap_runtime import BootstrapRuntime
 from .design_knowledge import DesignKnowledgeService
 from .design_lesson_workflow import DesignLessonWorkflow
 from .design_session import DesignSessionService
+from .knowledge_repository import KnowledgeRepository, KnowledgeScope
+from .knowledge_service import KnowledgeService
+from .projection import Neo4jProjection
+from .standard_parts import StandardPartRegistry
 from .tool_profiles import ProfiledToolRegistrar, resolve_tool_profile
 
 
@@ -85,16 +89,6 @@ def _tool_call(call: Callable[[], object]) -> str:
         ) from None
 
 
-class _KnowledgeUnavailable:
-    def __getattr__(self, name: str) -> Callable[..., object]:
-        def unavailable(**_: object) -> object:
-            raise RuntimeError(
-                f"knowledge administration service is not configured for {name}"
-            )
-
-        return unavailable
-
-
 def create_mcp(
     *,
     runtime: BootstrapRuntime | None = None,
@@ -103,7 +97,9 @@ def create_mcp(
     design_knowledge_service: Any | None = None,
     lesson_workflow: Any | None = None,
     knowledge_service: Any | None = None,
+    knowledge_service_factory: Callable[[object], Any] | None = None,
     standard_part_service: Any | None = None,
+    standard_part_service_factory: Callable[[object], Any] | None = None,
     tool_profile: str | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
@@ -115,6 +111,8 @@ def create_mcp(
     local_design = design_service
     local_knowledge = design_knowledge_service
     local_lessons = lesson_workflow
+    local_admin = knowledge_service
+    local_parts = standard_part_service
     lock = Lock()
 
     def get_design() -> Any:
@@ -133,7 +131,7 @@ def create_mcp(
 
     def load_context(query: str, features: dict[str, object]) -> dict[str, object]:
         scope = bootstrap_runtime.design_knowledge_scope()
-        service = knowledge_service or _KnowledgeUnavailable()
+        service = get_admin()
         return service.design_context_build(
             organization_id=scope["organization_id"],
             design_group_id=scope["design_group_id"],
@@ -144,24 +142,60 @@ def create_mcp(
 
     def get_design_knowledge() -> Any:
         nonlocal local_knowledge
+        design = get_design()
         if local_knowledge is None:
             with lock:
                 if local_knowledge is None:
                     local_knowledge = DesignKnowledgeService(
-                        get_design(), load_context
+                        design, load_context
                     )
         return local_knowledge
 
     def get_lessons() -> Any:
         nonlocal local_lessons
+        design = get_design()
         if local_lessons is None:
             with lock:
                 if local_lessons is None:
-                    local_lessons = DesignLessonWorkflow(get_design())
+                    local_lessons = DesignLessonWorkflow(design)
         return local_lessons
 
-    admin = knowledge_service or _KnowledgeUnavailable()
-    parts = standard_part_service or admin
+    def get_admin() -> Any:
+        nonlocal local_admin
+        if local_admin is not None:
+            return local_admin
+        with lock:
+            if local_admin is None:
+                settings = bootstrap_runtime.knowledge_settings()
+                if knowledge_service_factory is not None:
+                    local_admin = knowledge_service_factory(settings)
+                else:
+                    repository = KnowledgeRepository(
+                        settings.database_url,
+                        KnowledgeScope(
+                            settings.organization_id, settings.design_group_id
+                        ),
+                    )
+                    projection = Neo4jProjection(
+                        settings.neo4j_uri,
+                        settings.neo4j_user,
+                        settings.neo4j_password,
+                    )
+                    local_admin = KnowledgeService(
+                        repository, projection, settings.workspace
+                    )
+        return local_admin
+
+    def get_parts() -> Any:
+        nonlocal local_parts
+        if local_parts is not None:
+            return local_parts
+        with lock:
+            if local_parts is None:
+                settings = bootstrap_runtime.standard_part_settings()
+                factory = standard_part_service_factory or StandardPartRegistry
+                local_parts = factory(settings)
+        return local_parts
 
     @registrar.tool()
     def design_system_status() -> str:
@@ -261,7 +295,7 @@ def create_mcp(
             lambda: get_lessons().decide(
                 design_id=design_id,
                 decision_text=decision_text,
-                publisher=admin,
+                publisher=get_admin(),
             )
         )
 
@@ -288,7 +322,7 @@ def create_mcp(
     ) -> str:
         """Register a validated downloaded standard part with full provenance."""
         return _tool_call(
-            lambda: parts.standard_part_download_register(
+            lambda: get_parts().register_download(
                 provider_id=provider_id,
                 file_path=file_path,
                 part_number=part_number,
@@ -304,17 +338,20 @@ def create_mcp(
     def product_family_onboarding_start(request_json: str) -> str:
         """Start independent Product Family Knowledge onboarding."""
         return _tool_call(
-            lambda: admin.product_family_onboarding_start(
+            lambda: get_admin().product_family_onboarding_start(
                 **_object(request_json, "request_json")
             )
         )
 
     @registrar.tool()
-    def product_family_onboarding_analyze(onboarding_id: str) -> str:
+    def product_family_onboarding_analyze(
+        onboarding_id: str, analysis_json: str = "{\"assertions\":[]}"
+    ) -> str:
         """Analyze an onboarding family workspace."""
         return _tool_call(
-            lambda: admin.product_family_onboarding_analyze(
-                onboarding_id=onboarding_id
+            lambda: get_admin().product_family_onboarding_analyze(
+                onboarding_id=onboarding_id,
+                analysis=_object(analysis_json, "analysis_json"),
             )
         )
 
@@ -324,7 +361,7 @@ def create_mcp(
     ) -> str:
         """Review Product Family Knowledge using natural-language semantics."""
         return _tool_call(
-            lambda: admin.product_family_onboarding_review(
+            lambda: get_admin().product_family_onboarding_review(
                 onboarding_id=onboarding_id,
                 decision_text=decision_text,
                 review=_object(review_json, "review_json"),
@@ -335,7 +372,7 @@ def create_mcp(
     def product_family_onboarding_publish(onboarding_id: str) -> str:
         """Publish an approved Product Family Knowledge package."""
         return _tool_call(
-            lambda: admin.product_family_onboarding_publish(
+            lambda: get_admin().product_family_onboarding_publish(
                 onboarding_id=onboarding_id
             )
         )
@@ -344,7 +381,7 @@ def create_mcp(
     def product_family_onboarding_status(onboarding_id: str) -> str:
         """Inspect Product Family Knowledge onboarding status."""
         return _tool_call(
-            lambda: admin.product_family_onboarding_status(
+            lambda: get_admin().product_family_onboarding_status(
                 onboarding_id=onboarding_id
             )
         )
@@ -353,7 +390,7 @@ def create_mcp(
     def knowledge_search(query: str, filters_json: str = "{}") -> str:
         """Search approved Product Family Knowledge and Design Lessons."""
         return _tool_call(
-            lambda: admin.knowledge_search(
+            lambda: get_admin().knowledge_search(
                 query=query, filters=_object(filters_json, "filters_json")
             )
         )
@@ -362,7 +399,7 @@ def create_mcp(
     def knowledge_review(review_id: str, decision_text: str) -> str:
         """Record a natural-language knowledge review decision."""
         return _tool_call(
-            lambda: admin.knowledge_review(
+            lambda: get_admin().knowledge_review(
                 review_id=review_id, decision_text=decision_text
             )
         )
@@ -373,7 +410,7 @@ def create_mcp(
     ) -> str:
         """Search published Design Lessons with applicability filtering."""
         return _tool_call(
-            lambda: admin.design_lesson_search(
+            lambda: get_admin().design_lesson_search(
                 query=query,
                 features=_object(features_json, "features_json"),
                 limit=limit,
@@ -383,7 +420,7 @@ def create_mcp(
     @registrar.tool()
     def design_lesson_get(lesson_id: str) -> str:
         """Read one published Design Lesson."""
-        return _tool_call(lambda: admin.design_lesson_get(lesson_id=lesson_id))
+        return _tool_call(lambda: get_admin().design_lesson_get(lesson_id=lesson_id))
 
     @registrar.tool()
     def design_lesson_supersede(
@@ -391,7 +428,7 @@ def create_mcp(
     ) -> str:
         """Supersede a lesson after a natural-language administrative decision."""
         return _tool_call(
-            lambda: admin.design_lesson_supersede(
+            lambda: get_admin().design_lesson_supersede(
                 lesson_id=lesson_id,
                 replacement_lesson_id=replacement_lesson_id,
                 decision_text=decision_text,
@@ -402,7 +439,7 @@ def create_mcp(
     def design_lesson_revoke(lesson_id: str, decision_text: str) -> str:
         """Revoke a lesson after a natural-language administrative decision."""
         return _tool_call(
-            lambda: admin.design_lesson_revoke(
+            lambda: get_admin().design_lesson_revoke(
                 lesson_id=lesson_id, decision_text=decision_text
             )
         )
@@ -410,13 +447,13 @@ def create_mcp(
     @registrar.tool()
     def projection_sync(limit: int = 100) -> str:
         """Replay knowledge outbox events into Neo4j."""
-        return _tool_call(lambda: admin.projection_sync(limit=limit))
+        return _tool_call(lambda: get_admin().projection_sync(limit=limit))
 
     @registrar.tool()
     def projection_rebuild(decision_text: str) -> str:
         """Rebuild the Neo4j knowledge projection after explicit approval."""
         return _tool_call(
-            lambda: admin.projection_rebuild(decision_text=decision_text)
+            lambda: get_admin().projection_rebuild(decision_text=decision_text)
         )
 
     registrar.assert_complete()

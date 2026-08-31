@@ -424,7 +424,7 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                 _close_handle(handle)
             raise SecureFilesystemError(
                 "WINDOWS_PATH_IDENTITY_CHANGED",
-                "working-copy lock cannot be acquired safely",
+                "design-session lock cannot be acquired safely",
             ) from exc
         try:
             yield

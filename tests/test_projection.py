@@ -1,115 +1,118 @@
 from __future__ import annotations
 
-import unittest
-
 from mechanical_design_agent.projection import Neo4jProjection
 
 
-class FakeContext:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def session(self):
-        return FakeContext()
-
-    def execute_write(self, work):
-        return work(self)
-
-    def run(self, *_args, **_kwargs):
-        return self
-
+class _Result:
     def consume(self):
         return self
 
 
-class FakeOutboxRepository:
+class _Session:
     def __init__(self) -> None:
-        self.marks: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def claim_outbox(self, *, worker_id: str, limit: int, lease_seconds: int):
-        return [{"id": "event-1", "event_type": "unknown.event", "payload": {}}]
+    def __enter__(self):
+        return self
 
-    def mark_outbox(self, event_id: str, *, worker_id: str, error: str = "") -> None:
-        self.marks.append((event_id, error))
+    def __exit__(self, *_args):
+        return False
+
+    def run(self, query: str, **parameters: object) -> _Result:
+        self.calls.append((query, parameters))
+        return _Result()
+
+    def execute_write(self, callback):
+        return callback(self)
 
 
-class LostLeaseRepository:
+class _Driver:
+    def __init__(self, session: _Session) -> None:
+        self.value = session
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def session(self) -> _Session:
+        return self.value
+
+
+class _Repository:
     def __init__(self) -> None:
-        self.marked: list[str] = []
+        self.marked: list[int] = []
 
-    def claim_outbox(self, *, worker_id: str, limit: int, lease_seconds: int):
+    def pending_projection_events(self, *, limit: int):
+        assert limit == 100
         return [
             {
-                "id": "lost-lease",
-                "aggregate_type": "design_working_copy",
-                "aggregate_id": "working-lost-lease",
-                "event_type": "design_working_copy.approved",
+                "id": 1,
+                "aggregate_type": "design_lesson",
+                "aggregate_id": "lesson-1",
+                "event_type": "published",
                 "payload": {},
-            },
-            {
-                "id": "next-event",
-                "aggregate_type": "design_working_copy",
-                "aggregate_id": "working-next-event",
-                "event_type": "design_working_copy.approved",
-                "payload": {},
-            },
+            }
         ]
 
-    def mark_outbox(self, event_id: str, *, worker_id: str, error: str = "") -> None:
-        if event_id == "lost-lease":
-            raise RuntimeError("outbox event is not leased by this worker")
+    def projection_record(self, *, aggregate_type: str, aggregate_id: str):
+        assert aggregate_type == "design_lesson"
+        return {"id": aggregate_id, "status": "approved"}
+
+    def mark_projection_event(self, event_id: int) -> None:
         self.marked.append(event_id)
 
-
-class ProjectionEventDispatchTests(unittest.TestCase):
-    def test_known_non_graph_delivery_event_is_intentionally_acknowledged(self) -> None:
-        projection = Neo4jProjection.__new__(Neo4jProjection)
-
-        projection._project_event(
-            object(),
-            object(),
-            {"event_type": "design_working_copy.approved", "payload": {"working_copy_id": "working-1"}},
-        )
-
-    def test_unknown_outbox_event_is_not_silently_accepted(self) -> None:
-        projection = Neo4jProjection.__new__(Neo4jProjection)
-
-        with self.assertRaisesRegex(ValueError, "unsupported outbox event type"):
-            projection._project_event(
-                object(),
-                object(),
-                {"event_type": "design_lesson.unknown", "payload": {}},
-            )
-
-    def test_unknown_outbox_event_remains_pending_with_an_error(self) -> None:
-        projection = Neo4jProjection.__new__(Neo4jProjection)
-        projection.initialize_constraints = lambda: None
-        projection._driver = lambda: FakeContext()
-        repository = FakeOutboxRepository()
-
-        result = projection.project_pending(repository)
-
-        self.assertEqual(result["processed"], 0)
-        self.assertEqual(len(result["failed"]), 1)
-        self.assertEqual(repository.marks[0][0], "event-1")
-        self.assertIn("unsupported outbox event type", repository.marks[0][1])
-
-    def test_lost_lease_acknowledgement_does_not_abort_later_events(self) -> None:
-        projection = Neo4jProjection.__new__(Neo4jProjection)
-        projection.initialize_constraints = lambda: None
-        projection._driver = lambda: FakeContext()
-        repository = LostLeaseRepository()
-
-        result = projection.project_pending(repository)
-
-        self.assertEqual(result["processed"], 1)
-        self.assertEqual(repository.marked, ["next-event"])
-        self.assertEqual(result["failed"][0]["event_id"], "lost-lease")
-        self.assertIn("not leased", result["failed"][0]["error"])
+    def projection_records(self):
+        return {
+            "product_family": [{"id": "family-1", "status": "active"}],
+            "assertion": [],
+            "design_lesson": [{"id": "lesson-1", "status": "approved"}],
+        }
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _projection(session: _Session) -> Neo4jProjection:
+    projection = Neo4jProjection("bolt://localhost", "neo4j", "secret")
+    projection.initialize_constraints = lambda: None  # type: ignore[method-assign]
+    projection._driver = lambda: _Driver(session)  # type: ignore[method-assign]
+    return projection
+
+
+def test_outbox_event_is_marked_only_after_graph_write() -> None:
+    session = _Session()
+    repository = _Repository()
+
+    result = _projection(session).sync(repository)
+
+    assert result["status"] == "completed"
+    assert result["processed"] == 1
+    assert repository.marked == [1]
+    assert "MERGE (n:DesignLesson" in session.calls[0][0]
+
+
+def test_rebuild_replaces_only_owned_knowledge_nodes() -> None:
+    session = _Session()
+
+    result = _projection(session).rebuild(_Repository())
+
+    assert result["authoritative_source"] == "postgresql"
+    assert result["counts"] == {
+        "product_family": 1,
+        "assertion": 0,
+        "design_lesson": 1,
+    }
+    assert "projection_owner" in session.calls[0][0]
+    assert any("MERGE (n:ProductFamily" in query for query, _ in session.calls)
+
+
+def test_projection_failure_keeps_event_pending_without_leaking_details() -> None:
+    class FailingRepository(_Repository):
+        def projection_record(self, **_kwargs):
+            raise RuntimeError("private database path")
+
+    repository = FailingRepository()
+    result = _projection(_Session()).sync(repository)
+
+    assert result["status"] == "needs_retry"
+    assert repository.marked == []
+    assert "private database path" not in str(result["failed"])

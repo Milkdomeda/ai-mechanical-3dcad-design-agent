@@ -246,8 +246,13 @@ class _Publisher:
         self.calls: list[tuple[dict[str, object], str]] = []
 
     def publish_design_lesson_review(
-        self, *, review_card: dict[str, object], review_sha256: str
+        self,
+        *,
+        review_card: dict[str, object],
+        review_sha256: str,
+        decision_text: str,
     ) -> dict[str, object]:
+        assert decision_text
         self.calls.append((review_card, review_sha256))
         if self.fail:
             raise ConnectionError("private database details")
