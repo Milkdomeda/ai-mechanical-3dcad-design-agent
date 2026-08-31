@@ -281,8 +281,8 @@ class JobCadSettings(JobSettings):
 
 
 @dataclass(frozen=True)
-class LightweightDesignSettings:
-    """Filesystem and certified-FreeCAD settings for ordinary design sessions."""
+class DesignSettings:
+    """Filesystem and certified-FreeCAD settings for design sessions."""
 
     workspace: Path
     package_root: Path

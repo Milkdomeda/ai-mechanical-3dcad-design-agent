@@ -20,7 +20,6 @@ def _tool(server: object, name: str):
 
 
 def _fake_x64_freecadcmd_bytes() -> bytes:
-    """Return the smallest fixture accepted by the Windows PE trust preflight."""
     payload = bytearray(70)
     payload[:2] = b"MZ"
     payload[0x3C:0x40] = (64).to_bytes(4, "little")
@@ -29,13 +28,17 @@ def _fake_x64_freecadcmd_bytes() -> bytes:
     return bytes(payload)
 
 
-def test_default_tools_use_injected_lightweight_services_without_legacy_startup() -> None:
+def test_design_tools_use_injected_services_without_database_startup() -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
-    class LocalDesign:
+    class Design:
         def start(self, **kwargs: object) -> dict[str, object]:
             calls.append(("start", kwargs))
             return {"status": "approved", "design_id": kwargs["design_id"]}
+
+        def get(self, design_id: str) -> dict[str, object]:
+            calls.append(("status", {"design_id": design_id}))
+            return {"model_status": "completed", "design_id": design_id}
 
         def record_result(self, **kwargs: object) -> dict[str, object]:
             calls.append(("result", kwargs))
@@ -46,13 +49,18 @@ def test_default_tools_use_injected_lightweight_services_without_legacy_startup(
             calls.append(("knowledge", kwargs))
             return {"status": "completed_no_match", "blocking": False}
 
-    def forbidden_legacy(_settings: object) -> object:
-        pytest.fail("default start/result instantiated the governed service")
+    class Lessons:
+        def confirm(self, **kwargs: object) -> dict[str, object]:
+            calls.append(("confirm", kwargs))
+            return {
+                "confirmation_state": "APPROVE",
+                "lesson_review_status": "no_material_lessons",
+            }
 
     server = create_mcp(
-        lightweight_service=LocalDesign(),
-        lightweight_knowledge_service=Knowledge(),
-        service_factory=forbidden_legacy,
+        design_service=Design(),
+        design_knowledge_service=Knowledge(),
+        lesson_workflow=Lessons(),
         tool_profile="design",
     )
 
@@ -67,6 +75,7 @@ def test_default_tools_use_injected_lightweight_services_without_legacy_startup(
             "",
         )
     )
+    status = json.loads(_tool(server, "design_status")("carrier"))
     knowledge = json.loads(
         _tool(server, "design_knowledge_retrieve")(
             "carrier", "basketball cradle", '{"material":"PLA"}', "[]", False
@@ -74,17 +83,31 @@ def test_default_tools_use_injected_lightweight_services_without_legacy_startup(
     )
     recorded = json.loads(
         _tool(server, "design_record_result")(
-            "carrier", "model.FCStd", "validation/report.json", '["validation/view.png"]'
+            "carrier",
+            "model.FCStd",
+            "validation/report.json",
+            '["validation/view.png"]',
         )
+    )
+    confirmed = json.loads(
+        _tool(server, "design_confirm")("carrier", "设计已确认", "[]")
     )
 
     assert started["status"] == "approved"
+    assert status["model_status"] == "completed"
     assert knowledge == {"blocking": False, "status": "completed_no_match"}
     assert recorded["status"] == "completed"
-    assert [name for name, _arguments in calls] == ["start", "knowledge", "result"]
+    assert confirmed["lesson_review_status"] == "no_material_lessons"
+    assert [name for name, _ in calls] == [
+        "start",
+        "status",
+        "knowledge",
+        "result",
+        "confirm",
+    ]
 
 
-def test_lightweight_bootstrap_settings_do_not_require_database(
+def test_design_settings_do_not_require_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -105,7 +128,7 @@ def test_lightweight_bootstrap_settings_do_not_require_database(
         freecad_sha256=pinned.sha256,
     )
 
-    settings = runtime.lightweight_design_settings()
+    settings = runtime.design_settings()
 
     assert same_managed_path(settings.workspace, workspace)
     assert relative_managed_path(

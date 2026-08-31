@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from .approval_semantics import APPROVE, classify_approval
-from .config import LightweightDesignSettings
+from .config import DesignSettings
 from .fcstd_security import inspect_fcstd_bytes
 from .freecad_runner import run_freecad_script
 from .hashing import file_sha256
@@ -32,8 +32,8 @@ from .secure_fs import (
 )
 
 
-_SESSION_SCHEMA = "LightweightDesignSession/v1"
-_SESSION_STATUSES = frozenset(
+_SESSION_SCHEMA = "DesignSession/v1"
+_MODEL_STATUSES = frozenset(
     {"approved", "modeling", "needs_attention", "completed"}
 )
 _MODEL_CLASSIFICATIONS = frozenset({"new_design", "existing_model"})
@@ -81,8 +81,8 @@ def _session_identity(state: Mapping[str, Any]) -> tuple[object, ...]:
         state.get("model_classification"),
         state.get("requirements"),
         state.get("proposal_summary"),
-        (state.get("approval") or {}).get("state")
-        if isinstance(state.get("approval"), Mapping)
+        (state.get("direction_approval") or {}).get("state")
+        if isinstance(state.get("direction_approval"), Mapping)
         else None,
     )
 
@@ -98,13 +98,23 @@ def _validate_state(raw: object) -> dict[str, Any]:
         raise ValueError("design.json title is invalid")
     if state.get("model_classification") not in _MODEL_CLASSIFICATIONS:
         raise ValueError("design.json model_classification is invalid")
-    if state.get("status") not in _SESSION_STATUSES:
-        raise ValueError("design.json status is invalid")
+    if state.get("model_status") not in _MODEL_STATUSES:
+        raise ValueError("design.json model_status is invalid")
     if not isinstance(state.get("requirements"), dict):
         raise ValueError("design.json requirements are invalid")
-    approval = state.get("approval")
+    approval = state.get("direction_approval")
     if not isinstance(approval, dict) or approval.get("state") != APPROVE:
-        raise ValueError("design.json approval is invalid")
+        raise ValueError("design.json direction_approval is invalid")
+    final_confirmation = state.get("final_confirmation")
+    if not isinstance(final_confirmation, dict):
+        raise ValueError("design.json final_confirmation is invalid")
+    if final_confirmation.get("state") not in {"not_confirmed", APPROVE}:
+        raise ValueError("design.json final_confirmation state is invalid")
+    lesson_review = state.get("lesson_review")
+    if not isinstance(lesson_review, dict) or not isinstance(
+        lesson_review.get("status"), str
+    ):
+        raise ValueError("design.json lesson_review is invalid")
     knowledge = state.get("knowledge")
     if (
         not isinstance(knowledge, dict)
@@ -121,12 +131,12 @@ def _validate_state(raw: object) -> dict[str, Any]:
     return state
 
 
-class LightweightDesignService:
-    """Local, inspectable design-session state with no database dependency."""
+class DesignSessionService:
+    """Own local, inspectable design-session state without a database dependency."""
 
     def __init__(
         self,
-        settings: LightweightDesignSettings,
+        settings: DesignSettings,
         *,
         seed_creator: SeedCreator | None = None,
         source_normalizer: SourceNormalizer | None = None,
@@ -228,7 +238,7 @@ class LightweightDesignService:
         approval_state = classify_approval(approval_text)
         if approval_state != APPROVE:
             return {
-                "schema_version": "LightweightDesignStart/v1",
+                "schema_version": "DesignStartResult/v1",
                 "status": "not_started",
                 "approval_state": approval_state,
                 "next_action": (
@@ -253,11 +263,14 @@ class LightweightDesignService:
             "model_classification": model_classification,
             "requirements": requirement_copy,
             "proposal_summary": proposal_summary.strip(),
-            "approval": {"state": APPROVE, "text": approval_text.strip()},
+            "direction_approval": {
+                "state": APPROVE,
+                "text": approval_text.strip(),
+            },
         }
         designs_root = self._ensure_root()
         final = designs_root / normalized_id
-        lock_path = designs_root / ".lightweight-designs.lock"
+        lock_path = designs_root / ".designs.lock"
         with exclusive_file_lock(lock_path):
             if final.exists():
                 existing = self._read_state(
@@ -296,7 +309,7 @@ class LightweightDesignService:
                 state = {
                     "schema_version": _SESSION_SCHEMA,
                     **intended,
-                    "status": "approved",
+                    "model_status": "approved",
                     "knowledge": {
                         "status": "not_executed",
                         "used_ids": [],
@@ -315,6 +328,18 @@ class LightweightDesignService:
                         "report_relative_path": None,
                         "evidence_relative_paths": [],
                     },
+                    "final_confirmation": {
+                        "state": "not_confirmed",
+                        "text": None,
+                        "model_sha256": None,
+                        "confirmed_at": None,
+                    },
+                    "lesson_review": {
+                        "status": "not_evaluated",
+                        "review_relative_path": None,
+                        "review_sha256": None,
+                        "warning": None,
+                    },
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -328,7 +353,7 @@ class LightweightDesignService:
                     remove_owned_tree(
                         stage,
                         expected_parent=designs_root,
-                        label="lightweight design creation attempt",
+                        label="design creation attempt",
                     )
                 raise
 
@@ -389,8 +414,8 @@ class LightweightDesignService:
         root: Path, state: Mapping[str, Any], *, resumed: bool
     ) -> dict[str, object]:
         return {
-            "schema_version": "LightweightDesignStart/v1",
-            "status": state["status"],
+            "schema_version": "DesignStartResult/v1",
+            "status": state["model_status"],
             "approval_state": APPROVE,
             "design_id": state["design_id"],
             "design_root": str(root),
@@ -405,14 +430,26 @@ class LightweightDesignService:
             state = self._read_state(root)
             model_path = root / "model.FCStd"
             recorded_sha = state["model"].get("sha256")
-            if state["status"] == "completed" and (
+            if state["model_status"] == "completed" and (
                 not model_path.is_file() or file_sha256(model_path) != recorded_sha
             ):
-                state["status"] = "needs_attention"
+                state["model_status"] = "needs_attention"
                 state["validation"]["status"] = "stale"
                 state["validation"]["warning"] = (
                     "model changed after the recorded validation"
                 )
+                state["final_confirmation"] = {
+                    "state": "not_confirmed",
+                    "text": None,
+                    "model_sha256": None,
+                    "confirmed_at": None,
+                }
+                state["lesson_review"] = {
+                    "status": "invalidated",
+                    "review_relative_path": None,
+                    "review_sha256": None,
+                    "warning": "model changed after final result recording",
+                }
                 state["updated_at"] = _timestamp()
                 self._replace_state(root, state)
             return state
@@ -446,6 +483,183 @@ class LightweightDesignService:
             state["updated_at"] = _timestamp()
             self._replace_state(root, state)
             return state
+
+    def confirm(self, *, design_id: str, confirmation_text: str) -> dict[str, object]:
+        """Record final-model confirmation after exact-hash validation."""
+        confirmation_state = classify_approval(confirmation_text)
+        if confirmation_state != APPROVE:
+            return {
+                "schema_version": "DesignConfirmationResult/v1",
+                "design_id": design_id,
+                "confirmation_state": confirmation_state,
+                "status": "not_confirmed",
+                "next_action": (
+                    "revise_design"
+                    if confirmation_state == "REJECT"
+                    else "clarify_confirmation"
+                ),
+            }
+        root = self._root_for(design_id, must_exist=True)
+        with exclusive_file_lock(root / ".design.lock"):
+            state = self._read_state(root)
+            model_sha256 = self._require_confirmable(root, state)
+            existing = state["final_confirmation"]
+            if (
+                existing.get("state") == APPROVE
+                and existing.get("model_sha256") == model_sha256
+            ):
+                return {
+                    "schema_version": "DesignConfirmationResult/v1",
+                    "design_id": design_id,
+                    "confirmation_state": APPROVE,
+                    "status": "confirmed",
+                    "model_sha256": model_sha256,
+                    "resumed": True,
+                    "next_action": "evaluate_design_lessons",
+                }
+            state["final_confirmation"] = {
+                "state": APPROVE,
+                "text": confirmation_text.strip(),
+                "model_sha256": model_sha256,
+                "confirmed_at": _timestamp(),
+            }
+            state["lesson_review"] = {
+                "status": "evaluation_pending",
+                "review_relative_path": None,
+                "review_sha256": None,
+                "warning": None,
+            }
+            state["updated_at"] = _timestamp()
+            self._replace_state(root, state)
+            return {
+                "schema_version": "DesignConfirmationResult/v1",
+                "design_id": design_id,
+                "confirmation_state": APPROVE,
+                "status": "confirmed",
+                "model_sha256": model_sha256,
+                "resumed": False,
+                "next_action": "evaluate_design_lessons",
+            }
+
+    def confirmation_context(self, design_id: str) -> dict[str, object]:
+        """Return exact-hash evidence available to the lesson evaluator."""
+        root = self._root_for(design_id, must_exist=True)
+        with exclusive_file_lock(root / ".design.lock"):
+            state = self._read_state(root)
+            model_sha256 = self._require_confirmable(root, state)
+            if (
+                state["final_confirmation"].get("state") != APPROVE
+                or state["final_confirmation"].get("model_sha256")
+                != model_sha256
+            ):
+                raise ValueError("the completed design has not been confirmed")
+            report_relative = state["validation"]["report_relative_path"]
+            evidence_relative = list(
+                state["validation"]["evidence_relative_paths"]
+            )
+            paths = [report_relative, *evidence_relative]
+            evidence = []
+            for relative in paths:
+                path = self._inside(root, str(relative), "validation evidence")
+                evidence.append(
+                    {
+                        "relative_path": path.relative_to(root).as_posix(),
+                        "sha256": file_sha256(path),
+                    }
+                )
+            return {
+                "design_root": str(root),
+                "design_id": state["design_id"],
+                "title": state["title"],
+                "model_sha256": model_sha256,
+                "validation_report_sha256": evidence[0]["sha256"],
+                "evidence": evidence,
+            }
+
+    def record_lesson_review(
+        self,
+        *,
+        design_id: str,
+        model_sha256: str,
+        status: str,
+        review_relative_path: str | None = None,
+        review_sha256: str | None = None,
+        warning: str | None = None,
+        publication_id: str | None = None,
+    ) -> dict[str, Any]:
+        allowed = {
+            "candidate_errors",
+            "no_material_lessons",
+            "review_pending",
+            "declined",
+            "published",
+            "publish_retry_required",
+        }
+        if status not in allowed:
+            raise ValueError("lesson review status is invalid")
+        root = self._root_for(design_id, must_exist=True)
+        with exclusive_file_lock(root / ".design.lock"):
+            state = self._read_state(root)
+            current_sha256 = self._require_confirmable(root, state)
+            if current_sha256 != model_sha256:
+                raise ValueError("lesson review model SHA-256 is stale")
+            if state["final_confirmation"].get("model_sha256") != current_sha256:
+                raise ValueError("lesson review requires final confirmation")
+            if status == "review_pending":
+                if not review_relative_path or not review_sha256:
+                    raise ValueError("review_pending requires a review path and SHA-256")
+                review_path = self._inside(
+                    root, review_relative_path, "review_relative_path"
+                )
+                if file_sha256(review_path) != review_sha256:
+                    raise ValueError("review card SHA-256 does not match")
+                normalized_path = review_path.relative_to(root).as_posix()
+            else:
+                normalized_path = review_relative_path
+            state["lesson_review"] = {
+                "status": status,
+                "review_relative_path": normalized_path,
+                "review_sha256": review_sha256,
+                "warning": warning,
+                "publication_id": publication_id,
+            }
+            state["updated_at"] = _timestamp()
+            self._replace_state(root, state)
+            return state
+
+    def _require_confirmable(
+        self, root: Path, state: Mapping[str, Any]
+    ) -> str:
+        if state["model_status"] != "completed":
+            raise ValueError("final confirmation requires a completed model")
+        if state["validation"].get("status") != "passed":
+            raise ValueError("final confirmation requires passed validation")
+        model = root / "model.FCStd"
+        model_read = read_managed_file(model)
+        inspect_fcstd_bytes(model_read.content)
+        recorded_sha256 = state["model"].get("sha256")
+        validation_sha256 = state["validation"].get("working_sha256")
+        if not (
+            model_read.sha256 == recorded_sha256 == validation_sha256
+        ):
+            raise ValueError("final confirmation requires exact-hash validation")
+        evidence = [
+            self._inside(root, str(value), "validation evidence")
+            for value in state["validation"].get("evidence_relative_paths", [])
+        ]
+        suffixes = {path.suffix.casefold() for path in evidence}
+        if ".md" not in suffixes or ".png" not in suffixes:
+            raise ValueError("final confirmation requires Markdown and PNG evidence")
+        report = self._inside(
+            root,
+            str(state["validation"].get("report_relative_path")),
+            "validation report",
+        )
+        if not report.is_file() or any(
+            not path.is_file() or path.stat().st_size <= 0 for path in evidence
+        ):
+            raise ValueError("final confirmation evidence is incomplete")
+        return model_read.sha256
 
     def _inside(
         self,
@@ -501,7 +715,7 @@ class LightweightDesignService:
                 evidence=evidence,
                 model_sha256=model_read.sha256,
             )
-            state["status"] = result_status
+            state["model_status"] = result_status
             state["model"]["sha256"] = model_read.sha256
             state["validation"] = {
                 "status": validation_status,
@@ -512,10 +726,22 @@ class LightweightDesignService:
                 ],
                 "warning": warning,
             }
+            state["final_confirmation"] = {
+                "state": "not_confirmed",
+                "text": None,
+                "model_sha256": None,
+                "confirmed_at": None,
+            }
+            state["lesson_review"] = {
+                "status": "not_evaluated",
+                "review_relative_path": None,
+                "review_sha256": None,
+                "warning": None,
+            }
             state["updated_at"] = _timestamp()
             self._replace_state(root, state)
             return {
-                "schema_version": "LightweightDesignResult/v1",
+                "schema_version": "DesignResult/v1",
                 "design_id": design_id,
                 "status": result_status,
                 "working_sha256": model_read.sha256,
@@ -565,4 +791,4 @@ class LightweightDesignService:
         return "completed", "passed", None
 
 
-__all__ = ["LightweightDesignService"]
+__all__ = ["DesignSessionService"]

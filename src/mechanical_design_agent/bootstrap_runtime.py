@@ -1666,17 +1666,17 @@ class BootstrapRuntime:
             ),
         )
 
-    def lightweight_design_settings(self):
+    def design_settings(self):
         """Resolve local CAD settings without requiring PostgreSQL or Neo4j."""
-        from .config import LightweightDesignSettings
+        from .config import DesignSettings
 
-        self.require_capability("lightweight_design", probe=False)
+        self.require_capability("design_session", probe=False)
         inspection = self._inspect()
         assert inspection.manifest is not None
         assert inspection.freecad_command is not None
         assert inspection.freecad_candidate is not None
         candidate = inspection.freecad_candidate
-        return LightweightDesignSettings(
+        return DesignSettings(
             workspace=inspection.manifest.workspace,
             package_root=inspection.manifest.workspace,
             design_root=inspection.manifest.workspace / "designs",
@@ -1686,9 +1686,9 @@ class BootstrapRuntime:
             freecadcmd_version=candidate.version,
         )
 
-    def lightweight_knowledge_scope(self) -> dict[str, str]:
+    def design_knowledge_scope(self) -> dict[str, str]:
         """Return configured knowledge scope without opening a database connection."""
-        self.require_initialized("lightweight_design")
+        self.require_initialized("design_session")
         inspection = self._inspect()
         assert inspection.manifest is not None
         identity = inspection.manifest.raw.get("identity")

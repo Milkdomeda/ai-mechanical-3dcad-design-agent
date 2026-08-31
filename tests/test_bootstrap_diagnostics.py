@@ -74,7 +74,7 @@ EXPECTED_CAPABILITIES = {
         "postgresql",
         "package_resources",
     ),
-    "lightweight_design": (
+    "design_session": (
         "workspace_selection",
         "workspace_manifest",
         "managed_config_integrity",

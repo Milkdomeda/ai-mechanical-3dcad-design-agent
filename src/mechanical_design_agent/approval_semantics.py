@@ -10,6 +10,8 @@ UNCLEAR = "UNCLEAR"
 
 _ENGLISH_APPROVE = (
     "go ahead",
+    "confirmed",
+    "confirm",
     "approved",
     "approve",
     "proceed",

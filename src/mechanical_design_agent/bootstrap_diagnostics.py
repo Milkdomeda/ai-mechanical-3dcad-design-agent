@@ -84,7 +84,7 @@ CAPABILITY_COMPONENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "postgresql",
             "package_resources",
         ),
-        "lightweight_design": (
+        "design_session": (
             "workspace_selection",
             "workspace_manifest",
             "managed_config_integrity",

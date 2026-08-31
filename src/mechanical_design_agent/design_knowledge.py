@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Mapping, Sequence
 
-from .lightweight_design import LightweightDesignService
+from .design_session import DesignSessionService
 
 
 ContextLoader = Callable[[str, dict[str, object]], Mapping[str, object]]
@@ -64,12 +64,12 @@ def _knowledge_ids(context: Mapping[str, object]) -> list[str]:
     return found
 
 
-class LightweightKnowledgeService:
+class DesignKnowledgeService:
     """Best-effort knowledge retrieval without introducing a lifecycle gate."""
 
     def __init__(
         self,
-        sessions: LightweightDesignService,
+        sessions: DesignSessionService,
         context_loader: ContextLoader,
     ) -> None:
         self.sessions = sessions
@@ -108,7 +108,7 @@ class LightweightKnowledgeService:
                 warning=warning,
             )
             return {
-                "schema_version": "LightweightKnowledgeResult/v1",
+                "schema_version": "DesignKnowledgeResult/v1",
                 "status": "unavailable",
                 "blocking": required,
                 "available_ids": [],
@@ -133,7 +133,7 @@ class LightweightKnowledgeService:
             warning=None,
         )
         return {
-            "schema_version": "LightweightKnowledgeResult/v1",
+            "schema_version": "DesignKnowledgeResult/v1",
             "status": status,
             "blocking": bool(required and not available),
             "available_ids": available,
@@ -143,4 +143,4 @@ class LightweightKnowledgeService:
         }
 
 
-__all__ = ["LightweightKnowledgeService"]
+__all__ = ["DesignKnowledgeService"]

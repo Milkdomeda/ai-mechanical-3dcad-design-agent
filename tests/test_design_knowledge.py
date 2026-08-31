@@ -6,9 +6,9 @@ import zipfile
 
 import pytest
 
-from mechanical_design_agent.config import LightweightDesignSettings
-from mechanical_design_agent.lightweight_design import LightweightDesignService
-from mechanical_design_agent.lightweight_knowledge import LightweightKnowledgeService
+from mechanical_design_agent.config import DesignSettings
+from mechanical_design_agent.design_knowledge import DesignKnowledgeService
+from mechanical_design_agent.design_session import DesignSessionService
 from mechanical_design_agent.secure_fs import FileIdentity
 
 
@@ -23,8 +23,8 @@ def _empty_fcstd() -> bytes:
     return output.getvalue()
 
 
-def _session(tmp_path: Path) -> LightweightDesignService:
-    settings = LightweightDesignSettings(
+def _session(tmp_path: Path) -> DesignSessionService:
+    settings = DesignSettings(
         workspace=tmp_path,
         package_root=tmp_path,
         design_root=tmp_path / "designs",
@@ -37,7 +37,7 @@ def _session(tmp_path: Path) -> LightweightDesignService:
     def seed(destination: Path) -> None:
         destination.write_bytes(_empty_fcstd())
 
-    service = LightweightDesignService(settings, seed_creator=seed)
+    service = DesignSessionService(settings, seed_creator=seed)
     service.start(
         design_id="carrier",
         title="Carrier",
@@ -69,7 +69,7 @@ def test_matching_knowledge_is_returned_and_selected_ids_are_recorded(
             "similar_models": [],
         }
 
-    knowledge = LightweightKnowledgeService(sessions, load_context)
+    knowledge = DesignKnowledgeService(sessions, load_context)
 
     result = knowledge.retrieve(
         design_id="carrier",
@@ -87,7 +87,7 @@ def test_matching_knowledge_is_returned_and_selected_ids_are_recorded(
 
 def test_no_match_is_nonblocking_by_default(tmp_path: Path) -> None:
     sessions = _session(tmp_path)
-    knowledge = LightweightKnowledgeService(
+    knowledge = DesignKnowledgeService(
         sessions,
         lambda _query, _features: {
             "schema_version": "DesignContext/v2",
@@ -115,7 +115,7 @@ def test_unavailable_backend_warns_and_continues_when_optional(tmp_path: Path) -
     def unavailable(_query: str, _features: dict[str, object]) -> dict[str, object]:
         raise ConnectionError("secret database address")
 
-    result = LightweightKnowledgeService(sessions, unavailable).retrieve(
+    result = DesignKnowledgeService(sessions, unavailable).retrieve(
         design_id="carrier", query="optional", features={}
     )
 
@@ -144,7 +144,7 @@ def test_required_knowledge_blocks_when_unavailable_or_unresolved(
             "similar_models": [],
         }
 
-    result = LightweightKnowledgeService(sessions, load).retrieve(
+    result = DesignKnowledgeService(sessions, load).retrieve(
         design_id="carrier",
         query="required family lesson",
         features={"requested_family_id": "required-family"},
@@ -156,7 +156,7 @@ def test_required_knowledge_blocks_when_unavailable_or_unresolved(
 
 def test_used_ids_must_come_from_the_current_context(tmp_path: Path) -> None:
     sessions = _session(tmp_path)
-    knowledge = LightweightKnowledgeService(
+    knowledge = DesignKnowledgeService(
         sessions,
         lambda _query, _features: {
             "schema_version": "DesignContext/v2",

@@ -7,9 +7,9 @@ import zipfile
 
 import pytest
 
-from mechanical_design_agent.config import LightweightDesignSettings
+from mechanical_design_agent.config import DesignSettings
 from mechanical_design_agent.hashing import file_sha256
-from mechanical_design_agent.lightweight_design import LightweightDesignService
+from mechanical_design_agent.design_session import DesignSessionService
 from mechanical_design_agent.secure_fs import (
     FileIdentity,
     ManagedPath,
@@ -35,8 +35,8 @@ def _fcstd(*, object_name: str | None = None) -> bytes:
     return output.getvalue()
 
 
-def _settings(tmp_path: Path) -> LightweightDesignSettings:
-    return LightweightDesignSettings(
+def _settings(tmp_path: Path) -> DesignSettings:
+    return DesignSettings(
         workspace=tmp_path,
         package_root=tmp_path / "package",
         design_root=tmp_path / "designs",
@@ -47,7 +47,7 @@ def _settings(tmp_path: Path) -> LightweightDesignSettings:
     )
 
 
-def _service(tmp_path: Path) -> LightweightDesignService:
+def _service(tmp_path: Path) -> DesignSessionService:
     def create_seed(destination: Path) -> None:
         destination.write_bytes(_fcstd())
 
@@ -55,14 +55,14 @@ def _service(tmp_path: Path) -> LightweightDesignService:
         del source
         destination.write_bytes(_fcstd(object_name="NormalizedSource"))
 
-    return LightweightDesignService(
+    return DesignSessionService(
         _settings(tmp_path),
         seed_creator=create_seed,
         source_normalizer=normalize_source,
     )
 
 
-def _start(service: LightweightDesignService, **overrides: object) -> dict[str, object]:
+def _start(service: DesignSessionService, **overrides: object) -> dict[str, object]:
     arguments: dict[str, object] = {
         "design_id": "basketball-carrier",
         "title": "Basketball Carrier",
@@ -101,9 +101,15 @@ def test_new_design_creates_local_session_without_database(tmp_path: Path) -> No
     state = json.loads((root / "design.json").read_text(encoding="utf-8"))
     assert result["status"] == "approved"
     assert same_managed_path(Path(str(result["model_path"])), root / "model.FCStd")
-    assert state["schema_version"] == "LightweightDesignSession/v1"
+    assert state["schema_version"] == "DesignSession/v1"
     assert state["model_classification"] == "new_design"
-    assert state["approval"] == {"state": "APPROVE", "text": "approved"}
+    assert state["model_status"] == "approved"
+    assert state["direction_approval"] == {
+        "state": "APPROVE",
+        "text": "approved",
+    }
+    assert state["final_confirmation"]["state"] == "not_confirmed"
+    assert state["lesson_review"]["status"] == "not_evaluated"
     assert state["knowledge"]["status"] == "not_executed"
     assert state["model"]["seed_sha256"] == file_sha256(root / "model.FCStd")
     assert (root / "validation").is_dir()
@@ -118,7 +124,7 @@ def test_design_root_containment_uses_backend_canonical_paths(
     canonical_root = canonical_workspace / "designs"
 
     monkeypatch.setattr(
-        "mechanical_design_agent.lightweight_design.validate_managed_path",
+        "mechanical_design_agent.design_session.validate_managed_path",
         lambda path, allow_missing_leaf: ManagedPath(
             canonical_workspace,
             FileIdentity(volume=1, file_index=10),
@@ -133,11 +139,11 @@ def test_design_root_containment_uses_backend_canonical_paths(
         return Path("designs")
 
     monkeypatch.setattr(
-        "mechanical_design_agent.lightweight_design.relative_managed_path",
+        "mechanical_design_agent.design_session.relative_managed_path",
         relative,
     )
     monkeypatch.setattr(
-        "mechanical_design_agent.lightweight_design.ensure_managed_directory",
+        "mechanical_design_agent.design_session.ensure_managed_directory",
         lambda path, parents, exist_ok: ManagedPath(
             canonical_root,
             FileIdentity(volume=1, file_index=11),
@@ -161,7 +167,7 @@ def test_start_is_idempotent_for_matching_design(tmp_path: Path) -> None:
             encoding="utf-8"
         )
     )
-    assert state["approval"]["text"] == "approved"
+    assert state["direction_approval"]["text"] == "approved"
 
 
 def test_start_rejects_an_incompatible_existing_design(tmp_path: Path) -> None:
@@ -346,7 +352,7 @@ def test_invalid_validation_sets_needs_attention(
     )
 
     assert recorded["status"] == "needs_attention"
-    assert service.get("basketball-carrier")["status"] == "needs_attention"
+    assert service.get("basketball-carrier")["model_status"] == "needs_attention"
 
 
 def test_result_paths_must_remain_in_the_session(tmp_path: Path) -> None:
@@ -383,5 +389,5 @@ def test_changed_model_invalidates_a_completed_session(tmp_path: Path) -> None:
     model.write_bytes(_fcstd(object_name="CarrierV2"))
     state = service.get("basketball-carrier")
 
-    assert state["status"] == "needs_attention"
+    assert state["model_status"] == "needs_attention"
     assert state["validation"]["status"] == "stale"
