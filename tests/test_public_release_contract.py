@@ -290,7 +290,7 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "pytest -q",
         "--junitxml=windows-public-offline.xml",
         "--junitxml=windows-public-boundary.xml",
-        "$expectedSkipped = 72",
+        "$expectedSkipped = 18",
         "$expectedSkipped = 3",
         "$failed -ne 0 -or $skipped -ne $expectedSkipped",
         "uv build --offline",

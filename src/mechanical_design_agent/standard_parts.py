@@ -9,7 +9,12 @@ from .config import StandardPartSettings
 from .hashing import file_sha256
 from .models import canonical_json
 from .package_resources import standard_part_provider_config
-from .secure_fs import atomic_publish_new, ensure_managed_directory, read_managed_file
+from .secure_fs import (
+    atomic_publish_new,
+    ensure_managed_directory,
+    read_managed_file,
+    relative_managed_path,
+)
 from .standard_part_configuration import load_standard_part_provider_catalog
 
 
@@ -144,7 +149,7 @@ class StandardPartRegistry:
             atomic_publish_new(target, read.content)
         return {
             "path": str(target),
-            "relative_path": target.relative_to(design_root).as_posix(),
+            "relative_path": relative_managed_path(target, design_root).as_posix(),
             "sha256": expected,
         }
 

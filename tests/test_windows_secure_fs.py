@@ -105,6 +105,24 @@ def test_native_windows_paths_are_canonical_identity_aware_and_unicode(
         assert missing.path.name == "workspace"
 
 
+def test_relative_managed_path_reconciles_extended_and_lexical_spellings(
+    tmp_path: Path,
+) -> None:
+    secure_fs = importlib.import_module("mechanical_design_agent.secure_fs")
+    lexical_root = tmp_path / "design"
+    lexical_child = lexical_root / "components" / "standard-parts" / "bearing.step"
+    lexical_child.parent.mkdir(parents=True)
+    lexical_child.write_bytes(b"ISO-10303-21")
+    canonical_child = secure_fs.validate_managed_path(
+        lexical_child, allow_missing_leaf=False
+    ).path
+
+    assert str(canonical_child).startswith("\\\\?\\")
+    assert secure_fs.relative_managed_path(canonical_child, lexical_root) == Path(
+        "components/standard-parts/bearing.step"
+    )
+
+
 def test_native_windows_create_replace_cas_and_cleanup_on_both_volumes(
     native_ntfs_roots: tuple[Path, Path],
 ) -> None:
