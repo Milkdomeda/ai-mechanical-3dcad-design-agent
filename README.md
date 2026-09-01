@@ -69,6 +69,8 @@ Neo4j projection rebuilds.
 
 ## Architecture
 
+![AI Mechanical 3DCAD Design Agent architecture](docs/assets/ai-mechanical-design-agent-architecture-v2.png)
+
 Design sessions live under `designs/<design-id>/` as atomic JSON state, one
 authoritative `model.FCStd`, optional source snapshots, validation evidence,
 outputs, and an optional lesson review card. CAD creation and validation do not
