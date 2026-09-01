@@ -4,4 +4,3 @@ interface:
   default_prompt: "Use $mechanical-design to turn this requirement into a validated FreeCAD model."
 policy:
   allow_implicit_invocation: true
-

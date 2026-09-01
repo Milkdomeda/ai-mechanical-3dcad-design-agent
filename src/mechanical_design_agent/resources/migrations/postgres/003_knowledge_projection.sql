@@ -12,4 +12,3 @@ ON CONFLICT (projection_name) DO NOTHING;
 CREATE INDEX IF NOT EXISTS knowledge_outbox_pending_idx
     ON knowledge_outbox(id)
     WHERE projected_at IS NULL;
-

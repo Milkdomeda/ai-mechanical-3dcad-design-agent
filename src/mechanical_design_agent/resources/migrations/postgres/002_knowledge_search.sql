@@ -26,4 +26,3 @@ CREATE INDEX IF NOT EXISTS knowledge_assertions_scope_idx
     ON knowledge_assertions(organization_id, design_group_id, product_family_id, status);
 CREATE INDEX IF NOT EXISTS design_lessons_scope_idx
     ON design_lessons(organization_id, design_group_id, product_family_id, status);
-

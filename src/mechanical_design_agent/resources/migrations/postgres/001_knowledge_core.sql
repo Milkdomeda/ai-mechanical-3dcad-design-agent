@@ -112,4 +112,3 @@ CREATE TABLE IF NOT EXISTS knowledge_outbox (
     projected_at timestamptz,
     UNIQUE (aggregate_type, aggregate_id, event_type)
 );
-

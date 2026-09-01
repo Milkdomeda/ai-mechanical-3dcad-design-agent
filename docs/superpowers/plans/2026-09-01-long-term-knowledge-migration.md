@@ -243,8 +243,8 @@ SOURCE_QUERIES = {
         "FROM family_profiles ORDER BY family_id,revision"
     ),
     "knowledge_assertions": (
-        "SELECT id,organization_id,design_group_id,family_id,subject_ref,predicate,object_value," 
-        "applicability,non_applicable_conditions,evidence,status,supersedes,source_kind,risk_level," 
+        "SELECT id,organization_id,design_group_id,family_id,subject_ref,predicate,object_value,"
+        "applicability,non_applicable_conditions,evidence,status,supersedes,source_kind,risk_level,"
         "confidence,created_by,created_at FROM knowledge_assertions ORDER BY id"
     ),
     "knowledge_search_documents": (
@@ -252,8 +252,8 @@ SOURCE_QUERIES = {
         "ORDER BY assertion_id"
     ),
     "design_lesson_events": (
-        "SELECT id,lesson_key,revision,organization_id,source_design_group_id,source_family_id,title," 
-        "problem,root_causes,corrections,prevention,applicability,non_applicable_conditions," 
+        "SELECT id,lesson_key,revision,organization_id,source_design_group_id,source_family_id,title,"
+        "problem,root_causes,corrections,prevention,applicability,non_applicable_conditions,"
         "search_terms,evidence_manifest,status,supersedes,approved_by,approval_text,approved_at "
         "FROM design_lesson_events ORDER BY lesson_key,revision"
     ),

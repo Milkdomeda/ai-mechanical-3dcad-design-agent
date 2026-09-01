@@ -32,4 +32,3 @@ model.
 Treat existing source CAD as read-only. Preserve its snapshot and edit only the
 session `model.FCStd`. Use `freecad-standard-parts` for catalog components and
 `freecad-model-validation` after every visible model change.
-
