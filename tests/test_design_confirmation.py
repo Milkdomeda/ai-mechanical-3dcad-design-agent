@@ -274,15 +274,23 @@ def test_legacy_review_card_does_not_block_a_new_model_revision(
     )
 
     _record_model(service, tmp_path, object_name="ChangedCarrier")
+    revision_b_sha256 = service.get("carrier")["model"]["sha256"]
+    revision_b_path = (
+        root / "lesson-review" / f"review-{revision_b_sha256}.json"
+    )
     invalid = _candidate()
     invalid["evidence"] = ["not-present.txt"]
     failed = workflow.confirm(
         design_id="carrier", confirmation_text="确认", candidates=[invalid]
     )
+    failed_state = service.get("carrier")
+    assert failed_state["lesson_review"]["review_relative_path"] is None
+    assert failed_state["lesson_review"]["review_sha256"] is None
+    assert not revision_b_path.exists()
+
     revision_b = workflow.confirm(
         design_id="carrier", confirmation_text="确认", candidates=[_candidate()]
     )
-    revision_b_sha256 = service.get("carrier")["model"]["sha256"]
 
     assert revision_a_sha256 != revision_b_sha256
     assert failed["lesson_review_status"] == "candidate_errors"
