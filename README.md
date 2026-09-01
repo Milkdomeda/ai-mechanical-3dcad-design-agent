@@ -28,18 +28,17 @@ User request
   → finish, or one decision before durable lesson publication
 ```
 
-Clear Chinese and English expressions are accepted as `APPROVE`, `REJECT`, or
-`UNCLEAR`; no fixed sentence is required. Final-model confirmation and Design
-Lesson publication are separate decisions.
-
 ## Core capabilities
 
 - Create new designs or edit read-only snapshots of existing FCStd/STEP models.
 - Retrieve matching Product Family Knowledge and Design Lessons when available.
 - Continue CAD work when knowledge has no match or its backend is unavailable.
 - Model interactively in FreeCAD and keep FCStd as the source of truth.
-- Select and register catalog parts with source, identity, validation, and
-  SHA-256 provenance.
+- Find purchasable standard parts through configured structured providers and,
+  when they miss, extend the search to authoritative manufacturer, standards
+  body, industry association, and attributable authorized-distributor sources.
+- Register selected CAD components with provider, manufacturer, part identity,
+  source, license, validation evidence, and SHA-256 provenance.
 - Validate geometry, dimensions, placements, interfaces, assemblies,
   fasteners, BOM consistency, and visual evidence.
 - Bind completion to the exact FCStd SHA-256 and passed JSON, Markdown, and PNG
