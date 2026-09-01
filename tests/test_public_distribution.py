@@ -98,7 +98,7 @@ def test_public_metadata_and_license_contract() -> None:
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert project["name"] == "ai-mechanical-3dcad-design-agent"
-    assert project["version"] == "0.7.0"
+    assert project["version"] == "0.7.1"
     assert project["description"] == (
         "AI mechanical CAD design, validation, reusable knowledge, and MCP "
         "tools for coding agents"
@@ -113,8 +113,8 @@ def test_public_metadata_and_license_contract() -> None:
     assert hashlib.sha256(license_bytes).hexdigest() == LICENSE_SHA256
 
 
-def test_release_version_is_exactly_0_7_0_everywhere() -> None:
-    expected = "0.7.0"
+def test_release_version_is_exactly_0_7_1_everywhere() -> None:
+    expected = "0.7.1"
     project = tomllib.loads(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
@@ -233,7 +233,7 @@ def test_wheel_metadata_license_and_entrypoints(
         assert "third-party-components.toml" not in names
 
     assert metadata["Name"] == "ai-mechanical-3dcad-design-agent"
-    assert metadata["Version"] == "0.7.0"
+    assert metadata["Version"] == "0.7.1"
     assert metadata["Summary"] == (
         "AI mechanical CAD design, validation, reusable knowledge, and MCP "
         "tools for coding agents"
@@ -337,5 +337,5 @@ def test_sdist_rebuilds_and_imports_without_repository_access(
     )
     assert imported.returncode == 0, imported.stderr
     version, module_path = imported.stdout.splitlines()
-    assert version == "0.7.0"
+    assert version == "0.7.1"
     assert Path(module_path).is_relative_to(venv)

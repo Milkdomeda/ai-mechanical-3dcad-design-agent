@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 - 2026-09-01
+
+- Store immutable Design Lesson review cards under model-SHA-addressed paths so evidence from an earlier model revision cannot block a confirmed newer revision.
+- Keep candidate validation ahead of card publication: `candidate_errors` creates no formal review card, while corrected candidates for the same model may proceed to `review_pending`.
+- Preserve state-bound legacy `lesson-review/review.json` cards unchanged and compatible with existing publication decisions.
+- Require semantic expansion to authoritative manufacturer, standards-body, industry-association, or attributable authorized-distributor sources when configured structured standard-part providers miss a component that is reasonably likely to exist commercially.
+- Treat a structured zero result only as a structured-search miss; allow a final not-found report only after a reasonable authoritative-source search, with complete query and provenance records.
+
 ## 0.7.0 - 2026-08-31
 
 - Establish one normal design process from requirements and direction approval through knowledge retrieval, CAD modeling, exact-model validation, final confirmation, and automatic Design Lesson evaluation.
