@@ -440,9 +440,14 @@ class DesignLessonWorkflow:
         review_root = ensure_managed_directory(
             design_root / "lesson-review", parents=False, exist_ok=True
         ).path
-        review_path = review_root / "review.json"
+        model_sha256 = str(context["model_sha256"])
+        if len(model_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in model_sha256
+        ):
+            raise ValueError("review-card model SHA-256 is invalid")
+        review_path = review_root / f"review-{model_sha256}.json"
         review_id = (
-            f"review-{context['design_id']}-{str(context['model_sha256'])[:12]}"
+            f"review-{context['design_id']}-{model_sha256[:12]}"
         )
         card: dict[str, object] = {
             "schema_version": _REVIEW_SCHEMA,

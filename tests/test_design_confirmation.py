@@ -260,9 +260,18 @@ def test_legacy_review_card_does_not_block_a_new_model_revision(
     revision_a = workflow.confirm(
         design_id="carrier", confirmation_text="确认", candidates=[_candidate()]
     )
-    legacy_path = root / str(revision_a["review_relative_path"])
+    revision_a_path = root / str(revision_a["review_relative_path"])
+    legacy_path = root / "lesson-review" / "review.json"
+    legacy_path.write_bytes(revision_a_path.read_bytes())
     legacy_bytes = legacy_path.read_bytes()
     revision_a_sha256 = service.get("carrier")["model"]["sha256"]
+    service.record_lesson_review(
+        design_id="carrier",
+        model_sha256=revision_a_sha256,
+        status="review_pending",
+        review_relative_path="lesson-review/review.json",
+        review_sha256=file_sha256(legacy_path),
+    )
 
     _record_model(service, tmp_path, object_name="ChangedCarrier")
     invalid = _candidate()
