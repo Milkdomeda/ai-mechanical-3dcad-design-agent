@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .approval_semantics import APPROVE, REJECT, classify_approval
+from .approval_semantics import APPROVE, classify_approval
+from .knowledge_matching import applicability_matches
 from .product_family_knowledge import ProductFamilyKnowledgeService
 
 
@@ -50,20 +51,43 @@ class KnowledgeService:
         design_features: Mapping[str, object],
         lesson_query: str,
     ) -> dict[str, object]:
-        del organization_id, design_group_id, design_features
-        result = self.repository.search(
+        scope = getattr(self.repository, "scope", None)
+        if (
+            scope is None
+            or scope.organization_id != organization_id
+            or scope.design_group_id != design_group_id
+        ):
+            raise ValueError("requested knowledge scope does not match repository scope")
+        family = self.repository.match_product_family(
             query=lesson_query,
-            product_family_id=(
+            design_features=design_features,
+            requested_family_id=(
                 str(requested_family_id) if requested_family_id else None
             ),
         )
+        result = self.repository.search(
+            query=lesson_query,
+            product_family_id=(
+                str(family["id"]) if family else None
+            ),
+        )
+        applicable_assertions = [
+            row
+            for row in result["assertions"]
+            if applicability_matches(row.get("applicability") or {}, design_features)
+        ]
+        applicable_lessons = [
+            row
+            for row in result["lessons"]
+            if applicability_matches(row.get("applicability") or {}, design_features)
+        ]
         return {
             "schema_version": "DesignContext/v2",
             "hard_constraints": [],
             "preferences": [],
-            "approved_facts": [],
-            "specialized_knowledge": result["families"],
-            "approved_design_lessons": result["lessons"],
+            "approved_facts": applicable_assertions,
+            "specialized_knowledge": [family] if family else [],
+            "approved_design_lessons": applicable_lessons,
             "similar_models": [],
         }
 
@@ -79,21 +103,6 @@ class KnowledgeService:
             ),
             limit=int(filters.get("limit", 20)),
         )
-
-    def knowledge_review(
-        self, *, review_id: str, decision_text: str
-    ) -> dict[str, object]:
-        decision = classify_approval(decision_text)
-        return {
-            "schema_version": "KnowledgeReviewDecision/v1",
-            "review_id": review_id,
-            "decision_state": decision,
-            "status": (
-                "approved"
-                if decision == APPROVE
-                else "rejected" if decision == REJECT else "not_reviewed"
-            ),
-        }
 
     def design_lesson_search(
         self, *, query: str, features: Mapping[str, object], limit: int
@@ -145,9 +154,6 @@ class KnowledgeService:
 
     def publish_design_lesson_review(self, **kwargs: object) -> dict[str, object]:
         return self.repository.publish_design_lesson_review(**kwargs)
-
-    def projection_sync(self, *, limit: int = 100) -> dict[str, object]:
-        return self.projection.sync(self.repository, limit=limit)
 
     def projection_rebuild(self, *, decision_text: str) -> dict[str, object]:
         if classify_approval(decision_text) != APPROVE:

@@ -22,10 +22,10 @@ LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d
 COMPOSE_SHA256 = "f6c798e8ecaa7eaf0d83cb9785c309ddc0e2dba1af59923e33b1e3413fad3ef2"
 EXPECTED_DEPENDENCIES = [
     "mcp[cli]>=1.3.0,<2",
-    "neo4j>=5.28.0,<7",
     "psycopg[binary]>=3.2.0,<4",
     "pywin32>=312; sys_platform == 'win32'",
 ]
+EXPECTED_OPTIONAL_DEPENDENCIES = {"neo4j": ["neo4j>=5.28.0,<7"]}
 EXPECTED_SCRIPTS = {
     "mechanical-design": "mechanical_design_agent.cli:main",
     "mechanical-design-mcp": "mechanical_design_agent.server:main",
@@ -107,6 +107,7 @@ def test_public_metadata_and_license_contract() -> None:
     assert project["license-files"] == ["LICENSE", "THIRD_PARTY_NOTICES.md"]
     assert project["requires-python"] == ">=3.12"
     assert project["dependencies"] == EXPECTED_DEPENDENCIES
+    assert project["optional-dependencies"] == EXPECTED_OPTIONAL_DEPENDENCIES
     assert project["scripts"] == EXPECTED_SCRIPTS
 
     license_bytes = (PROJECT_ROOT / "LICENSE").read_bytes()
@@ -240,9 +241,16 @@ def test_wheel_metadata_license_and_entrypoints(
     )
     assert metadata["License-Expression"] == "Apache-2.0"
     assert metadata["Requires-Python"] == ">=3.12"
-    assert {Requirement(value) for value in metadata.get_all("Requires-Dist")} == {
+    requirements = {Requirement(value) for value in metadata.get_all("Requires-Dist")}
+    assert {item for item in requirements if item.marker is None or "extra" not in str(item.marker)} == {
         Requirement(value) for value in EXPECTED_DEPENDENCIES
     }
+    assert any(
+        item.name == "neo4j"
+        and item.marker is not None
+        and item.marker.evaluate({"extra": "neo4j"})
+        for item in requirements
+    )
     assert "mechanical-design = mechanical_design_agent.cli:main" in entrypoints
     assert "mechanical-design-mcp = mechanical_design_agent.server:main" in entrypoints
     assert hashlib.sha256(packaged_license).hexdigest() == LICENSE_SHA256
@@ -339,3 +347,48 @@ def test_sdist_rebuilds_and_imports_without_repository_access(
     version, module_path = imported.stdout.splitlines()
     assert version == "0.7.1"
     assert Path(module_path).is_relative_to(venv)
+
+
+def test_base_wheel_imports_postgres_services_without_neo4j_extra(
+    built_artifacts: tuple[Path, Path, Path],
+) -> None:
+    root, wheel, _ = built_artifacts
+    uv = shutil.which("uv")
+    assert uv is not None
+    venv = root / "base-without-neo4j"
+    outside = root / "base-outside-repository"
+    outside.mkdir()
+    environment = clean_environment(root)
+    created = run(
+        [uv, "venv", "--python", sys.executable, str(venv)],
+        cwd=root,
+        environment=environment,
+    )
+    assert created.returncode == 0, created.stderr
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    installed = run(
+        [uv, "pip", "install", "--python", str(python), str(wheel)],
+        cwd=outside,
+        environment=environment,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    imported = run(
+        [
+            str(python),
+            "-c",
+            (
+                "import importlib.util; "
+                "assert importlib.util.find_spec('neo4j') is None; "
+                "from mechanical_design_agent.knowledge_repository import KnowledgeRepository; "
+                "from mechanical_design_agent.knowledge_service import KnowledgeService; "
+                "from mechanical_design_agent.projection import Neo4jProjection; "
+                "assert Neo4jProjection('bolt://unused','','').status()['status'] == 'unavailable'; "
+                "print(KnowledgeRepository.__name__, KnowledgeService.__name__)"
+            ),
+        ],
+        cwd=outside,
+        environment=environment,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "KnowledgeRepository KnowledgeService"

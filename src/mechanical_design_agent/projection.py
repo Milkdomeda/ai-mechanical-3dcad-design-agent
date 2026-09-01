@@ -13,6 +13,12 @@ _LABELS = {
 }
 
 
+class ProjectionUnavailableError(RuntimeError):
+    def __init__(self, cause_type: str) -> None:
+        self.code = "NEO4J_PROJECTION_UNAVAILABLE"
+        super().__init__(f"Neo4j projection unavailable ({cause_type})")
+
+
 class Neo4jProjection:
     """Rebuildable relationship projection of PostgreSQL knowledge records."""
 
@@ -49,73 +55,31 @@ class Neo4jProjection:
             for statement in statements:
                 session.run(statement).consume()
 
-    def sync(self, repository: object, limit: int = 100) -> dict[str, object]:
-        if not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
-        self.initialize_constraints()
-        events = repository.pending_projection_events(limit=limit)
-        processed = 0
-        failures: list[dict[str, str]] = []
-        with self._driver() as driver:
-            for event in events:
-                try:
-                    aggregate_type = str(event["aggregate_type"])
-                    aggregate_id = str(event["aggregate_id"])
-                    label = _LABELS.get(aggregate_type)
-                    if label is None:
-                        raise ValueError(
-                            f"unsupported knowledge aggregate: {aggregate_type}"
-                        )
-                    record = repository.projection_record(
-                        aggregate_type=aggregate_type,
-                        aggregate_id=aggregate_id,
-                    )
-                    with driver.session() as session:
-                        session.execute_write(
-                            lambda transaction: self._upsert(
-                                transaction,
-                                label=label,
-                                identifier=aggregate_id,
-                                record=record,
-                            )
-                        )
-                    repository.mark_projection_event(int(event["id"]))
-                    processed += 1
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "event_id": str(event.get("id", "unknown")),
-                            "warning": f"projection failed ({type(exc).__name__})",
-                        }
-                    )
-        return {
-            "status": "completed" if not failures else "needs_retry",
-            "processed": processed,
-            "failed": failures,
-        }
-
     def rebuild(self, repository: object) -> dict[str, object]:
-        self.initialize_constraints()
         records = repository.projection_records()
         counts = {name: 0 for name in _LABELS}
-        with self._driver() as driver, driver.session() as session:
-            def rebuild_transaction(transaction: Any) -> None:
-                transaction.run(
-                    "MATCH (n) WHERE n.projection_owner=$owner DETACH DELETE n",
-                    owner=_OWNER,
-                ).consume()
-                for aggregate_type, label in _LABELS.items():
-                    for record in records.get(aggregate_type, []):
-                        identifier = str(record["id"])
-                        self._upsert(
-                            transaction,
-                            label=label,
-                            identifier=identifier,
-                            record=record,
-                        )
-                        counts[aggregate_type] += 1
+        try:
+            self.initialize_constraints()
+            with self._driver() as driver, driver.session() as session:
+                def rebuild_transaction(transaction: Any) -> None:
+                    transaction.run(
+                        "MATCH (n) WHERE n.projection_owner=$owner DETACH DELETE n",
+                        owner=_OWNER,
+                    ).consume()
+                    for aggregate_type, label in _LABELS.items():
+                        for record in records.get(aggregate_type, []):
+                            identifier = str(record["id"])
+                            self._upsert(
+                                transaction,
+                                label=label,
+                                identifier=identifier,
+                                record=record,
+                            )
+                            counts[aggregate_type] += 1
 
-            session.execute_write(rebuild_transaction)
+                session.execute_write(rebuild_transaction)
+        except Exception as exc:
+            raise ProjectionUnavailableError(type(exc).__name__) from None
         return {
             "status": "rebuilt",
             "authoritative_source": "postgresql",
@@ -144,4 +108,4 @@ class Neo4jProjection:
         ).consume()
 
 
-__all__ = ["Neo4jProjection"]
+__all__ = ["Neo4jProjection", "ProjectionUnavailableError"]

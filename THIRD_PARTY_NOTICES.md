@@ -301,7 +301,7 @@ External service and catalog terms apply independently and do not grant rights t
 - Relationship: `installed_dependency`
 - Distribution: `not_distributed_by_project`
 - Scope: `runtime`
-- Purpose: Installed Python runtime dependency.
+- Purpose: Optional Python runtime dependency for the neo4j extra.
 - Official source: https://pypi.org/project/neo4j/6.2.0/
 - License or terms: https://pypi.org/project/neo4j/6.2.0/
 - Evidence: https://files.pythonhosted.org/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz
@@ -467,7 +467,7 @@ External service and catalog terms apply independently and do not grant rights t
 - Relationship: `installed_dependency`
 - Distribution: `not_distributed_by_project`
 - Scope: `runtime`
-- Purpose: Installed Python runtime dependency.
+- Purpose: Transitive Python runtime dependency of the optional neo4j extra.
 - Official source: https://pypi.org/project/pytz/2026.3.post1/
 - License or terms: https://pypi.org/project/pytz/2026.3.post1/
 - Evidence: https://files.pythonhosted.org/packages/fb/48/fb042503b6ca6cd271261dc559fd6432f7d8c713153e9ec5c591af4dfc1c/pytz-2026.3.post1.tar.gz

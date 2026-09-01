@@ -9,6 +9,8 @@ import pytest
 from mechanical_design_agent.config import DesignSettings
 from mechanical_design_agent.design_knowledge import DesignKnowledgeService
 from mechanical_design_agent.design_session import DesignSessionService
+from mechanical_design_agent.knowledge_repository import KnowledgeScope
+from mechanical_design_agent.knowledge_service import KnowledgeService
 from mechanical_design_agent.secure_fs import FileIdentity
 
 
@@ -175,4 +177,112 @@ def test_used_ids_must_come_from_the_current_context(tmp_path: Path) -> None:
             query="query",
             features={},
             used_ids=["unknown"],
+        )
+
+
+class _ContextRepository:
+    scope = KnowledgeScope("org-1", "group-1")
+
+    def match_product_family(self, **kwargs):
+        self.match_request = kwargs
+        return {
+            "id": "PF-PILOT-001",
+            "knowledge_id": "PF-PILOT-001",
+            "kind": "product_family",
+            "canonical_name": "Printed Ball Carrier",
+            "profile": {"mechanism": "spherical cradle"},
+            "status": "active",
+            "match_kind": "exact_term",
+        }
+
+    def search(self, **kwargs):
+        self.search_request = kwargs
+        return {
+            "families": [],
+            "assertions": [
+                {
+                    "id": "assertion-carrier-only",
+                    "assertion_id": "assertion-carrier-only",
+                    "kind": "knowledge_assertion",
+                    "status": "active",
+                    "applicability": {
+                        "conditions": {"design_type": "carrier"}
+                    },
+                },
+                {
+                    "id": "assertion-general",
+                    "assertion_id": "assertion-general",
+                    "kind": "knowledge_assertion",
+                    "status": "active",
+                    "applicability": {"summary": "all printed designs"},
+                },
+            ],
+            "lessons": [
+                {
+                    "id": "lesson-cradle",
+                    "design_lesson_ref": "lesson-cradle",
+                    "kind": "design_lesson",
+                    "status": "active",
+                    "applicability": {
+                        "conditions": {"material": ["PETG", "ABS"]}
+                    },
+                }
+            ],
+        }
+
+
+class _UnavailableProjection:
+    def __getattr__(self, name):
+        raise AssertionError(f"design context accessed projection: {name}")
+
+
+def test_context_build_uses_features_and_populates_all_knowledge(
+    tmp_path: Path,
+) -> None:
+    repository = _ContextRepository()
+    service = KnowledgeService(repository, _UnavailableProjection(), tmp_path)
+
+    context = service.design_context_build(
+        organization_id="org-1",
+        design_group_id="group-1",
+        requested_family_id=None,
+        design_features={"design_type": "carrier", "material": "PETG"},
+        lesson_query="spherical cradle",
+    )
+
+    assert context["specialized_knowledge"][0]["id"] == "PF-PILOT-001"
+    assert context["approved_facts"]
+    assert context["approved_design_lessons"]
+    assert all(item["status"] == "active" for item in context["approved_facts"])
+    assert repository.match_request["design_features"]["material"] == "PETG"
+
+
+def test_context_excludes_inapplicable_assertion(tmp_path: Path) -> None:
+    repository = _ContextRepository()
+    service = KnowledgeService(repository, _UnavailableProjection(), tmp_path)
+
+    context = service.design_context_build(
+        organization_id="org-1",
+        design_group_id="group-1",
+        requested_family_id="PF-PILOT-001",
+        design_features={"design_type": "shaft", "material": "PETG"},
+        lesson_query="carrier",
+    )
+
+    assert "assertion-carrier-only" not in {
+        row["assertion_id"] for row in context["approved_facts"]
+    }
+
+
+def test_context_scope_must_match_repository(tmp_path: Path) -> None:
+    service = KnowledgeService(
+        _ContextRepository(), _UnavailableProjection(), tmp_path
+    )
+    with pytest.raises(ValueError, match="scope"):
+        service.design_context_build(
+            organization_id="other-org",
+            design_group_id="group-1",
+            requested_family_id=None,
+            design_features={},
+            lesson_query="carrier",
         )

@@ -35,29 +35,34 @@ class _Transaction:
 
 class _PublicationConnection:
     def __init__(self) -> None:
-        self.review_sha256: str | None = None
-        self.lesson_ids: list[str] = []
-        self.outbox: list[str] = []
+        self.lessons: list[dict[str, object]] = []
+        self.calls: list[str] = []
 
     def transaction(self) -> _Transaction:
         return _Transaction()
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> _Rows:
         normalized = " ".join(query.split())
-        if normalized.startswith("SELECT review_sha256"):
-            return _Rows(
-                [{"review_sha256": self.review_sha256}]
-                if self.review_sha256
-                else []
+        self.calls.append(normalized)
+        if "design_lesson_reviews" in normalized or "knowledge_outbox" in normalized:
+            raise AssertionError(f"deleted table referenced: {normalized}")
+        if normalized.startswith("SELECT") and "FROM design_lessons" in normalized:
+            return _Rows(self.lessons)
+        if normalized.startswith("INSERT INTO design_lessons"):
+            value = lambda index: getattr(parameters[index], "obj", parameters[index])
+            self.lessons.append(
+                {
+                    "id": str(parameters[0]),
+                    "product_family_id": parameters[3],
+                    "content": value(4),
+                    "applicability": value(5),
+                    "provenance": value(6),
+                    "search_terms": parameters[7],
+                    "search_text": parameters[8],
+                    "status": parameters[9],
+                    "supersedes_id": None,
+                }
             )
-        if normalized.startswith("SELECT id FROM design_lessons"):
-            return _Rows([{"id": value} for value in sorted(self.lesson_ids)])
-        if normalized.startswith("INSERT INTO design_lesson_reviews"):
-            self.review_sha256 = str(parameters[0])
-        elif normalized.startswith("INSERT INTO design_lessons"):
-            self.lesson_ids.append(str(parameters[0]))
-        elif normalized.startswith("INSERT INTO knowledge_outbox"):
-            self.outbox.append(str(parameters[0]))
         return _Rows()
 
 
@@ -104,14 +109,21 @@ def test_review_publication_is_transactional_and_idempotent() -> None:
         review_card=card, review_sha256=digest, decision_text="批准"
     )
     repeated = repository.publish_design_lesson_review(
-        review_card=card, review_sha256=digest, decision_text="approved"
+        review_card=card, review_sha256=digest, decision_text="批准"
     )
 
     assert first["resumed"] is False
     assert repeated["resumed"] is True
     assert repeated["lesson_ids"] == first["lesson_ids"]
-    assert len(connection.lesson_ids) == 1
-    assert connection.outbox == connection.lesson_ids
+    assert len(connection.lessons) == 1
+    assert connection.lessons[0]["status"] == "active"
+    assert connection.lessons[0]["provenance"] == {
+        "source_review_sha256": digest,
+        "decision_text": "批准",
+        "source_review_id": "review-carrier-123",
+        "evidence": ["validation/report.json"],
+    }
+    assert not any("knowledge_outbox" in query or "design_lesson_reviews" in query for query in connection.calls)
 
 
 def test_review_publication_rejects_hash_mismatch() -> None:
@@ -138,8 +150,27 @@ class _SearchConnection:
                         "id": "carrier-family",
                         "canonical_name": "Printed carriers",
                         "aliases": [],
-                        "knowledge": {"assertions": [{"subject": "handle"}]},
+                        "profile": {"mechanism": "printed carrier"},
+                        "search_terms": ["printed carrier"],
+                        "search_text": "Printed carriers printed carrier",
                         "status": "active",
+                    }
+                ]
+            )
+        if "FROM knowledge_assertions" in query:
+            return _Rows(
+                [
+                    {
+                        "id": "assertion-handle-root",
+                        "subject": "handle root",
+                        "predicate": "uses",
+                        "object_value": "broad radius",
+                        "product_family_id": "carrier-family",
+                        "applicability": {},
+                        "evidence": [],
+                        "search_terms": ["handle root"],
+                        "status": "active",
+                        "supersedes_id": None,
                     }
                 ]
             )
@@ -147,9 +178,13 @@ class _SearchConnection:
             [
                 {
                     "id": "lesson-handle-root",
-                    "lesson": {"problem": "handle root bending"},
+                    "content": {"problem": "handle root bending"},
+                    "applicability": {},
+                    "provenance": {"source_review_sha256": "a" * 64},
+                    "search_terms": ["handle root"],
                     "product_family_id": "carrier-family",
-                    "status": "approved",
+                    "status": "active",
+                    "supersedes_id": None,
                 }
             ]
         )
@@ -172,8 +207,13 @@ def test_search_returns_product_family_knowledge_and_design_lessons() -> None:
 
     assert result["status"] == "completed_matches"
     assert result["families"][0]["knowledge_id"] == "carrier-family"
+    assert result["assertions"][0]["assertion_id"] == "assertion-handle-root"
     assert result["lessons"][0]["design_lesson_ref"] == "lesson-handle-root"
-    assert result["matches"] == [*result["families"], *result["lessons"]]
+    assert result["matches"] == [
+        *result["families"],
+        *result["assertions"],
+        *result["lessons"],
+    ]
     assert connection.calls[0][1] == (
         "org-001",
         "group-001",
@@ -184,10 +224,11 @@ def test_search_returns_product_family_knowledge_and_design_lessons() -> None:
         "org-001",
         "group-001",
         "carrier-family",
-        "printed handle",
+        ["printed handle"],
         "printed handle",
         5,
     )
+    assert connection.calls[2][1] == connection.calls[1][1]
 
 
 class _IncompatibleConnection:

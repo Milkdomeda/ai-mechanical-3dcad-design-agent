@@ -50,6 +50,15 @@ REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/test_database_deployment.py",
     "tests/test_database_deployment_live.py",
 }
+REQUIRED_KNOWLEDGE_MIGRATION_PUBLIC_TESTS = {
+    "tests/test_knowledge_matching.py",
+    "tests/test_long_term_knowledge_database.py",
+    "tests/test_long_term_knowledge_migration.py",
+    "tests/test_long_term_knowledge_target.py",
+    "tests/test_simplified_knowledge_migration_cli.py",
+    "tests/test_simplified_knowledge_repository.py",
+    "tests/test_simplified_knowledge_schema.py",
+}
 REQUIRED_WINDOWS_PUBLIC_TESTS = {
     "tests/test_windows_freecad_discovery.py",
     "tests/test_windows_freecad_gui_mcp_live.py",
@@ -92,6 +101,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert manifest.public_scripts == EXPECTED_PUBLIC_SCRIPTS
     assert REQUIRED_WINDOWS_PUBLIC_TESTS <= set(manifest.public_tests)
     assert REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS <= set(manifest.public_tests)
+    assert REQUIRED_KNOWLEDGE_MIGRATION_PUBLIC_TESTS <= set(manifest.public_tests)
     assert "tests/**" not in manifest.public_tests
     assert len(manifest.public_tests) == len(set(manifest.public_tests))
 

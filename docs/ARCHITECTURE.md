@@ -9,9 +9,8 @@ flowchart LR
   Session <--> GUI
   Design --> CMD["Pinned FreeCADCmd"]
   Session --> Validation["Exact-hash validation"]
-  Design -. retrieval and publication .-> PG["PostgreSQL + pgvector<br/>knowledge authority"]
-  PG --> Outbox["Knowledge outbox"]
-  Outbox --> Neo["Neo4j<br/>rebuildable projection"]
+  Design -. retrieval and publication .-> PG["PostgreSQL<br/>knowledge authority"]
+  PG -. explicit full rebuild .-> Neo["Neo4j<br/>optional projection"]
 ```
 
 The coding agent interprets requirements and prepares Design Lesson candidates.
@@ -49,20 +48,30 @@ Knowledge retrieval is best effort. `completed_matches`,
 `completed_no_match`, and `unavailable` are valid outcomes. Only an explicitly
 required named source can make retrieval blocking.
 
-PostgreSQL stores:
+PostgreSQL contains exactly three durable business tables:
 
-- organization and design-group scope;
-- Product Families and approved assertions;
-- immutable Design Lesson review decisions and published lessons;
-- search text, vector fields, applicability, authorization, and provenance;
-- transactional outbox and projection state.
+- `product_families` stores the scoped matching identity, profile, exact terms,
+  and deterministic search text;
+- `knowledge_assertions` stores scoped engineering facts, applicability,
+  evidence, exact terms, and supersession state;
+- `design_lessons` stores scoped reusable Lesson content, applicability,
+  provenance, exact terms, and supersession state.
+
+`knowledge_schema_migrations` is the only technical deployment table. Exact
+normalized terms are checked after scoped B-tree filtering and before
+expression-indexed PostgreSQL full-text search. Raw exact-term arrays are not
+indexed because imported terms may exceed PostgreSQL's index-entry limit and
+must remain complete for deterministic parity. The baseline does not require
+pgvector.
 
 It stores no design-session or CAD-edit state. A previous database layout is
 not modified automatically; initialize a new knowledge database when the
 bootstrap diagnostic requests it.
 
-Neo4j contains only a rebuildable relationship view. Projection failure leaves
-PostgreSQL authoritative and the outbox event pending.
+Neo4j is optional and contains only Agent-owned representations of those three
+record types. An explicit rebuild replaces only nodes carrying the Agent's
+projection-owner marker. Projection failure leaves PostgreSQL retrieval and
+`design_context_build` unchanged.
 
 ## Design Lessons
 

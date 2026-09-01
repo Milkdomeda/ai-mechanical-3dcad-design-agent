@@ -33,7 +33,6 @@ EXPECTED_RUNTIME = {
     "markdown-it-py": "4.2.0",
     "mcp": "1.29.0",
     "mdurl": "0.1.2",
-    "neo4j": "6.2.0",
     "psycopg": "3.3.4",
     "psycopg-binary": "3.3.4",
     "pycparser": "3.0",
@@ -44,7 +43,6 @@ EXPECTED_RUNTIME = {
     "pyjwt": "2.13.0",
     "python-dotenv": "1.2.2",
     "python-multipart": "0.0.32",
-    "pytz": "2026.3.post1",
     "pywin32": "312",
     "referencing": "0.37.0",
     "rich": "15.0.0",
@@ -57,6 +55,10 @@ EXPECTED_RUNTIME = {
     "typing-inspection": "0.4.2",
     "tzdata": "2026.3",
     "uvicorn": "0.52.1",
+}
+EXPECTED_NEO4J_EXTRA = {
+    "neo4j": "6.2.0",
+    "pytz": "2026.3.post1",
 }
 EXPECTED_TEST = {
     "iniconfig": "2.3.0",
@@ -74,6 +76,9 @@ def components_by_id() -> dict[str, dict[str, object]]:
 
 def test_locked_dependency_closures_are_the_audited_release_set() -> None:
     assert locked_dependency_closure(PROJECT_ROOT, "runtime") == EXPECTED_RUNTIME
+    assert locked_dependency_closure(PROJECT_ROOT, "neo4j-extra") == (
+        EXPECTED_NEO4J_EXTRA
+    )
     assert locked_dependency_closure(PROJECT_ROOT, "test") == EXPECTED_TEST
     assert locked_dependency_closure(PROJECT_ROOT, "build") == {"hatchling": "1.32.0"}
 
@@ -81,7 +86,7 @@ def test_locked_dependency_closures_are_the_audited_release_set() -> None:
 def test_inventory_covers_dependency_closures_and_directness() -> None:
     components = components_by_id()
     for scope, expected in (
-        ("runtime", EXPECTED_RUNTIME),
+        ("runtime", {**EXPECTED_RUNTIME, **EXPECTED_NEO4J_EXTRA}),
         ("test", EXPECTED_TEST),
         ("build", {"hatchling": "1.32.0"}),
     ):
