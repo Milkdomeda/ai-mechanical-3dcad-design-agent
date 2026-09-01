@@ -16,9 +16,54 @@ Install FreeCAD workbenches separately through their supported FreeCAD installat
 2. Prefer `freecad.gears` for supported gear and worm families.
 3. Search STEP.parts through `https://api.step.parts` for catalog components outside those workbenches.
 4. Search the verified local FCStd/STEP catalog.
-5. Stop and ask for explicit approval before custom-building a standard part.
+5. If these structured sources return no result, apply the semantic authoritative-source expansion below when commercial availability is reasonably likely.
+6. Stop and ask for explicit approval before custom-building a standard part.
 
 Store STEP.parts downloads under the platform cache selected by `scripts/cache_step_part.py`, or set `MECH_DESIGN_STANDARD_PART_CACHE`/`--cache-root` explicitly. The default roots are below `%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, and `$XDG_CACHE_HOME` or `~/.cache` on other systems. Each entry uses `<part-id>/<sha256>/`; keep the STEP file and `manifest.json` together. A cache entry is usable only when its computed SHA-256 matches the manifest.
+
+## Semantic authoritative-source expansion
+
+A zero-result response from Fasteners Workbench, `freecad.gears`, STEP.parts,
+or the verified local catalog proves only that the configured structured search
+did not match. It does not prove that a standard or commercial component is
+unavailable.
+
+After a structured miss, judge the likelihood of an existing commercial part
+from the requested mechanical function and interfaces. Consider the operating
+principle, mounting and mating interfaces, dimensional envelope, motion or
+travel, load-related attributes, material or environment constraints, and
+industry vocabulary. Derive useful synonyms, dimensional series, interface
+standards, manufacturer terminology, actuation methods, and mounting styles
+from those semantics. Do not require the component to appear in a predefined
+part-type routing table before expanding the search.
+
+When a commercial off-the-shelf component is reasonably likely, search the
+applicable authoritative public sources in this preference order:
+
+1. The manufacturer's official catalog, product page, datasheet, selector,
+   configurator, or CAD portal.
+2. A standards body or industry association record that establishes the
+   component identity, dimensional series, or interface standard.
+3. An authorized distributor catalog that preserves the manufacturer, exact
+   order code, and links to the manufacturer's primary documentation.
+
+General marketplaces, forums, reposted files, aggregators without manufacturer
+identity, and unattributed CAD mirrors may provide vocabulary for another
+query, but they are not sufficient provenance and do not authorize CAD reuse.
+
+Record each structured provider and extended authoritative source attempted,
+the query terms used, and the material outcome. Preserve the manufacturer,
+order code or part ID, standard, nominal size, source URL, source revision or
+access identity, license or reuse terms, and SHA-256 for every downloaded file.
+If candidates differ materially in interfaces or ratings, present them rather
+than choosing silently.
+
+Only after a reasonable semantic expansion across the authoritative sources
+applicable to that component may the Agent report that no suitable component
+was found. Network, DNS, authentication, or service failure is inconclusive and
+must be reported as an incomplete search, not as a market miss. Neither a
+structured miss nor a completed extended miss permits custom substitute
+geometry without explicit user approval.
 
 ## Preferred metric hardware mapping
 
