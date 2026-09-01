@@ -277,14 +277,16 @@ def create_mcp(
         design_id: str,
         confirmation_text: str,
         lesson_candidates_json: str = "[]",
+        review_revision_text: str = "",
     ) -> str:
-        """Confirm the final model and immediately evaluate Design Lessons."""
+        """Confirm the model, evaluate lessons, or revise its pending review."""
         candidates = _array(lesson_candidates_json, "lesson_candidates_json")
         return _tool_call(
             lambda: get_lessons().confirm(
                 design_id=design_id,
                 confirmation_text=confirmation_text,
                 candidates=candidates,
+                review_revision_text=review_revision_text,
             )
         )
 

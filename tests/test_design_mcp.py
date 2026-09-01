@@ -107,6 +107,56 @@ def test_design_tools_use_injected_services_without_database_startup() -> None:
     ]
 
 
+def test_design_confirm_exposes_and_forwards_review_revision_text() -> None:
+    calls: list[dict[str, object]] = []
+
+    class Lessons:
+        def confirm(self, **kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {
+                "confirmation_state": "APPROVE",
+                "lesson_review_status": "review_pending",
+            }
+
+    server = create_mcp(
+        design_service=object(),
+        design_knowledge_service=object(),
+        lesson_workflow=Lessons(),
+        tool_profile="design",
+    )
+    tool = server._tool_manager._tools["design_confirm"]
+
+    assert tool.parameters["properties"]["review_revision_text"] == {
+        "default": "",
+        "title": "Review Revision Text",
+        "type": "string",
+    }
+    assert "review_revision_text" not in tool.parameters["required"]
+
+    result = json.loads(
+        tool.fn(
+            "carrier",
+            "模型设计确认",
+            '[{"decision":"Keep the reusable interface rule."}]',
+            "Remove the product-specific dimension from the pending lesson.",
+        )
+    )
+
+    assert result["lesson_review_status"] == "review_pending"
+    assert calls == [
+        {
+            "design_id": "carrier",
+            "confirmation_text": "模型设计确认",
+            "candidates": [
+                {"decision": "Keep the reusable interface rule."}
+            ],
+            "review_revision_text": (
+                "Remove the product-specific dimension from the pending lesson."
+            ),
+        }
+    ]
+
+
 def test_design_settings_do_not_require_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

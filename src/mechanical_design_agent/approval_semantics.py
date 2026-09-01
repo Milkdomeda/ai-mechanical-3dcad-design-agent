@@ -17,7 +17,15 @@ _ENGLISH_APPROVE = (
     "proceed",
     "yes",
 )
-_CHINESE_APPROVE = ("批准", "同意", "可以", "继续", "确认")
+_CHINESE_APPROVE = (
+    "全部发布",
+    "都发布",
+    "批准",
+    "同意",
+    "可以",
+    "继续",
+    "确认",
+)
 
 _ENGLISH_REJECT = (
     "do not approve",
@@ -29,7 +37,17 @@ _ENGLISH_REJECT = (
     "stop",
     "no",
 )
-_CHINESE_REJECT = ("不同意", "不批准", "不可以", "不要", "拒绝", "停止")
+_CHINESE_REJECT = (
+    "不全部发布",
+    "不都发布",
+    "不发布",
+    "不同意",
+    "不批准",
+    "不可以",
+    "不要",
+    "拒绝",
+    "停止",
+)
 
 _ENGLISH_UNCLEAR = (
     "maybe",

@@ -205,6 +205,91 @@ def test_material_lesson_creates_one_immutable_review_card(tmp_path: Path) -> No
     assert file_sha256(review_path) == result["review_sha256"]
 
 
+def test_pending_review_can_be_superseded_by_an_explicit_revision(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    root = _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    original = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="confirmed",
+        candidates=[_candidate()],
+    )
+    original_path = root / str(original["review_relative_path"])
+    original_bytes = original_path.read_bytes()
+    revised_candidate = _candidate()
+    revised_candidate["decision"] = (
+        "Define the functional contact region from the interface and tolerance "
+        "stack; do not prescribe one universal contact length or relief gap."
+    )
+
+    revised = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="confirmed",
+        candidates=[revised_candidate],
+        review_revision_text="Make the contact lesson generally applicable.",
+    )
+    revised_path = root / str(revised["review_relative_path"])
+
+    assert revised["lesson_review_status"] == "review_pending"
+    assert revised_path != original_path
+    assert revised_path.is_file()
+    assert original_path.read_bytes() == original_bytes
+    assert revised["review_card"]["revision"] == {
+        "revision_text": "Make the contact lesson generally applicable.",
+        "supersedes_review_relative_path": original["review_relative_path"],
+        "supersedes_review_sha256": original["review_sha256"],
+    }
+    assert service.get("carrier")["lesson_review"] == {
+        "status": "review_pending",
+        "review_relative_path": revised["review_relative_path"],
+        "review_sha256": revised["review_sha256"],
+        "publication_id": None,
+        "warning": None,
+    }
+
+    repeated = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="confirmed",
+        candidates=[revised_candidate],
+        review_revision_text="Make the contact lesson generally applicable.",
+    )
+    assert repeated["review_relative_path"] == revised["review_relative_path"]
+    assert repeated["review_sha256"] == revised["review_sha256"]
+
+
+def test_invalid_pending_review_revision_keeps_original_card_bound(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    original = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="confirmed",
+        candidates=[_candidate()],
+    )
+    invalid = _candidate()
+    invalid["evidence"] = ["not-present.txt"]
+
+    failed = workflow.confirm(
+        design_id="carrier",
+        confirmation_text="confirmed",
+        candidates=[invalid],
+        review_revision_text="Revise the pending lesson.",
+    )
+
+    assert failed["lesson_review_status"] == "candidate_errors"
+    assert service.get("carrier")["lesson_review"] == {
+        "status": "review_pending",
+        "review_relative_path": original["review_relative_path"],
+        "review_sha256": original["review_sha256"],
+        "publication_id": None,
+        "warning": None,
+    }
+
+
 def test_invalid_candidate_reports_fields_but_keeps_confirmation(tmp_path: Path) -> None:
     service = _service(tmp_path)
     root = _complete(service, tmp_path)

@@ -50,6 +50,7 @@ class DesignLessonWorkflow:
         design_id: str,
         confirmation_text: str,
         candidates: Sequence[Mapping[str, object]],
+        review_revision_text: str = "",
     ) -> dict[str, object]:
         confirmation = self.sessions.confirm(
             design_id=design_id,
@@ -63,15 +64,21 @@ class DesignLessonWorkflow:
             }
 
         context = self.sessions.confirmation_context(design_id)
+        revision = self._pending_review_revision(
+            context=context,
+            state=self.sessions.get(design_id),
+            revision_text=review_revision_text,
+        )
         accepted, screened, errors = self._evaluate_candidates(candidates, context)
         model_sha256 = str(context["model_sha256"])
         if errors:
-            self.sessions.record_lesson_review(
-                design_id=design_id,
-                model_sha256=model_sha256,
-                status="candidate_errors",
-                warning="candidate validation requires correction",
-            )
+            if revision is None:
+                self.sessions.record_lesson_review(
+                    design_id=design_id,
+                    model_sha256=model_sha256,
+                    status="candidate_errors",
+                    warning="candidate validation requires correction",
+                )
             return {
                 **confirmation,
                 "schema_version": "DesignConfirmationAndLearningResult/v1",
@@ -82,6 +89,10 @@ class DesignLessonWorkflow:
             }
 
         if not accepted:
+            if revision is not None:
+                raise ValueError(
+                    "a pending review revision must retain a material lesson"
+                )
             self.sessions.record_lesson_review(
                 design_id=design_id,
                 model_sha256=model_sha256,
@@ -95,11 +106,22 @@ class DesignLessonWorkflow:
                 "next_action": "finish",
             }
 
-        card, relative_path, card_sha256 = self._prepare_review_card(
-            context=context,
-            lessons=accepted,
-            screened=screened,
-        )
+        if revision is not None and (
+            revision["card"].get("lessons") == accepted
+            and revision["card"].get("screening") == screened
+            and revision["card"].get("revision", {}).get("revision_text")
+            == revision["revision_text"]
+        ):
+            card = revision["card"]
+            relative_path = str(revision["relative_path"])
+            card_sha256 = str(revision["sha256"])
+        else:
+            card, relative_path, card_sha256 = self._prepare_review_card(
+                context=context,
+                lessons=accepted,
+                screened=screened,
+                revision=revision,
+            )
         self.sessions.record_lesson_review(
             design_id=design_id,
             model_sha256=model_sha256,
@@ -115,6 +137,44 @@ class DesignLessonWorkflow:
             "review_relative_path": relative_path,
             "review_sha256": card_sha256,
             "next_action": "request_lesson_publication_decision",
+        }
+
+    @staticmethod
+    def _pending_review_revision(
+        *,
+        context: Mapping[str, object],
+        state: Mapping[str, object],
+        revision_text: str,
+    ) -> dict[str, object] | None:
+        normalized = revision_text.strip()
+        if not normalized:
+            return None
+        review = state.get("lesson_review")
+        if not isinstance(review, Mapping) or review.get("status") != "review_pending":
+            raise ValueError("only a pending review card can be revised")
+        relative_path = review.get("review_relative_path")
+        expected_sha256 = review.get("review_sha256")
+        if not isinstance(relative_path, str) or not isinstance(expected_sha256, str):
+            raise ValueError("pending review identity is incomplete")
+        review_path = Path(str(context["design_root"])) / relative_path
+        read = read_managed_file(review_path)
+        if read.sha256 != expected_sha256:
+            raise ValueError("pending review card changed before revision")
+        try:
+            card = json.loads(read.content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("pending review card is not valid UTF-8 JSON") from exc
+        if (
+            not isinstance(card, dict)
+            or card.get("schema_version") != _REVIEW_SCHEMA
+            or card.get("model_sha256") != context["model_sha256"]
+        ):
+            raise ValueError("pending review card identity is invalid or stale")
+        return {
+            "card": card,
+            "relative_path": relative_path,
+            "revision_text": normalized,
+            "sha256": expected_sha256,
         }
 
     def decide(
@@ -433,6 +493,7 @@ class DesignLessonWorkflow:
         context: Mapping[str, object],
         lessons: Sequence[Mapping[str, object]],
         screened: Sequence[Mapping[str, object]],
+        revision: Mapping[str, object] | None = None,
     ) -> tuple[dict[str, object], str, str]:
         design_root = validate_managed_path(
             Path(str(context["design_root"])), allow_missing_leaf=False
@@ -445,10 +506,24 @@ class DesignLessonWorkflow:
             character not in "0123456789abcdef" for character in model_sha256
         ):
             raise ValueError("review-card model SHA-256 is invalid")
-        review_path = review_root / f"review-{model_sha256}.json"
-        review_id = (
-            f"review-{context['design_id']}-{model_sha256[:12]}"
-        )
+        revision_metadata: dict[str, object] | None = None
+        revision_suffix = ""
+        if revision is not None:
+            revision_metadata = {
+                "revision_text": revision["revision_text"],
+                "supersedes_review_relative_path": revision["relative_path"],
+                "supersedes_review_sha256": revision["sha256"],
+            }
+            revision_seed = canonical_json(
+                {
+                    "lessons": list(lessons),
+                    "revision": revision_metadata,
+                    "screening": list(screened),
+                }
+            ).encode("utf-8")
+            revision_suffix = "-revision-" + hashlib.sha256(revision_seed).hexdigest()[:12]
+        review_path = review_root / f"review-{model_sha256}{revision_suffix}.json"
+        review_id = f"review-{context['design_id']}-{model_sha256[:12]}{revision_suffix}"
         card: dict[str, object] = {
             "schema_version": _REVIEW_SCHEMA,
             "review_id": review_id,
@@ -460,6 +535,8 @@ class DesignLessonWorkflow:
             "lessons": list(lessons),
             "screening": list(screened),
         }
+        if revision_metadata is not None:
+            card["revision"] = revision_metadata
         card_bytes = canonical_json(card).encode("utf-8")
         card_sha256 = hashlib.sha256(card_bytes).hexdigest()
         if review_path.exists():

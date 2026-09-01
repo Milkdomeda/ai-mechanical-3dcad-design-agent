@@ -21,7 +21,9 @@ After approval:
 6. when the user confirms the completed design, derive reusable candidate
    lessons and call `design_confirm` in the same turn;
 7. finish if no material lesson exists, or display the returned review card and
-   ask once whether to publish it;
+   ask once whether to publish it; if the user corrects an unpublished pending
+   card, pass their exact feedback as `review_revision_text` so a new immutable
+   card supersedes the old card without overwriting it;
 8. pass that natural-language publication decision to `design_lesson_decide`.
 
 Final-model confirmation is independent from knowledge publication. A knowledge
