@@ -57,10 +57,12 @@ def _service(tmp_path: Path) -> DesignSessionService:
     return service
 
 
-def _complete(service: DesignSessionService, tmp_path: Path) -> Path:
+def _record_model(
+    service: DesignSessionService, tmp_path: Path, *, object_name: str
+) -> Path:
     root = tmp_path / "designs" / "carrier"
     model = root / "model.FCStd"
-    model.write_bytes(_fcstd("Carrier"))
+    model.write_bytes(_fcstd(object_name))
     model_sha256 = file_sha256(model)
     report = root / "validation" / "model_validation.json"
     report.write_text(
@@ -99,6 +101,10 @@ def _complete(service: DesignSessionService, tmp_path: Path) -> Path:
         evidence_paths=[str(markdown), str(image)],
     )
     return root
+
+
+def _complete(service: DesignSessionService, tmp_path: Path) -> Path:
+    return _record_model(service, tmp_path, object_name="Carrier")
 
 
 def _candidate() -> dict[str, object]:
@@ -186,10 +192,22 @@ def test_material_lesson_creates_one_immutable_review_card(tmp_path: Path) -> No
     )
     assert repeated["review_sha256"] == result["review_sha256"]
 
+    changed = _candidate()
+    changed["problem"] = "A different lesson must not replace frozen evidence."
+    original_bytes = review_path.read_bytes()
+    with pytest.raises(ValueError, match="immutable review card"):
+        workflow.confirm(
+            design_id="carrier",
+            confirmation_text="yes",
+            candidates=[changed],
+        )
+    assert review_path.read_bytes() == original_bytes
+    assert file_sha256(review_path) == result["review_sha256"]
+
 
 def test_invalid_candidate_reports_fields_but_keeps_confirmation(tmp_path: Path) -> None:
     service = _service(tmp_path)
-    _complete(service, tmp_path)
+    root = _complete(service, tmp_path)
     candidate = _candidate()
     candidate["evidence"] = ["not-present.txt"]
 
@@ -204,6 +222,66 @@ def test_invalid_candidate_reports_fields_but_keeps_confirmation(tmp_path: Path)
     state = service.get("carrier")
     assert state["model_status"] == "completed"
     assert state["final_confirmation"]["state"] == "APPROVE"
+    assert state["lesson_review"]["review_relative_path"] is None
+    assert state["lesson_review"]["review_sha256"] is None
+    assert not (root / "lesson-review").exists()
+
+
+def test_corrected_candidate_creates_hash_addressed_review_for_same_model(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    root = _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    invalid = _candidate()
+    invalid["evidence"] = ["not-present.txt"]
+
+    failed = workflow.confirm(
+        design_id="carrier", confirmation_text="确认", candidates=[invalid]
+    )
+    corrected = workflow.confirm(
+        design_id="carrier", confirmation_text="确认", candidates=[_candidate()]
+    )
+    model_sha256 = service.get("carrier")["model"]["sha256"]
+    expected = f"lesson-review/review-{model_sha256}.json"
+
+    assert failed["lesson_review_status"] == "candidate_errors"
+    assert corrected["lesson_review_status"] == "review_pending"
+    assert corrected["review_relative_path"] == expected
+    assert (root / expected).is_file()
+
+
+def test_legacy_review_card_does_not_block_a_new_model_revision(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    root = _complete(service, tmp_path)
+    workflow = DesignLessonWorkflow(service)
+    revision_a = workflow.confirm(
+        design_id="carrier", confirmation_text="确认", candidates=[_candidate()]
+    )
+    legacy_path = root / str(revision_a["review_relative_path"])
+    legacy_bytes = legacy_path.read_bytes()
+    revision_a_sha256 = service.get("carrier")["model"]["sha256"]
+
+    _record_model(service, tmp_path, object_name="ChangedCarrier")
+    invalid = _candidate()
+    invalid["evidence"] = ["not-present.txt"]
+    failed = workflow.confirm(
+        design_id="carrier", confirmation_text="确认", candidates=[invalid]
+    )
+    revision_b = workflow.confirm(
+        design_id="carrier", confirmation_text="确认", candidates=[_candidate()]
+    )
+    revision_b_sha256 = service.get("carrier")["model"]["sha256"]
+
+    assert revision_a_sha256 != revision_b_sha256
+    assert failed["lesson_review_status"] == "candidate_errors"
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert revision_b["review_relative_path"] == (
+        f"lesson-review/review-{revision_b_sha256}.json"
+    )
+    assert (root / str(revision_b["review_relative_path"])).is_file()
 
 
 def test_private_or_project_only_candidate_is_not_published(tmp_path: Path) -> None:
