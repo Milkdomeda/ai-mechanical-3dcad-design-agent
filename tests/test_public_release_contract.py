@@ -81,6 +81,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert "docs/DATABASE_DEPLOYMENT.md" in manifest.public_docs
     assert "docs/ENGINEER_LEARNING_PLAYBOOK.md" in manifest.public_docs
     assert "docs/FREECAD_GUI_MCP_INTEGRATION.md" in manifest.public_docs
+    assert "docs/OPENCODE_INTEGRATION.md" in manifest.public_docs
     assert ".agents/skills/README.md" in manifest.public_docs
     assert all(
         asset.as_posix() in manifest.public_docs

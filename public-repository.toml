@@ -21,6 +21,7 @@ public_docs = [
   "docs/DATABASE_DEPLOYMENT.md",
   "docs/ENGINEER_LEARNING_PLAYBOOK.md",
   "docs/FREECAD_GUI_MCP_INTEGRATION.md",
+  "docs/OPENCODE_INTEGRATION.md",
   "docs/WINDOWS_RELEASE_ACCEPTANCE.md",
   "docs/assets/ai-mechanical-design-agent-architecture-v2.png",
   "docs/assets/ai-mechanical-design-showcase.gif",
