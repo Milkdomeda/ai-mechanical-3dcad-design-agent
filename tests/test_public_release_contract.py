@@ -19,7 +19,7 @@ from public_release_helpers import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_README_ASSETS = {
     Path("docs/assets/ai-mechanical-design-agent-architecture-v2.png"):
-        "12b05111bf5f74d14b9a5010bc3733cb363f5941ebddcadcf7c4eba1b9098b51",
+        "089765d799a2dfc761333c89a581b519ee2f914e3b20a146c39140025b78c6f8",
     Path("docs/assets/ai-mechanical-design-showcase.gif"):
         "66c618705ba4d501894735a83ba7edbb8434f96c46b1830179dd1fd237527328",
 }
