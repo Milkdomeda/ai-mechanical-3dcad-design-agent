@@ -66,6 +66,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
           uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
           if ($LASTEXITCODE -ne 0) { throw 'Pinned portable tool discovery failed' }
+      - name: Capture pinned Windows native source identity
+        shell: pwsh
+        run: |
+          $diagnostic = Join-Path $env:RUNNER_TEMP 'native-source-identity'
+          New-Item -ItemType Directory -Force -Path $diagnostic | Out-Null
+          $env:R1_DIAGNOSTIC = $diagnostic
+          @'
+          import hashlib,json,os,pathlib
+          config=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'fea-config.json').read_text(encoding='utf-8'))
+          tool=pathlib.Path(config['tools']['freecadcmd']['path'])
+          module=tool.parent.parent/'Mod/Fem/femmesh/meshtools.py'
+          raw=module.read_bytes()
+          target=pathlib.Path(os.environ['R1_DIAGNOSTIC'])
+          (target/'meshtools.py').write_bytes(raw)
+          value={'path':str(module),'bytes':len(raw),'raw_sha256':hashlib.sha256(raw).hexdigest(),'lf_sha256':hashlib.sha256(raw.replace(b'\r\n',b'\n')).hexdigest(),'crlf_count':raw.count(b'\r\n'),'lf_count':raw.count(b'\n')}
+          (target/'identity.json').write_text(json.dumps(value,indent=2),encoding='utf-8')
+          print(json.dumps(value))
+          '@ | uv run --offline --group test python -
+          if ($LASTEXITCODE -ne 0) { throw 'Native source identity diagnostic failed' }
       - name: Preserve official baseline failure at unchanged numerical gates
         shell: pwsh
         run: |
@@ -115,6 +134,7 @@ jobs:
             ${{ runner.temp }}/freecad-r1-runtime/config.json
             ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
             ${{ runner.temp }}/freecad-r1-runtime/identity/
+            ${{ runner.temp }}/native-source-identity/
             ${{ runner.temp }}/process-tests.xml
             ${{ runner.temp }}/full-offline.xml
           retention-days: 14
