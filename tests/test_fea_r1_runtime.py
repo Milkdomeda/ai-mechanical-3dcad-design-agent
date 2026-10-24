@@ -143,3 +143,28 @@ def test_source_tool_mapping_uses_the_same_canonical_root_as_secure_fs(tmp_path)
     root=tmp_path/'runtime';tool=root/'bin/tool.exe';tool.parent.mkdir(parents=True);tool.write_bytes(b'tool')
     canonical=secure_fs.validate_managed_path(root,allow_missing_leaf=False).path
     assert relative_source_tool(tool,canonical)==Path('bin/tool.exe')
+
+
+def test_identity_worker_uses_native_directory_presentation_and_owned_process(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import mechanical_design_agent.analysis_process as process
+    from mechanical_design_agent import secure_fs
+    from fea_r1_prepare import _identity
+    from fea_r1_runtime import canonical_path
+    root=tmp_path/'isolated';root.mkdir()
+    checked=secure_fs.validate_managed_path(root,allow_missing_leaf=False).path
+    seen=[]
+    class Boundary:
+        def start(self,request):
+            seen.append(request)
+            assert not request.env['FREECAD_USER_HOME'].startswith('\\\\?\\')
+            assert Path(request.env['FREECAD_USER_HOME']).samefile(root/'identity')
+            assert request.env['FREECAD_USER_DATA']==request.env['FREECAD_USER_TEMP']==request.env['FREECAD_USER_HOME']
+            assert request.argv[2]==str(canonical_path(root/'identity')/'user.cfg')
+            (request.cwd/'response.json').write_text(json.dumps({'identity':{'app_version':['1','1','3']}}))
+            return object()
+        def poll(self,owned):return SimpleNamespace(reason='exited',returncode=0)
+        def terminate(self,owned,reason):pass
+    monkeypatch.setattr(process,'ProcessController',Boundary)
+    assert _identity(checked,{'freecadcmd':{'path':sys.executable}},root/'module.py','profile','a'*64)['identity']['app_version']==['1','1','3']
+    assert len(seen)==1

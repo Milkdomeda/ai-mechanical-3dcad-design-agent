@@ -102,6 +102,11 @@ The official Windows archive carries CRLF source bytes. Its separately pinned
 raw SHA and canonical LF SHA must both match before patching. Unknown bytes
 are refused even if normalizing their line endings would match; both platforms
 produce identical patched LF bytes. Original raw digests remain in receipts.
+The identity-only startup directory is presented to FreeCAD without the
+Windows device prefix after canonical validation. The native startup matrix
+confirmed prefixed user/config directories fail before Python starts, while
+both executable spellings succeed with the ordinary directory spelling.
+Filesystem checks and same-file identity remain authoritative.
 
 The R1 automated evidence adds independent analytic graph integration, signed
 corner weights, legacy T3/Q4/Q8, invalid-map/reference rejection, order-20

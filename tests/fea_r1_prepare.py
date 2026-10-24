@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from fea_r1_patch import ASSETS,BASE_SHA256,PROFILE,SOURCE_COMMIT,canonical_baseline,asset_identities,digest,patched_source,patch_bytes
-from fea_r1_runtime import tree_inventory
+from fea_r1_runtime import tree_inventory,canonical_path
 
 
 def _signature(root, *, sign=False):
@@ -56,6 +56,9 @@ def _identity(root,tools,module,profile,module_digest):
     from mechanical_design_agent.analysis_process import ProcessController,ProcessRequest
     from fea_native_probe import console_statement
     directory=root/'identity';directory.mkdir()
+    # Qt/FreeCAD startup rejects device-prefixed user directories. Keep the
+    # validated directory identity, present its ordinary native path spelling.
+    directory=canonical_path(directory)
     request=directory/'request.json';response=directory/'response.json'
     request.write_text(json.dumps({'module_path':str(module),'module_sha256':module_digest,'profile':profile}),encoding='utf-8')
     worker=Path(__file__).with_name('fea_r1_identity.py')
