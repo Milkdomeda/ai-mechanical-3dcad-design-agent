@@ -59,7 +59,8 @@ def prepare_environment(config_path,scratch_root,output):
     script=Path(__file__).with_name('fea_gui_compile.py');compiler_pin=pin(script)
     request=evidence/'compile-request.json';response=evidence/'compile-result.json'
     source_map={name:entry['sha256'] for name,entry in base['tree'].items() if name.endswith('.py') and 'sha256' in entry}
-    write_json(request,{'root':str(runtime),'sources':source_map,'output':str(canonical_path(response.parent)/response.name)})
+    existing_caches={name:entry['sha256'] for name,entry in base['tree'].items() if name.endswith('.pyc') and 'sha256' in entry}
+    write_json(request,{'root':str(runtime),'sources':source_map,'existing_caches':existing_caches,'output':str(canonical_path(response.parent)/response.name)})
     # Same bytes, ordinary application-local DLL lookup, never a system DLL edit.
     secure_fs.atomic_publish_new(alias,driver.read_bytes())
     def build(owned):
@@ -69,6 +70,7 @@ def prepare_environment(config_path,scratch_root,output):
     outcome=owned_gui_process(evidence/'logs',scratch_root,build,lambda *args:None,timeout_seconds=300)
     if outcome['outcome']!='exited' or outcome['returncode']!=0 or digest(script)!=compiler_pin['sha256']:raise ValueError('native checked-hash compilation failed')
     compiled=read_json(response);after=tree_inventory(runtime);assessment=assess_materialization(base['tree'],after)
+    write_json(evidence/'materialization-assessment.json',{**assessment,'added':sorted(set(after)-set(base['tree'])),'removed':sorted(set(base['tree'])-set(after)),'changed':sorted(k for k in set(after)&set(base['tree']) if after[k]!=base['tree'][k])})
     if assessment['status']!='passed':raise ValueError('GUI preparation changed an original file or added an unreviewed entry')
     expected_caches=set(after)-set(base['tree'])-{'bin/opengl32.dll'}
     if set(compiled['compiled'])!=expected_caches:raise ValueError('cache provenance inventory mismatch')

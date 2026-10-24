@@ -36,7 +36,18 @@ def test_cache_compilation_never_executes_sources_and_records_invalid_upstream_s
     from fea_gui_compile import compile_sources
     sources={'valid.py':b'raise AssertionError("compilation must never execute this")\n','invalid.py':b'def invalid(:\n'}
     for name,raw in sources.items():(tmp_path/name).write_bytes(raw)
-    result=compile_sources({'root':str(tmp_path),'sources':{k:hashlib.sha256(v).hexdigest() for k,v in sources.items()},'output':str(tmp_path/'result.json')})
+    result=compile_sources({'root':str(tmp_path),'sources':{k:hashlib.sha256(v).hexdigest() for k,v in sources.items()},'existing_caches':{},'output':str(tmp_path/'result.json')})
     assert set(result['syntax_errors'])=={'invalid.py'}
     assert {v['source'] for v in result['compiled'].values()}=={'valid.py'}
     assert all((tmp_path/name).read_bytes()==raw for name,raw in sources.items())
+
+
+def test_previously_pinned_runtime_cache_bytes_are_preserved(tmp_path):
+    import hashlib,py_compile
+    from pathlib import Path
+    from fea_gui_compile import compile_sources
+    source=tmp_path/'module.py';source.write_text('value=42\n')
+    cache=Path(py_compile.compile(str(source),doraise=True));before=cache.read_bytes();name=cache.relative_to(tmp_path).as_posix()
+    result=compile_sources({'root':str(tmp_path),'sources':{'module.py':hashlib.sha256(source.read_bytes()).hexdigest()},'existing_caches':{name:hashlib.sha256(before).hexdigest()},'output':str(tmp_path/'result.json')})
+    assert cache.read_bytes()==before
+    assert result['compiled']=={} and result['preserved'][name]['sha256']==hashlib.sha256(before).hexdigest()

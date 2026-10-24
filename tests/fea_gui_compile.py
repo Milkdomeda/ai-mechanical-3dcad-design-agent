@@ -11,9 +11,9 @@ import sys
 
 
 def compile_sources(request):
-    if set(request)!={'root','sources','output'}:raise ValueError('cache compilation request')
+    if set(request)!={'root','sources','existing_caches','output'}:raise ValueError('cache compilation request')
     root=Path(request['root']).resolve(strict=True)
-    result={'schema_version':'P0GuiCompile/v1','python':sys.version,'magic':importlib.util.MAGIC_NUMBER.hex(),'compiled':{},'syntax_errors':{}}
+    result={'schema_version':'P0GuiCompile/v1','python':sys.version,'magic':importlib.util.MAGIC_NUMBER.hex(),'compiled':{},'preserved':{},'syntax_errors':{}}
     for name,expected in request['sources'].items():
         parts=PurePosixPath(name)
         if parts.is_absolute() or '..' in parts.parts or '\\' in name or ':' in name or parts.suffix!='.py':raise ValueError('source boundary')
@@ -21,6 +21,13 @@ def compile_sources(request):
         if source.is_symlink() or not source.resolve(strict=True).is_relative_to(root):raise ValueError('source boundary')
         raw=source.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=expected:raise ValueError('source checksum changed')
+        existing=Path(importlib.util.cache_from_source(str(source),optimization=''))
+        if existing.exists():
+            name=existing.relative_to(root).as_posix()
+            sha=hashlib.sha256(existing.read_bytes()).hexdigest()
+            if existing.is_symlink() or request['existing_caches'].get(name)!=sha:raise ValueError('unexpected or changed existing native cache')
+            result['preserved'][name]={'source':source.relative_to(root).as_posix(),'source_sha256':expected,'sha256':sha}
+            continue
         try:
             cache=Path(py_compile.compile(str(source),doraise=True,optimize=0,invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,quiet=1))
         except py_compile.PyCompileError as exc:
