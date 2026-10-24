@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import pytest
 
 from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
 
@@ -120,3 +121,21 @@ def test_owner_exit_cleans_process_tree(tmp_path):
     assert result.returncode == 0
     pids = [int((tmp_path / (role + ".pid")).read_text()) for role in ("tree", "leaf", "grandchild")]
     wait_for(lambda: all(not alive(pid) for pid in pids))
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX guardian receipt contract')
+def test_receipt_write_error_still_cleans_descendants(tmp_path):
+    controller = ProcessController()
+    script = "import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(20)']); Path('descendant.pid').write_text(str(p.pid)); time.sleep(.5)"
+    identity = controller.start(request(tmp_path, [sys.executable, '-c', script]))
+    pid = None
+    try:
+        wait_for(lambda: (tmp_path / 'descendant.pid').exists())
+        pid = int((tmp_path / 'descendant.pid').read_text())
+        (tmp_path / ('.process-' + identity.worker_uuid + '.json')).mkdir()
+        wait_for(lambda: controller.poll(identity))
+        wait_for(lambda: not alive(pid), timeout=2)
+    finally:
+        controller.terminate(identity, reason='cancelled')
+        if pid and alive(pid):
+            os.kill(pid, 9)

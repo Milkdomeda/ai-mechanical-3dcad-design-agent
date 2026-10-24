@@ -27,3 +27,23 @@ def test_worker_owns_windows_job_not_mcp(tmp_path: Path):
     finally:
         (tmp_path / "exit-worker").touch()
     wait_for(lambda: all(not alive(pid) for pid in pids))
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Native Windows handle-list contract')
+def test_solver_does_not_inherit_unrelated_handle(tmp_path):
+    import msvcrt
+    from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
+    sentinel = (tmp_path / 'sentinel').open('wb')
+    handle = msvcrt.get_osfhandle(sentinel.fileno())
+    os.set_handle_inheritable(handle, True)
+    controller = ProcessController()
+    script = ('import ctypes,sys; flags=ctypes.c_ulong(); k=ctypes.WinDLL("kernel32",use_last_error=True); '
+              'k.GetHandleInformation.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_ulong)]; '
+              f'ok=k.GetHandleInformation({handle},ctypes.byref(flags)); sys.exit(9 if ok else 0)')
+    try:
+        identity = controller.start(ProcessRequest(argv=(sys.executable, '-c', script), cwd=tmp_path, stdout_path=tmp_path/'out', stderr_path=tmp_path/'err', env=dict(os.environ)))
+        outcome = wait_for(lambda: controller.poll(identity))
+        assert outcome.returncode == 0
+    finally:
+        os.set_handle_inheritable(handle, False)
+        sentinel.close()
