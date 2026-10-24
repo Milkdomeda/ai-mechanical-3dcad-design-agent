@@ -29,6 +29,123 @@
     "state_revision": {
       "type": "integer",
       "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "origin_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "origin_sha256": {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+        },
+        "origin_identity": {
+          "type": "object",
+          "properties": {
+            "volume": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "file_index": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "volume",
+            "file_index"
+          ],
+          "additionalProperties": false
+        },
+        "design_model_sha256": {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+        },
+        "design_model_identity": {
+          "type": "object",
+          "properties": {
+            "volume": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "file_index": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "volume",
+            "file_index"
+          ],
+          "additionalProperties": false
+        },
+        "design_state_sha256": {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+        },
+        "cad_model_classification": {
+          "enum": [
+            "existing_model",
+            "new_design"
+          ]
+        },
+        "snapshot_ref": {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+        }
+      },
+      "required": [
+        "origin_path",
+        "origin_sha256",
+        "origin_identity",
+        "design_model_sha256",
+        "design_model_identity",
+        "design_state_sha256",
+        "cad_model_classification",
+        "snapshot_ref"
+      ],
+      "additionalProperties": false
+    },
+    "spec_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active_run_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latest_delivery": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "accepted_delivery": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "required": [
@@ -36,7 +153,14 @@
     "design_id",
     "analysis_id",
     "status",
-    "state_revision"
+    "state_revision",
+    "source",
+    "spec_revision",
+    "active_run_id",
+    "latest_delivery",
+    "accepted_delivery",
+    "created_at",
+    "updated_at"
   ],
   "additionalProperties": false
 }
