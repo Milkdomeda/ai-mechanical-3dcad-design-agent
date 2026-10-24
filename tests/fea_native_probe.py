@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import time
 
@@ -29,6 +30,12 @@ def select_bundled_tool(root: Path, name: str) -> Path:
     if len(distribution) != 1:
         raise ProbeError("BUNDLED_TOOL_AMBIGUOUS: " + name)
     return distribution[0]
+
+
+def console_statement(args: list[str]) -> str:
+    # FreeCAD's Windows console command transport is not Unicode-clean.
+    # ASCII Python escapes preserve the original paths inside its interpreter.
+    return "import sys, runpy; sys.argv=" + ascii(args) + "; runpy.run_path(sys.argv[0], run_name='__main__')"
 
 
 def _unique(pairs):
@@ -140,6 +147,32 @@ def assess_native(worker: dict) -> dict:
     }
 
 
+def _native_cancellation(config, workspace):
+    from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
+    programs = {}
+    original = workspace / "axial_bar"
+    for name in ("gmsh", "ccx"):
+        directory = workspace / ("cancel-" + name)
+        directory.mkdir()
+        for path in original.iterdir():
+            if path.suffix.lower() in {".geo", ".brep", ".inp"}:
+                shutil.copyfile(path, directory / path.name)
+        geo = directory / "shape2mesh.geo"
+        for referenced in re.findall(r'(?:Merge|Save)\s+"([^"]+)"', geo.read_text(encoding="utf-8")):
+            if Path(referenced).name != referenced:
+                raise ProbeError("CANCELLATION_TRIAL_REQUIRES_RELATIVE_NATIVE_INPUT")
+        inp = next(directory.glob("*.inp"))
+        if "*INCLUDE" in inp.read_text(encoding="utf-8").upper():
+            raise ProbeError("CANCELLATION_TRIAL_INCLUDE_UNSUPPORTED")
+        argv = [config["tools"][name]["path"], "-", str(geo)] if name == "gmsh" else [config["tools"][name]["path"], "-i", inp.stem]
+        controller = ProcessController()
+        identity = controller.start(ProcessRequest(argv=tuple(argv), cwd=directory, env=dict(os.environ), stdout_path=directory / "stdout.log", stderr_path=directory / "stderr.log", timeout_seconds=30))
+        outcome = controller.terminate(identity, reason="cancelled")
+        programs[name] = {"reason": outcome.reason, "returncode": outcome.returncode, "pid": identity.pid, "sha256": config["tools"][name]["sha256"]}
+    passed = all(value["reason"] == "cancelled" for value in programs.values())
+    return {"status": "passed" if passed else "failed", "phase": "startup", "programs": programs, "scope": "actual native executable startup cancellation, not a long-running convergence test"}
+
+
 def probe_native(config: dict, workspace: Path) -> dict:
     _validate_config(config)
     identities = {name: verify_tool(pin) for name, pin in config["tools"].items()}
@@ -155,7 +188,7 @@ def probe_native(config: dict, workspace: Path) -> dict:
     worker = Path(__file__).with_name("fea_helpers.py")
     response = workspace / "native-result.json"
     args = [str(worker), str(request), str(response)]
-    statement = "import sys, runpy; sys.argv=" + repr(args) + "; runpy.run_path(sys.argv[0], run_name='__main__')"
+    statement = console_statement(args)
     env = {k: v for k, v in os.environ.items() if k in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
     env.update({"HOME": str(workspace), "USERPROFILE": str(workspace), "TMPDIR": str(workspace), "TMP": str(workspace), "TEMP": str(workspace), "PATH": os.defpath, "LANG": "C.UTF-8", "OMP_NUM_THREADS": "1", "QT_QPA_PLATFORM": "offscreen"})
     command = [config["tools"]["freecadcmd"]["path"], "-u", str(workspace / "user.cfg"), "-s", str(workspace / "system.cfg"), "-c", statement]
@@ -176,6 +209,10 @@ def probe_native(config: dict, workspace: Path) -> dict:
     if "error" not in result and any(result.get("versions", {}).get(name) != pin["version"] for name, pin in config["tools"].items()):
         raise ProbeError("TOOL_VERSION_MISMATCH")
     report = assess_native(result)
+    if report["automated_status"] == "passed":
+        report["checks"]["native_startup_cancellation"] = _native_cancellation(config, workspace)
+        if report["checks"]["native_startup_cancellation"]["status"] != "passed":
+            report["automated_status"] = report["status"] = "failed"
     report["tool_identities"] = identities
     report["artifacts"] = {}
     for path in sorted(workspace.rglob("*")):

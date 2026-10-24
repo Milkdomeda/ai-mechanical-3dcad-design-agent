@@ -14,6 +14,7 @@ from fea_native_probe import (
     parse_config,
     probe_native,
     select_bundled_tool,
+    console_statement,
     verify_tool,
 )
 from fea_helpers import read_version
@@ -177,3 +178,16 @@ def test_two_distribution_bins_are_ambiguous(tmp_path):
         path.write_bytes(b"candidate")
     with pytest.raises(ProbeError, match="AMBIGUOUS"):
         select_bundled_tool(tmp_path, "gmsh")
+
+
+def test_console_transport_is_ascii_without_losing_unicode_paths(tmp_path):
+    import os
+    import sys
+    script = tmp_path / "中文 空格.py"
+    script.write_text("import sys; print(sys.argv[1])", encoding="utf-8")
+    statement = console_statement([str(script), "中文 请求"])
+    statement.encode("ascii")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    completed = subprocess.run([sys.executable, "-c", statement], capture_output=True, encoding="utf-8", env=env)
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "中文 请求"

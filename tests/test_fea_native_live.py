@@ -14,4 +14,5 @@ def test_native_fea_automated_subset(tmp_path: Path) -> None:
     config = parse_config(Path(os.environ["MECH_DESIGN_FEA_CONFIG"]))
     report = probe_native(config, tmp_path / "native")
     assert report["automated_status"] == "passed", report
+    assert report["checks"]["native_startup_cancellation"]["status"] == "passed"
     # This test intentionally does not assert the complete P0 gate passed.

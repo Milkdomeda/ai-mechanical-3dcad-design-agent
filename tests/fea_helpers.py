@@ -57,6 +57,34 @@ def _solve(matrix, values):
     return [_det([[values[row] if col == axis else matrix[row][col] for col in range(3)] for row in range(3)]) / determinant for axis in range(3)]
 
 
+def ray_coverage(intervals):
+    """Union coverage and conservative minimum element cover of a ray.
+
+    A ray can lie on a shared face: summing element intervals would count
+    that physical length twice. A spanning element must still fail the
+    resolution check even if other overlapping intervals subdivide it.
+    """
+    intervals = sorted(intervals)
+    if not intervals:
+        return {"covered_mm": 0, "elements": 0}
+    merged = []
+    for low, high in intervals:
+        if merged and low <= merged[-1][1] + 1e-8:
+            merged[-1] = (merged[-1][0], max(high, merged[-1][1]))
+        else:
+            merged.append((low, high))
+    count = 0
+    for low, high in merged:
+        cursor = low
+        while cursor < high - 1e-8:
+            end = max(b for a, b in intervals if a <= cursor + 1e-8)
+            if end <= cursor + 1e-8:
+                raise RuntimeError("Nonadvancing mesh ray cover")
+            count += 1
+            cursor = end
+    return {"covered_mm": sum(high - low for low, high in merged), "elements": count}
+
+
 def mesh_quality(inp, length, width, height):
     nodes, elements = {}, []
     section = ""
@@ -96,7 +124,7 @@ def mesh_quality(inp, length, width, height):
                     high = min(high, -a / b)
             if high - low > 1e-7:
                 intervals.append((low, high))
-        rays.append({"xy_mm": [x, y], "elements": len(intervals), "covered_mm": sum(b - a for a, b in intervals)})
+        rays.append({"xy_mm": [x, y], **ray_coverage(intervals)})
     return {"checked_elements": len(elements), "min_det_mm3": min(q["min_det_mm3"] for q in qualities), "min_scaled_jacobian": min(q["min_scaled_jacobian"] for q in qualities), "sample_points_per_element": 15, "thickness_rays": rays, "scope": "straight synthetic benchmarks only; not a global curved-element positivity proof"}
 
 
@@ -245,6 +273,7 @@ def main(request_path, response_path):
     import FreeCAD as App
     config = json.loads(Path(request_path).read_text(encoding="utf-8"))
     App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").SetString("gmshBinaryPath", config["tools"]["gmsh"]["path"])
+    App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").SetInt("NumOfThreads", 1)
     App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx").SetString("ccxBinaryPath", config["tools"]["ccx"]["path"])
     fixtures = Path(__file__).parent / "fixtures" / "fea"
     report = {"version": ".".join(App.Version()[:3]), "auto_reopen_count": 0, "cases": {}}

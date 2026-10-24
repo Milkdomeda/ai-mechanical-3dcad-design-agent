@@ -67,7 +67,8 @@ jobs:
             $skipped += [int]$suite.skipped
           }
           # Live database/GUI gates remain opt-in; second-volume tests run.
-          $expectedSkipped = 18
+          # One additional opt-in native FEA test; its live gate runs separately.
+          $expectedSkipped = 19
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }

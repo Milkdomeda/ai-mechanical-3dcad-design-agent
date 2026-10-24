@@ -27,6 +27,31 @@ jobs:
         run: |
           uv run --offline --group test python -m pytest tests/test_analysis_process.py tests/test_analysis_process_windows.py tests/test_fea_native_probe.py tests/test_fea_mesh_quality.py -q --junitxml="$env:RUNNER_TEMP/process-tests.xml"
           if ($LASTEXITCODE -ne 0) { throw 'Process/probe contract tests failed' }
+      - name: Prewarm clean-install dependencies for the complete offline suite
+        shell: pwsh
+        run: |
+          $cache = (uv cache dir | Out-String).Trim()
+          "UV_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $second = Join-Path $env:RUNNER_TEMP 'fea-second-ntfs'
+          New-Item -ItemType Directory -Force -Path $second | Out-Null
+          "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$second" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $dist = Join-Path $env:RUNNER_TEMP 'fea-build-prewarm'
+          $venv = Join-Path $env:RUNNER_TEMP 'fea-install-prewarm'
+          $constraints = Join-Path $env:RUNNER_TEMP 'fea-constraints.txt'
+          uv build --wheel --sdist --out-dir $dist
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm build failed' }
+          uv export --frozen --group test --format requirements-txt --no-emit-project --no-hashes --output-file $constraints
+          uv venv --python 3.12 $venv
+          $python = Join-Path $venv 'Scripts/python.exe'
+          $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
+          uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm install failed' }
+      - name: Run complete supported offline suite
+        shell: pwsh
+        run: |
+          $env:UV_OFFLINE = '1'
+          uv run --offline --group test python -m pytest -q -rs --junitxml="$env:RUNNER_TEMP/full-offline.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Complete offline suite failed' }
       - name: Download and verify official FreeCAD 1.1.3
         shell: pwsh
         run: |
@@ -54,4 +79,5 @@ jobs:
           path: |
             ${{ runner.temp }}/FEA 空格 evidence/
             ${{ runner.temp }}/process-tests.xml
+            ${{ runner.temp }}/full-offline.xml
           retention-days: 14
