@@ -98,12 +98,19 @@ jobs:
           }
           exit 0
       - name: Prepare separate identity-bound R1 runtime
+        id: prepare_r1
         shell: pwsh
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'freecad-tools'
           $copy = Join-Path $env:RUNNER_TEMP 'freecad-r1-runtime'
           uv run --offline --group test python scripts/fea_r1_prepare.py --source-root $source --destination $copy --base-config "$env:RUNNER_TEMP/fea-config.json" --source-archive-sha256 9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4
           if ($LASTEXITCODE -ne 0) { throw 'R1 isolation or identity failed' }
+      - name: Diagnose native startup path spelling on failed clone
+        if: failure() && steps.prepare_r1.outcome == 'failure'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python tests/fea_r1_launch_diagnostic.py "$env:RUNNER_TEMP/freecad-r1-runtime" "$env:RUNNER_TEMP/fea-config.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Native startup diagnostic failed' }
       - name: Run unchanged P0 automated assessment against R1
         shell: pwsh
         run: |
@@ -134,6 +141,7 @@ jobs:
             ${{ runner.temp }}/freecad-r1-runtime/config.json
             ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
             ${{ runner.temp }}/freecad-r1-runtime/identity/
+            ${{ runner.temp }}/freecad-r1-runtime/launch-diagnostic/
             ${{ runner.temp }}/native-source-identity/
             ${{ runner.temp }}/process-tests.xml
             ${{ runner.temp }}/full-offline.xml
