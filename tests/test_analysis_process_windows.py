@@ -37,10 +37,15 @@ def test_solver_does_not_inherit_unrelated_handle(tmp_path):
     handle = msvcrt.get_osfhandle(sentinel.fileno())
     os.set_handle_inheritable(handle, True)
     controller = ProcessController()
-    script = ('import ctypes,sys; flags=ctypes.c_ulong(); k=ctypes.WinDLL("kernel32",use_last_error=True); '
-              'k.GetHandleInformation.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_ulong)]; '
-              f'ok=k.GetHandleInformation({handle},ctypes.byref(flags)); sys.exit(9 if ok else 0)')
+    # The child may reuse the numeric handle for a different resource at startup.
+    # Check the file identity, rather than mistaking a reused number for a leak.
+    script = ('import sys,win32file,pywintypes\n'
+              f'try: path=win32file.GetFinalPathNameByHandle({handle},0)\n'
+              'except pywintypes.error: sys.exit(0)\n'
+              f'sys.exit(9 if path.casefold().endswith({str(tmp_path / "sentinel").casefold()!r}) else 0)')
     try:
+        unsafe = subprocess.run([sys.executable, '-c', script], close_fds=False, timeout=10)
+        assert unsafe.returncode == 9, 'Control must prove the sentinel is inheritable'
         identity = controller.start(ProcessRequest(argv=(sys.executable, '-c', script), cwd=tmp_path, stdout_path=tmp_path/'out', stderr_path=tmp_path/'err', env=dict(os.environ)))
         outcome = wait_for(lambda: controller.poll(identity))
         assert outcome.returncode == 0

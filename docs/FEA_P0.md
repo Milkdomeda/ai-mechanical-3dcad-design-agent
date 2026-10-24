@@ -1,7 +1,7 @@
 # Static FEA P0 feasibility probes
 
 This is test infrastructure, not an enabled text-to-FEA product feature.
-Only synthetic axial, bending, and partitioned-face fixtures are accepted.
+Only synthetic axial, bending, partitioned-face and split-cylinder fixtures are accepted.
 Existing design sessions and customer CAD are not opened or modified.
 
 ## Automated probes
@@ -30,6 +30,15 @@ tetrahedra and the unmodified native CalculiX input, executes CalculiX,
 reads native results and RF totals, and checks them against hand-derived
 benchmark values. Force quantities carry explicit N units and directions
 use a native direction reference, not a transient DirectionVector value.
+Before averaging, every consumed result field must cover the mesh's unique
+node inventory with matching lengths and finite values. Multiface probes
+check actual native nodal loads, load-region membership, and resultant
+moment about the global origin, including two curved cylinder faces.
+
+The curved fixture deliberately retains the strict declared-force check.
+If the native writer's curved-surface quadrature produces a force deficit,
+the report fails. A numerical tolerance policy needs separate evidence and
+review; the harness must not normalize the loads or patch the native input.
 
 Quality calibration samples the C3D10 map at 15 locations, checks positive
 determinants/scaled Jacobians and counts intersected elements on three
@@ -64,8 +73,9 @@ The current P0 report deliberately retains `native_gui_roundtrip` as
 `not_executed`; separate operator evidence and review are required before
 declaring P0 complete. Do not change that flag by hand.
 
-GitHub-hosted Windows runs cover the automated subset and the complete
-supported offline suite. They do not supply the approved operator gate.
+GitHub-hosted `windows-2025` runs cover the automated subset and the complete
+supported offline suite on Windows Server 2025. They do not establish a
+Windows 11 desktop acceptance or supply the approved operator gate.
 Until both platform evidence and the remaining native GUI gate are reviewed,
 later implementation phases remain gated.
 

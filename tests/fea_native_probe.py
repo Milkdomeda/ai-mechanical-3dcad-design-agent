@@ -219,10 +219,15 @@ def probe_native(config: dict, workspace: Path) -> dict:
     if "error" not in result and any(result.get("versions", {}).get(name) != pin["version"] for name, pin in config["tools"].items()):
         raise ProbeError("TOOL_VERSION_MISMATCH")
     report = assess_native(result)
-    if report["automated_status"] == "passed":
+    # Cancellation is an independent capability; a curved-load discrepancy
+    # must not suppress it when the axial native input was generated safely.
+    if result.get("cases", {}).get("axial_bar", {}).get("input_file"):
         report["checks"]["native_startup_cancellation"] = _native_cancellation(config, workspace)
         if report["checks"]["native_startup_cancellation"]["status"] != "passed":
             report["automated_status"] = report["status"] = "failed"
+    for name, pin in config["tools"].items():
+        if verify_tool(pin) != identities[name]:
+            raise ProbeError("TOOL_IDENTITY_CHANGED")
     report["tool_identities"] = identities
     report["artifacts"] = {}
     for path in sorted(workspace.rglob("*")):
