@@ -43,7 +43,7 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     request_id=uuid.uuid4().hex
     report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','request_id':request_id,'automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','cases':{},'runtime_unchanged':False,'platform':sys.platform,'gui_executable':pin(gui)}
     here=Path(__file__).parent;request_path=target/'request.json'
-    sources=[pin(here/name) for name in ('fea_gui_native.py','fea_gui_checks.py','fea_gui_plot.py','fea_gui_identity.py','fea_gui_session.py','fea_gui_automation.py','fea_gui_environment.py','fea_gui_compile.py')]
+    sources=[pin(here/name) for name in ('fea_gui_native.py','fea_gui_checks.py','fea_gui_plot.py','fea_gui_pixels.py','fea_gui_identity.py','fea_gui_session.py','fea_gui_automation.py','fea_gui_environment.py','fea_gui_compile.py')]
     sources.extend(pin(here/'fixtures'/'fea'/(name+'.json')) for name in ('axial_bar','cantilever'))
     startup_verified=False
     report['producer']=producer

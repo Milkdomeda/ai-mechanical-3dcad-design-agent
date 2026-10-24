@@ -103,6 +103,8 @@ def assess_display_fields(fields):
         for name,unit in expected.items():
             field=fields[name]
             good=field['unit']==unit and field['deformation_scale']==0 and field['legend_policy']=='freecad-1.1.3-native-nodal' and re.fullmatch('[0-9a-f]{64}',field['nodal_values_sha256']) is not None
+            pixels=field['viewport_pixels']
+            good=good and pixels['status']=='passed' and pixels['colored_pixels']>0 and pixels['colored_fraction']>=.01
             low,high=field['raw_min'],field['raw_max']
             good=good and all(type(v) in (int,float) and math.isfinite(v) for v in (low,high)) and low<=high
             for raw,key in ((low,'le_min'),(high,'le_max')):

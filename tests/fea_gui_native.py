@@ -147,6 +147,10 @@ def run(request_path):
         displacement=Gui.getMainWindow().findChild(QtGui.QCheckBox,'cb_show_displacement')
         if displacement is None:raise ValueError('native deformation control absent')
         displacement.setChecked(False)
+        state['capture_attempt']=0
+        Gui.activeDocument().activeView().redraw()
+        Gui.updateGui()
+        Gui.activeDocument().activeView().fitAll()
         later(capture_field,400)
 
     def capture_field():
@@ -165,6 +169,15 @@ def run(request_path):
             finally:widget.doneCurrent()
         state['case']['graphics_contexts']=contexts
         if not contexts or not all(c['valid'] and c['version'][0]>=2 for c in contexts):raise ValueError('native viewport needs valid OpenGL 2.0 or newer')
+        # Context inspection releases Qt's current context. Re-enter the Coin
+        # redraw on the next GUI event before invoking the offscreen exporter.
+        Gui.activeDocument().activeView().redraw()
+        Gui.updateGui()
+        Gui.activeDocument().activeView().fitAll()
+        later(export_field,300)
+
+    def export_field():
+        key,radio,unit,values=state['field_values'][state['field_index']]
         record={'radio_button':radio,'unit':unit,'raw_min':min(values),'raw_max':max(values),'nodal_values_sha256':hashlib.sha256(json.dumps(values,allow_nan=False).encode()).hexdigest()}
         for name in ('le_min','le_max'):
             widget=Gui.getMainWindow().findChild(QtGui.QWidget,name)
@@ -179,6 +192,17 @@ def run(request_path):
             record[name]={'text':text,'normalized_value':float(quantity.getValueAs(unit).Value),'display_quantum':float(quantum.getValueAs(unit).Value)}
         path=state['folder']/(key+'-native.png')
         Gui.activeDocument().activeView().saveImage(str(path),1200,800,'Black')
+        from fea_gui_pixels import inspect_native_png
+        pixels=inspect_native_png(path)
+        if pixels['status']!='passed':
+            state['capture_attempt']+=1
+            failed=path.with_name(key+'-failed-capture-'+str(state['capture_attempt'])+'.png')
+            path.rename(failed)
+            if state['capture_attempt']>=3:raise ValueError('native viewport export is blank, clipped or too small: '+repr(pixels))
+            Gui.activeDocument().activeView().redraw();Gui.updateGui()
+            Gui.activeDocument().activeView().fitAll()
+            later(capture_field,500);return
+        record['viewport_pixels']=pixels
         record['image_path']=str(path);record['image_sha256']=digest(path)
         from fea_gui_plot import frame_native_image
         annotated=state['folder']/(key+'-figure.png')

@@ -88,7 +88,7 @@ def displayed_fields():
         ('displacement_magnitude','mm',0.,.09969,0.,.09969,.00001),
         ('von_mises','MPa',.50571,1.08029,.50571,1.08029,.00001),
     ):
-        result[name]={'unit':unit,'raw_min':low,'raw_max':high,'nodal_values_sha256':'a'*64,'le_min':{'normalized_value':shown_low,'display_quantum':quantum},'le_max':{'normalized_value':shown_high,'display_quantum':quantum},'deformation_scale':0,'legend_policy':'freecad-1.1.3-native-nodal'}
+        result[name]={'unit':unit,'raw_min':low,'raw_max':high,'nodal_values_sha256':'a'*64,'le_min':{'normalized_value':shown_low,'display_quantum':quantum},'le_max':{'normalized_value':shown_high,'display_quantum':quantum},'deformation_scale':0,'legend_policy':'freecad-1.1.3-native-nodal','viewport_pixels':{'status':'passed','colored_pixels':1000,'colored_fraction':.1}}
     return result
 
 
