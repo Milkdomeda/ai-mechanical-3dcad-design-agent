@@ -31,7 +31,9 @@ def _fcstd(*, object_name: str | None = None) -> bytes:
     ).encode("utf-8")
     output = BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("Document.xml", document)
+        entry=zipfile.ZipInfo("Document.xml",date_time=(1980,1,1,0,0,0))
+        entry.compress_type=zipfile.ZIP_DEFLATED
+        archive.writestr(entry, document)
     return output.getvalue()
 
 
@@ -45,6 +47,11 @@ def _settings(tmp_path: Path) -> DesignSettings:
         freecadcmd_identity=FileIdentity(volume=1, file_index=2),
         freecadcmd_version="1.1.3",
     )
+
+
+def test_synthetic_fcstd_bytes_have_a_fixed_archive_timestamp():
+    with zipfile.ZipFile(BytesIO(_fcstd(object_name="NormalizedSource"))) as archive:
+        assert archive.getinfo('Document.xml').date_time==(1980,1,1,0,0,0)
 
 
 def _service(tmp_path: Path) -> DesignSessionService:
