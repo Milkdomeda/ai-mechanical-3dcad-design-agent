@@ -20,3 +20,9 @@ def test_native_gui_fixture_has_standard_panels_and_equivalent_button_export(tmp
     assert report['runtime_unchanged'] is True
     assert report['passes']['build']['startup_pid']!=report['passes']['roundtrip']['startup_pid']
     assert report['passes']['roundtrip']['producer']['sha256']==report['passes']['build']['native']['sha256']
+
+    fields=report['cases']['axial_bar']['native']['display_fields']
+    for field in fields.values():
+        assert Path(field['annotated_image_path']).is_file()
+        assert field['deformation_scale']==0
+        assert field['legend_policy']=='freecad-1.1.3-native-nodal'

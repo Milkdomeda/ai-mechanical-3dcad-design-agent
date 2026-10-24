@@ -125,6 +125,9 @@ def run(request_path):
         button=Gui.getMainWindow().findChild(QtGui.QRadioButton,radio)
         if button is None or not button.isEnabled():raise ValueError('native field unavailable '+radio)
         button.setChecked(True)
+        displacement=Gui.getMainWindow().findChild(QtGui.QCheckBox,'cb_show_displacement')
+        if displacement is None:raise ValueError('native deformation control absent')
+        displacement.setChecked(False)
         later(capture_field,400)
 
     def capture_field():
@@ -138,6 +141,10 @@ def run(request_path):
         path=state['folder']/(key+'-native.png')
         Gui.activeDocument().activeView().saveImage(str(path),1200,800,'Black')
         record['image_path']=str(path);record['image_sha256']=digest(path)
+        from fea_gui_plot import frame_native_image
+        annotated=state['folder']/(key+'-figure.png')
+        record.update(frame_native_image(path,annotated,case_id=state['case']['case_id'],field=key,unit=unit,minimum=min(values),maximum=max(values)))
+        record['annotated_image_path']=str(annotated);record['annotated_image_sha256']=digest(annotated)
         panel=Gui.getMainWindow().findChild(QtGui.QWidget,'ShowDisplacement')
         if panel:
             panel_path=state['folder']/(key+'-panel.png');panel.grab().save(str(panel_path));record['panel_path']=str(panel_path);record['panel_sha256']=digest(panel_path)

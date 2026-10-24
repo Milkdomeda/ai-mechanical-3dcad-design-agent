@@ -107,3 +107,10 @@ The CI workflow records Windows Server x64 and Windows 11 ARM64 with the x64
 FreeCAD archive as distinct compatibility runs. Windows 11 ARM64 execution is
 not Windows 11 x64 evidence. OpenGL or desktop startup failures remain failures;
 the workflow does not switch to an offscreen backend or relabel them as passes.
+
+Automated figures retain the native viewport pixels and add field/unit,
+raw nodal extrema, effective deformation scale and a matching legend with Qt
+already bundled in FreeCAD. The classic native nodal palette includes zero;
+positive-only data therefore starts at green rather than assigning blue to
+the smallest observed value. The legend reproduces the pinned native scalar
+anchors, with explicit provenance, and does not rescale or replace solver data.

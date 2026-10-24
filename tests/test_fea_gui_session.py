@@ -7,15 +7,21 @@ import pytest
 
 def test_visible_gui_spec_has_no_document_argument_or_offscreen_backend(tmp_path):
     from fea_gui_session import launch_spec
+    from fea_r1_runtime import canonical_path
     home=tmp_path/'home';home.mkdir();scratch=tmp_path/'scratch';scratch.mkdir()
     gui=tmp_path/'FreeCAD';gui.write_bytes(b'fixture GUI executable')
     config={'tools':{name:{'path':str(tmp_path/name)} for name in ('gmsh','ccx')}}
     argv,env=launch_spec(gui,home,scratch,config)
-    assert argv==(str(gui),'-u',str(home/'user.cfg'),'-s',str(home/'system.cfg'))
+    expected_home=canonical_path(home);expected_scratch=canonical_path(scratch)
+    assert argv==(str(gui),'-u',str(expected_home/'user.cfg'),'-s',str(expected_home/'system.cfg'))
+    assert os.path.samefile(argv[2],home/'user.cfg') and os.path.samefile(argv[4],home/'system.cfg')
+    assert not argv[2].startswith('\\\\?\\') and not argv[4].startswith('\\\\?\\')
     assert not any(value.lower().endswith('.fcstd') for value in argv)
     assert 'QT_QPA_PLATFORM' not in env and 'PYTHONPATH' not in env
-    assert env['FREECAD_USER_TEMP']==str(scratch)
-    assert env['FREECAD_USER_HOME']==env['FREECAD_USER_DATA']==str(home)
+    assert env['FREECAD_USER_TEMP']==str(expected_scratch)
+    assert os.path.samefile(env['FREECAD_USER_TEMP'],scratch)
+    assert env['FREECAD_USER_HOME']==env['FREECAD_USER_DATA']==str(expected_home)
+    assert os.path.samefile(env['FREECAD_USER_HOME'],home)
     assert env['PYTHONDONTWRITEBYTECODE']=='1'
     assert str(home) in (home/'user.cfg').read_text() or 'gmshBinaryPath' in (home/'user.cfg').read_text()
 
