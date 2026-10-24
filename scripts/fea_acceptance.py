@@ -11,6 +11,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--workspace", required=True, type=Path)
+    parser.add_argument("--native-scratch-root", type=Path, help="Explicit private ASCII root for process-scoped native temporary files; external workspace remains unchanged.")
     parser.add_argument("--phase", required=True, choices=["p0", "full"])
     parser.add_argument("--automated-only", action="store_true", help="Return automated subset status; report still records unmet P0 gates.")
     args = parser.parse_args(argv)
@@ -19,8 +20,8 @@ def main(argv=None):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
     from fea_native_probe import ProbeError, parse_config, probe_native
     try:
-        report = probe_native(parse_config(args.config), args.workspace)
-    except ProbeError as exc:
+        report = probe_native(parse_config(args.config), args.workspace, native_scratch_root=args.native_scratch_root)
+    except (ProbeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}))
         return 3
     print(json.dumps({"status": report["status"], "automated_status": report["automated_status"], "report": str(args.workspace / "probe.json")}))

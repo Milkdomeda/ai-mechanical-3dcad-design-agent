@@ -223,3 +223,12 @@ def test_native_cancellation_still_runs_after_save_failure(tmp_path, monkeypatch
     assert calls == [tmp_path]
     assert report['checks']['native_startup_cancellation']['status'] == 'passed'
     assert report['status'] == report['automated_status'] == 'failed'
+
+
+def test_saved_archive_must_match_worker_inventory(tmp_path):
+    from fea_native_probe import assess_saved_archives
+    worker={'cases':{'axial_bar':{'mesh_inventory':{'nodes':10,'elements':1}}}}
+    # A successful worker inventory cannot replace missing/empty native data.
+    check=assess_saved_archives(worker,tmp_path)
+    assert check['status']=='failed'
+    assert check['files']['axial_bar']['valid'] is False

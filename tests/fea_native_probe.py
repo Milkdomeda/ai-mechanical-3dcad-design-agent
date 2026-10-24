@@ -195,7 +195,31 @@ def record_native_cancellation(report, config, workspace):
         report["automated_status"] = report["status"] = "failed"
 
 
-def probe_native(config: dict, workspace: Path) -> dict:
+def assess_saved_archives(worker: dict, workspace: Path) -> dict:
+    from fea_path_matrix import inspect_mesh_archive
+    files={}
+    for name in ('axial_bar','cantilever','multiface','curved_multiface'):
+        case=worker.get('cases',{}).get(name,{}) if name in ('axial_bar','cantilever') else worker.get(name,{})
+        expected=case.get('mesh_inventory',{})
+        actual=inspect_mesh_archive(workspace/name/'analysis.FCStd')
+        actual['valid']=actual.get('valid') is True and expected.get('nodes',0)>0 and expected.get('elements',0)>0 and actual.get('nodes')==expected.get('nodes') and actual.get('tet10')==expected.get('elements')
+        files[name]=actual
+    return {'status':'passed' if all(v['valid'] for v in files.values()) else 'failed','files':files}
+
+
+def probe_native(config: dict, workspace: Path, *, native_scratch_root: Path | None = None) -> dict:
+    _validate_config(config)
+    if native_scratch_root is None:
+        return _probe_native(config,workspace)
+    from fea_native_scratch import native_scratch
+    with native_scratch(native_scratch_root) as owned:
+        report=_probe_native(config,workspace,owned=owned)
+    report['native_scratch']['cleanup']='removed_after_owned_process_exit'
+    (Path(workspace)/'probe.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    return report
+
+
+def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     _validate_config(config)
     identities = {name: verify_tool(pin) for name, pin in config["tools"].items()}
     workspace = Path(workspace).absolute()
@@ -206,13 +230,16 @@ def probe_native(config: dict, workspace: Path) -> dict:
         raise ProbeError("WORKSPACE_MUST_BE_OUTSIDE_SOURCE")
     workspace.mkdir(parents=True)
     request = workspace / "request.json"
-    request.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    child_config=dict(config)
+    if owned is not None:child_config['_expected_native_temp']=str(owned.path)
+    request.write_text(json.dumps(child_config, ensure_ascii=False), encoding="utf-8")
     worker = Path(__file__).with_name("fea_helpers.py")
     response = workspace / "native-result.json"
     args = [str(worker), str(request), str(response)]
     statement = console_statement(args)
     env = {k: v for k, v in os.environ.items() if k in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
     env.update({"HOME": str(workspace), "USERPROFILE": str(workspace), "TMPDIR": str(workspace), "TMP": str(workspace), "TEMP": str(workspace), "PATH": os.defpath, "LANG": "C.UTF-8", "OMP_NUM_THREADS": "1", "QT_QPA_PLATFORM": "offscreen"})
+    if owned is not None:env['FREECAD_USER_TEMP']=str(owned.path)
     command = [config["tools"]["freecadcmd"]["path"], "-u", str(workspace / "user.cfg"), "-s", str(workspace / "system.cfg"), "-c", statement]
     from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
     controller = ProcessController()
@@ -228,9 +255,17 @@ def probe_native(config: dict, workspace: Path) -> dict:
     if completed.returncode or completed.reason != "exited" or not response.is_file():
         raise ProbeError(f"NATIVE_PROBE_FAILED: reason={completed.reason}, returncode={completed.returncode}; see isolated logs")
     result = json.loads(response.read_text(encoding="utf-8"), parse_constant=_invalid_constant)
+    if owned is not None:
+        from fea_native_scratch import verify_native_temp
+        verify_native_temp(result.get('native_temp_path'),owned)
     if "error" not in result and any(result.get("versions", {}).get(name) != pin["version"] for name, pin in config["tools"].items()):
         raise ProbeError("TOOL_VERSION_MISMATCH")
     report = assess_native(result)
+    report['checks']['native_archives']=assess_saved_archives(result,workspace)
+    if report['checks']['native_archives']['status']!='passed':report['status']=report['automated_status']='failed'
+    if owned is not None:
+        from dataclasses import asdict
+        report['native_scratch']={'path':str(owned.path),'identity':asdict(owned.identity),'cleanup':'pending_owned_scope_exit'}
     record_native_cancellation(report, config, workspace)
     for name, pin in config["tools"].items():
         if verify_tool(pin) != identities[name]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import contextlib
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -280,6 +281,7 @@ def build_case(spec, config, output):
         doc.saveAs(str(output / "analysis.FCStd"))
         allowed_nodes = {node for face in load_faces for node in mesh.FemMesh.getNodesByFace(box.Shape.getElement(face))}
         result = {**nodal_load_evidence(inp, allowed_nodes), "faces": len(load_faces),
+                  "mesh_inventory": {"nodes": mesh.FemMesh.NodeCount, "elements": mesh.FemMesh.VolumeCount},
                   "curved_faces": sum(isinstance(box.Shape.getElement(face).Surface, Part.Cylinder) for face in load_faces),
                   "partial_face": {"valid": box.Shape.isValid(), "solid_count": len(box.Shape.Solids), "volume_delta_mm3": box.Shape.Volume - (math.pi*2500 if spec["name"] == "curved_multiface" else 10000)}}
         App.closeDocument(doc.Name)
@@ -320,6 +322,7 @@ def build_case(spec, config, output):
         "stress_MPa": measured_stress,
         "reaction_N": _reaction(inp.with_suffix(".dat").read_text(encoding="utf-8")),
         "elements": mesh.FemMesh.VolumeCount,
+        "mesh_inventory": {"nodes": mesh.FemMesh.NodeCount, "elements": mesh.FemMesh.VolumeCount},
         "element_nodes": sorted({len(mesh.FemMesh.getElementNodes(e)) for e in mesh.FemMesh.Volumes}),
         "input_element_types": sorted(set(re.findall(r"^\*ELEMENT,\s*TYPE=([^,\s]+)", inp.read_text(encoding="utf-8"), re.M | re.I))),
         "finite": bool(values) and all(math.isfinite(value) for value in values),
@@ -354,6 +357,10 @@ def main(request_path, response_path):
         raise RuntimeError("P0 forbids restoring persisted documents")
     App.openDocument = deny_document_restore
     try:
+        report['native_temp_path']=App.getTempPath()
+        expected=config.get('_expected_native_temp')
+        if expected and not os.path.samefile(report['native_temp_path'],expected):
+            raise RuntimeError('NATIVE_TEMP_MISMATCH: refusing CAD work in an unexpected temporary directory')
         report["versions"] = {"freecadcmd": report["version"]}
         for name, flag in (("gmsh", "--version"), ("ccx", "-v")):
             version_run = subprocess.run([config["tools"][name]["path"], flag], capture_output=True, text=True, timeout=15)
