@@ -34,11 +34,10 @@ class Child:
 
 def start(request, token, stdout, stderr):
     import msvcrt
-    import win32api
     import win32con
     import win32job
     import win32process
-    job = win32job.CreateJobObject(None, None)
+    job = win32job.CreateJobObject(None, "")
     limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
     limits["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
