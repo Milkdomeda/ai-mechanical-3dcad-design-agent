@@ -104,3 +104,10 @@ def test_generate_sets_and_repeated_cloads_are_semantic(tmp_path):
     other=INPUT.replace('*NSET,NSET=FIXED\n1,2,3','*NSET,NSET=FIXED,GENERATE\n1,3,1')
     other=other.replace('5,3,-20','5,3,-10\n5,3,-10')
     assert compare(tmp_path,other)['status']=='passed'
+
+
+def test_repeated_output_cards_are_outside_reviewed_native_subset(tmp_path):
+    from fea_gui_input import parse_input
+    path=tmp_path/'repeated.inp'
+    path.write_text(INPUT.replace('*END STEP','*NODE FILE,FREQUENCY=2\nU\n*END STEP'))
+    with pytest.raises(ValueError,match='repeated output'):parse_input(path)

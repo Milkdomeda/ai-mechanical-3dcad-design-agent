@@ -118,6 +118,15 @@ def serve(session_path,config_path,scratch_root,*,timeout_seconds=7200):
         for name in ('user.cfg','system.cfg'):
             if (home/name).is_file():shutil.copyfile(home/name,receipts/('final-'+name))
         if verify_runtime(config)!=native:raise ValueError('GUI runtime changed')
-    outcome=owned_gui_process(root/'logs',scratch_root,build,observe,timeout_seconds=timeout_seconds,finalize=finalize)
-    write_json(receipts/'exit.json',outcome)
-    return outcome
+    record={'schema_version':'P0GuiOwnerFinalization/v1','session_id':session['session_id'],'session':pin(session_path),'status':'failed','runtime_verification':'not_completed'}
+    try:
+        outcome=owned_gui_process(root/'logs',scratch_root,build,observe,timeout_seconds=timeout_seconds,finalize=finalize)
+        record.update(outcome,runtime_verification='passed',status='completed' if outcome['outcome']=='exited' and outcome['returncode']==0 else 'failed')
+    except Exception as exc:
+        record['error']=str(exc)
+        raise
+    finally:
+        if (receipts/'launch.json').is_file():record['launch']=pin(receipts/'launch.json')
+        if (receipts/'launching.json').is_file():record['guardian']=read_json(receipts/'launching.json')['guardian']
+        write_json(receipts/'exit.json',record)
+    return record

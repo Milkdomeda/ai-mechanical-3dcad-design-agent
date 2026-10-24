@@ -1,16 +1,44 @@
 """Trusted GUI-console receipt collector. No document restore or mutation."""
 import datetime as dt
 import os
+import json
+import hashlib
 from pathlib import Path
 import sys
 import traceback
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def checked(reference):
+    path=Path(reference['path'])
+    if not path.is_file() or path.is_symlink() or digest(path)!=reference['sha256']:raise ValueError('native evidence hash/path mismatch')
+    return path
+
+
+def read_json(path):
+    def reject(value):raise ValueError('nonfinite JSON '+value)
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError('duplicate JSON key')
+            result[key]=value
+        return result
+    return json.loads(Path(path).read_text(encoding='utf-8'),parse_constant=reject,object_pairs_hook=unique)
+
+
+def write_json(path,value):
+    with Path(path).open('x',encoding='utf-8') as stream:
+        json.dump(value,stream,ensure_ascii=False,indent=2,allow_nan=False)
+        stream.write('\n')
 
 
 def collect(request):
     import FreeCAD as App
     from femmesh import meshtools
     from fea_r1_runtime import loaded_module_receipt,native_identity
-    from fea_gui_evidence import checked,digest,read_json
     before=loaded_module_receipt(request['native_expected'],meshtools)
     if not os.path.samefile(App.getUserAppDataDir(),request['home']) or not os.path.samefile(App.getTempPath(),request['scratch']):raise ValueError('GUI user/temp directory mismatch')
     documents=list(App.listDocuments())
@@ -39,7 +67,6 @@ def collect(request):
 
 
 def main(request_path):
-    from fea_gui_evidence import read_json,write_json
     request=read_json(request_path)
     try:value=collect(request)
     except Exception:value={'session_id':request['session_id'],'error':traceback.format_exc()}

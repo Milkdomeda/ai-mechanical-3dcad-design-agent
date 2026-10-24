@@ -53,7 +53,11 @@ virtual work. Files are never rewritten. Source, prepared-session, helper
 and evidence hashes are checked again at use time.
 
 `check` writes JSON and Markdown; exit zero means this case passed. `summary`
-revalidates every configured case and action file. Even after macOS passes,
+revalidates every configured case and action file. Final macOS acceptance also
+requires a session-bound normal GUI exit, successful final runtime verification,
+and completed W1 cleanup; case checks before shutdown are provisional.
+Repeated output cards are outside the supported native subset and are rejected.
+Even after macOS passes,
 its overall P0 status stays blocked and `eligible_for_p1` remains false while
 Windows GUI is not executed. Missing evidence remains blocked; no manual
 record changes the historical automatic report.

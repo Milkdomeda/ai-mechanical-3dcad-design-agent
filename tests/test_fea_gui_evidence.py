@@ -129,9 +129,29 @@ def test_summary_revalidates_bound_case_evidence_and_keeps_windows_blocked(tmp_p
     from fea_gui_evidence import prepare,summarize
     manifest,_=source_fixture(tmp_path);path=prepare(manifest,tmp_path/'GUI','macOS')
     actions=complete_receipts(path);file=tmp_path/'actions.json';file.write_text(json.dumps(actions))
+    launch=path.parent/'receipts/launch.json';value=json.loads(launch.read_text());value['guardian']={'pid':100,'token':'owner'};launch.write_text(json.dumps(value))
+    session=json.loads(path.read_text())
+    (path.parent/'receipts/exit.json').write_text(json.dumps({'session_id':session['session_id'],'session':pin(path),'launch':pin(launch),'guardian':value['guardian'],'status':'completed','outcome':'exited','returncode':0,'runtime_verification':'passed','scratch_cleanup':'owned_contents_cleared_after_process_exit'}))
     report=summarize(path,{'axial_bar':file})
     assert report['macOS_gui_status']=='passed' and report['status']=='blocked'
     assert report['windows_gui_status']=='not_executed'
     assert report['cases']['axial_bar']['bindings']['actions_sha256']==hashlib.sha256(json.dumps(actions,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     file.write_text('[]')
     assert summarize(path,{'axial_bar':file})['macOS_gui_status']=='blocked'
+
+
+@pytest.mark.parametrize('defect',['missing','timeout','runtime_failed','wrong_session','wrong_guardian','missing_cleanup'])
+def test_summary_requires_successful_bound_owner_finalization(tmp_path,defect):
+    from fea_gui_evidence import prepare,summarize
+    manifest,_=source_fixture(tmp_path);path=prepare(manifest,tmp_path/'GUI','macOS')
+    actions=complete_receipts(path);file=tmp_path/'actions.json';file.write_text(json.dumps(actions))
+    session=json.loads(path.read_text());launch=path.parent/'receipts/launch.json'
+    value=json.loads(launch.read_text());value['guardian']={'pid':100,'token':'owner'};launch.write_text(json.dumps(value))
+    final={'session_id':session['session_id'],'session':pin(path),'launch':pin(launch),'guardian':value['guardian'],'status':'completed','outcome':'exited','returncode':0,'runtime_verification':'passed','scratch_cleanup':'owned_contents_cleared_after_process_exit'}
+    if defect=='timeout':final.update(outcome='timed_out',returncode=-9)
+    if defect=='runtime_failed':final.update(runtime_verification='failed')
+    if defect=='wrong_session':final['session_id']='other'
+    if defect=='wrong_guardian':final['guardian']={'pid':101}
+    if defect=='missing_cleanup':final.pop('scratch_cleanup')
+    if defect!='missing':(path.parent/'receipts/exit.json').write_text(json.dumps(final))
+    assert summarize(path,{'axial_bar':file})['macOS_gui_status']!='passed'

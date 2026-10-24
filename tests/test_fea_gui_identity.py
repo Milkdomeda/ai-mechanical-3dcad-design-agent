@@ -33,3 +33,18 @@ def test_startup_identity_does_not_accept_an_already_open_document(tmp_path,monk
     monkeypatch.setattr(fea_r1_runtime,'loaded_module_receipt',lambda expected,actual:{'module_sha256':'a'*64})
     monkeypatch.setattr(fea_r1_runtime,'native_identity',lambda:{})
     with pytest.raises(ValueError,match='empty'):collect({'session_id':'ours','case_id':None,'home':str(tmp_path),'scratch':str(tmp_path),'native_expected':{}})
+
+
+def test_actual_console_entry_runs_without_host_product_or_site_packages(tmp_path):
+    import json
+    from pathlib import Path
+    import subprocess
+    tests=Path(__file__).resolve().parent;worker=tests/'fea_gui_identity.py'
+    request=tmp_path/'request.json';response=tmp_path/'response.json'
+    request.write_text(json.dumps({'session_id':'isolated','response_path':str(response)}))
+    statement=f"import sys,runpy;sys.dont_write_bytecode=True;sys.path.insert(0,{str(tests)!r});sys.argv=[{str(worker)!r},{str(request)!r}];runpy.run_path({str(worker)!r},run_name='__main__')"
+    result=subprocess.run([sys.executable,'-I','-S','-B','-c',statement],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    value=json.loads(response.read_text())
+    assert value['session_id']=='isolated' and 'FreeCAD' in value['error']
+    assert 'mechanical_design_agent' not in value['error']

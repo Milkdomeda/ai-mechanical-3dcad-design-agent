@@ -216,4 +216,12 @@ def summarize(session_path,action_files):
         cases[key]=validate_case(session_path,key,actions)
         if key in action_files:cases[key]['actions_file']=pin(action_files[key])
     status='failed' if any(c['status']=='failed' for c in cases.values()) else 'passed' if all(c['status']=='passed' for c in cases.values()) else 'blocked'
-    return {'schema_version':'P0GuiAcceptance/v1','session':pin(session_path),'macOS_gui_status':status,'windows_gui_status':'not_executed','status':'failed' if status=='failed' else 'blocked','eligible_for_p1':False,'cases':cases}
+    finalization={'status':'blocked'}
+    try:
+        exit_path=Path(session['workspace'])/'receipts/exit.json';final=read_json(exit_path)
+        launch_path=Path(session['workspace'])/'receipts/launch.json';launch=read_json(launch_path)
+        valid=final['session_id']==session['session_id'] and checked(final['session'])==Path(session_path).resolve() and checked(final['launch'])==launch_path and final['guardian']==launch['guardian'] and final['status']=='completed' and final['outcome']=='exited' and final['returncode']==0 and final['runtime_verification']=='passed' and final['scratch_cleanup']=='owned_contents_cleared_after_process_exit'
+        finalization={'status':'passed' if valid else 'failed','receipt':pin(exit_path)}
+    except (ValueError,OSError,KeyError,TypeError) as exc:finalization['error']=str(exc)
+    if status=='passed' and finalization['status']!='passed':status='blocked'
+    return {'schema_version':'P0GuiAcceptance/v1','finalization':finalization,'session':pin(session_path),'macOS_gui_status':status,'windows_gui_status':'not_executed','status':'failed' if status=='failed' else 'blocked','eligible_for_p1':False,'cases':cases}

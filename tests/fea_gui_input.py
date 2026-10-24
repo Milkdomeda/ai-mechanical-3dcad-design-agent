@@ -63,8 +63,11 @@ def records(path):
 def parse_input(path):
     nodes={};elements={};sets={'NSET':defaultdict(list),'ELSET':defaultdict(list)}
     materials={};sections=[];boundary=[];loads=[];output=[];meta=[]
-    material=None;step=0;static=0
+    material=None;step=0;static=0;output_cards=set()
     for keyword,options,rows in records(path):
+        if keyword in {'NODE FILE','EL FILE','NODE PRINT','EL PRINT','OUTPUT'}:
+            if keyword in output_cards:raise ValueError('repeated output card outside reviewed native subset')
+            output_cards.add(keyword)
         if keyword=='STEP':
             if step!=0:raise ValueError('one static step only')
             step=1
