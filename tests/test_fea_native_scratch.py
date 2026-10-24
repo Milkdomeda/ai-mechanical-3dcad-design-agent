@@ -24,7 +24,7 @@ def test_wrong_or_missing_actual_temp_is_rejected(tmp_path):
 
 def test_unicode_root_is_rejected_without_creating_it(tmp_path):
     root=tmp_path/'缓存'
-    with pytest.raises(ValueError,match='ASCII'): 
+    with pytest.raises(ValueError,match='ASCII'):
         with native_scratch(root):pass
     assert not root.exists()
 
