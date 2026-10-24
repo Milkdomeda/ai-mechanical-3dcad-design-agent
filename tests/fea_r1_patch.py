@@ -36,4 +36,8 @@ def patch_bytes(original: bytes) -> bytes:
 
 
 def asset_identities() -> dict:
-    return {str(path.relative_to(ASSETS)) : digest(path.read_bytes()) for path in (ASSETS/'native_faceforce.py',ASSETS/'meshtools.patch',ASSETS/'provenance.json')} | {'recipe_sha256':digest(Path(__file__).read_bytes())}
+    identities={str(path.relative_to(ASSETS)):digest(path.read_bytes()) for path in (ASSETS/'native_faceforce.py',ASSETS/'meshtools.patch',ASSETS/'provenance.json',ASSETS/'COPYING.LESSER')}
+    for name in ('fea_r1_patch.py','fea_r1_runtime.py','fea_r1_prepare.py','fea_r1_identity.py','fea_native_probe.py','fea_helpers.py'):
+        path=Path(__file__).with_name(name)
+        identities['integration/'+name]=digest(path.read_bytes())
+    return identities

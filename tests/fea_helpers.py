@@ -343,6 +343,10 @@ def build_case(spec, config, output):
 
 def main(request_path, response_path):
     import FreeCAD as App
+    sys.dont_write_bytecode=True
+    sys.path.insert(0,str(Path(__file__).parent))
+    from fea_r1_runtime import loaded_module_receipt,native_identity,startup_receipt
+    from femmesh import meshtools
     config = json.loads(Path(request_path).read_text(encoding="utf-8"))
     App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").SetString("gmshBinaryPath", config["tools"]["gmsh"]["path"])
     App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").SetInt("NumOfThreads", 1)
@@ -357,6 +361,9 @@ def main(request_path, response_path):
         raise RuntimeError("P0 forbids restoring persisted documents")
     App.openDocument = deny_document_restore
     try:
+        report['native_module_before']=loaded_module_receipt(config['_native_module'],meshtools)
+        report['startup_paths']=startup_receipt(Path(response_path).parent)
+        report['native_runtime_versions']=native_identity()
         report['native_temp_path']=App.getTempPath()
         expected=config.get('_expected_native_temp')
         if expected and not os.path.samefile(report['native_temp_path'],expected):
@@ -373,6 +380,7 @@ def main(request_path, response_path):
         report["partial_face"] = report["multiface"].pop("partial_face")
         multi["name"] = "curved_multiface"
         report["curved_multiface"] = build_case(multi, config, Path(response_path).parent / "curved_multiface")
+        report['native_module_after']=loaded_module_receipt(config['_native_module'],meshtools)
     except Exception:
         report["error"] = traceback.format_exc()
     finally:

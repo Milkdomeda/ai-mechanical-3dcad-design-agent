@@ -35,7 +35,7 @@ def select_bundled_tool(root: Path, name: str) -> Path:
 def console_statement(args: list[str]) -> str:
     # FreeCAD's Windows console command transport is not Unicode-clean.
     # ASCII Python escapes preserve the original paths inside its interpreter.
-    return "import sys, runpy; sys.argv=" + ascii(args) + "; runpy.run_path(sys.argv[0], run_name='__main__')"
+    return "import sys; sys.dont_write_bytecode=True; import runpy; sys.argv=" + ascii(args) + "; runpy.run_path(sys.argv[0], run_name='__main__')"
 
 
 def _unique(pairs):
@@ -61,10 +61,18 @@ def parse_config(path: Path) -> dict:
 
 
 def _validate_config(value):
-    if not isinstance(value, dict) or set(value) - {"schema_version", "tools", "timeout_seconds"}:
+    if not isinstance(value, dict):
         raise ProbeError("CONFIG_UNKNOWN_FIELD")
-    if value.get("schema_version") != "FEAP0Configuration/v1":
+    version=value.get('schema_version')
+    allowed={"schema_version", "tools", "timeout_seconds"}|({'runtime'} if version=='FEAP0Configuration/v2' else set())
+    if set(value)-allowed:
+        raise ProbeError("CONFIG_UNKNOWN_FIELD")
+    if version not in ('FEAP0Configuration/v1','FEAP0Configuration/v2'):
         raise ProbeError("CONFIG_VERSION")
+    if version=='FEAP0Configuration/v2':
+        runtime=value.get('runtime')
+        if not isinstance(runtime,dict) or set(runtime)!={'profile','manifest_path','manifest_sha256'} or runtime['profile']!='freecad-1.1.3-fem-faceforce-r1' or not isinstance(runtime['manifest_path'],str) or not Path(runtime['manifest_path']).is_absolute() or not re.fullmatch('[0-9a-f]{64}',str(runtime['manifest_sha256'])):
+            raise ProbeError('CONFIG_RUNTIME_IDENTITY')
     tools = value.get("tools")
     if not isinstance(tools, dict) or set(tools) != {"freecadcmd", "gmsh", "ccx"}:
         raise ProbeError("CONFIG_TOOLS")
@@ -221,6 +229,9 @@ def probe_native(config: dict, workspace: Path, *, native_scratch_root: Path | N
 
 def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     _validate_config(config)
+    from fea_r1_runtime import verify_runtime
+    runtime_receipt=verify_runtime(config)
+    if config['schema_version']=='FEAP0Configuration/v2' and owned is None:raise ProbeError('R1_W1_SCRATCH_REQUIRED')
     identities = {name: verify_tool(pin) for name, pin in config["tools"].items()}
     workspace = Path(workspace).absolute()
     if workspace.exists() or any(parent.is_symlink() for parent in (workspace, *workspace.parents)):
@@ -231,6 +242,7 @@ def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     workspace.mkdir(parents=True)
     request = workspace / "request.json"
     child_config=dict(config)
+    child_config['_native_module']=runtime_receipt
     if owned is not None:child_config['_expected_native_temp']=str(owned.path)
     request.write_text(json.dumps(child_config, ensure_ascii=False), encoding="utf-8")
     worker = Path(__file__).with_name("fea_helpers.py")
@@ -240,6 +252,8 @@ def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     env = {k: v for k, v in os.environ.items() if k in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
     env.update({"HOME": str(workspace), "USERPROFILE": str(workspace), "TMPDIR": str(workspace), "TMP": str(workspace), "TEMP": str(workspace), "PATH": os.defpath, "LANG": "C.UTF-8", "OMP_NUM_THREADS": "1", "QT_QPA_PLATFORM": "offscreen"})
     if owned is not None:env['FREECAD_USER_TEMP']=str(owned.path)
+    env['PYTHONDONTWRITEBYTECODE']='1'
+    env['FREECAD_USER_HOME']=env['FREECAD_USER_DATA']=str(workspace)
     command = [config["tools"]["freecadcmd"]["path"], "-u", str(workspace / "user.cfg"), "-s", str(workspace / "system.cfg"), "-c", statement]
     from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
     controller = ProcessController()
@@ -261,6 +275,12 @@ def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     if "error" not in result and any(result.get("versions", {}).get(name) != pin["version"] for name, pin in config["tools"].items()):
         raise ProbeError("TOOL_VERSION_MISMATCH")
     report = assess_native(result)
+    report['runtime']=runtime_receipt
+    version_match=config['schema_version']=='FEAP0Configuration/v1' or result.get('native_runtime_versions')==runtime_receipt['native_identity']
+    if not version_match or result.get('native_module_before')!=result.get('native_module_after') or result.get('native_module_before',{}).get('module_sha256')!=runtime_receipt['module_sha256']:
+        report['checks']['native_runtime_identity']={'status':'failed'}
+        report['status']=report['automated_status']='failed'
+    else:report['checks']['native_runtime_identity']={'status':'passed'}
     report['checks']['native_archives']=assess_saved_archives(result,workspace)
     if report['checks']['native_archives']['status']!='passed':report['status']=report['automated_status']='failed'
     if owned is not None:
@@ -270,6 +290,7 @@ def _probe_native(config: dict, workspace: Path, *, owned=None) -> dict:
     for name, pin in config["tools"].items():
         if verify_tool(pin) != identities[name]:
             raise ProbeError("TOOL_IDENTITY_CHANGED")
+    if verify_runtime(config)!=runtime_receipt:raise ProbeError('R1_RUNTIME_CHANGED')
     report["tool_identities"] = identities
     report["artifacts"] = {}
     for path in sorted(workspace.rglob("*")):
