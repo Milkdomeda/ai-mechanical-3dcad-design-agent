@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 import types
-from fea_r1_patch import ASSETS,BASE_SHA256,PROFILE,asset_identities,digest
+from fea_r1_patch import ASSETS,BASE_SHA256,PROFILE,canonical_baseline,asset_identities,digest
 
 
 def approved_module_digest():
@@ -46,8 +46,10 @@ def module_for_executable(executable):
 def verify_runtime(config, *, full_tree=True):
     module=module_for_executable(config['tools']['freecadcmd']['path']) if config['schema_version']=='FEAP0Configuration/v1' else None
     if module is not None:
-        if digest(module.read_bytes())!=BASE_SHA256:raise ValueError('R1_V1_REQUIRES_OFFICIAL_MODULE')
-        return {'profile':'official-freecad-1.1.3','module_path':str(module),'module_sha256':BASE_SHA256}
+        original=module.read_bytes()
+        try:canonical_baseline(original)
+        except ValueError as exc:raise ValueError('R1_V1_REQUIRES_OFFICIAL_MODULE') from exc
+        return {'profile':'official-freecad-1.1.3','module_path':str(module),'module_sha256':digest(original)}
     pin=config['runtime'];path=Path(pin['manifest_path'])
     if path.is_symlink() or not path.is_file() or digest(path.read_bytes())!=pin['manifest_sha256']:raise ValueError('R1_MANIFEST_DIGEST')
     manifest=json.loads(path.read_text(encoding='utf-8'))

@@ -8,7 +8,9 @@ No agent modifies Force values, CLOAD records or generated input files.
 `native_faceforce.py` is source payload installed into the standard
 `femmesh/meshtools.py` before FreeCAD starts. The deterministic recipe in
 `tests/fea_r1_patch.py` requires the exact source digest in `provenance.json`;
-`meshtools.patch` is the generated, reviewable upstream diff. The original
+the two exact approved raw variants (upstream/macOS LF and official Windows
+CRLF) additionally require the same canonical LF hash. Unknown raw variants
+remain rejected. `meshtools.patch` is the generated, reviewable LF upstream diff. The original
 module license header and non-T6 weight branches remain intact.
 
 Upstream module attribution: Copyright (c) 2016 Bernd Hahnebach and FreeCAD

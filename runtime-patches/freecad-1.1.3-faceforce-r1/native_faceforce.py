@@ -85,6 +85,7 @@ def t6_weights(points):
         if previous is not None and max(abs(a-b) for a,b in zip(current,previous))<=area*1e-12:
             result=tuple(v*scale*scale for v in current[:6])
             if not all(_r1_math.isfinite(v) for v in result):raise ValueError('R1_T6_NONFINITE_INTEGRAL')
+            if max(abs((v/scale)/scale-w) for v,w in zip(result,current))>area*1e-12:raise ValueError('R1_T6_UNREPRESENTABLE_WEIGHTS')
             return result
         previous=current
     raise ValueError('R1_T6_QUADRATURE_NOT_CONVERGED')
@@ -122,5 +123,6 @@ def get_force_obj_face_nodeload_table(femmesh, femelement_table, femnodes_mesh, 
         groups.append(('node loads on shape: '+obj.Name+':'+name,{n:_r1_math.fsum(w) for n,w in sorted(by_node.items())}))
     total=_r1_math.fsum(total_terms)
     if not _r1_math.isfinite(total) or total<=0:raise ValueError('R1_INVALID_TOTAL_AREA')
-    force_per_area=force/total
-    return [(label,{node:weight*force_per_area for node,weight in areas.items()}) for label,areas in groups]
+    result=[(label,{node:(weight/total)*force for node,weight in areas.items()}) for label,areas in groups]
+    if not all(_r1_math.isfinite(float(value.Value)) for _,table in result for value in table.values()):raise ValueError('R1_NONFINITE_NODE_LOAD')
+    return result

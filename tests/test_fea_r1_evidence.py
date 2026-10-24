@@ -22,11 +22,11 @@ def valid_worker():
             'independent':{'reference_moment_Nmm':[200*sign,-2000*sign,0],'virtual_work_Nmm':-1000*sign,'reference_virtual_work_Nmm':-1000*sign,'max_nodal_force_error_N':0.,'boundary_faces':100,'compared_nodes':100,'reference_quadrature_order':20},
             'response':{'tip_displacement_z_mm':.05*sign,'max_von_mises_MPa':10.,'rf_N':[0,0,-40*sign],'input_force_accounting':{'constrained_cload_N':[0,0,0],'free_cload_N':[0,0,40*sign],'applied_cload_N':[0,0,40*sign],'rf_nset':'FIXED','constrained_nodes':10},'finite':True,'result_inventory':{'complete':True,'nodes':node_count}},
             'native_objects':[{'type_id':'Fem::ConstraintForce','proxy_source':None},{'type_id':'Fem::FemMeshObjectPython','proxy_source':'runtime/Mod/Fem/femobjects/mesh_gmsh.py','source_within_runtime':True}]}
-    identity={'profile':'freecad-1.1.3-fem-faceforce-r1','module_sha256':'ff61d33504d78df0fe0eebcce3232fffa91bd9c6ae433b9b82f337b017813bd3'}
+    identity={'profile':'freecad-1.1.3-fem-faceforce-r1','module_sha256':'ca4af36e48f0b1cb6b3b57e7c63e61ed7a3de768df497d50d4fa171493634c53'}
     return {'runtime_before':identity,'runtime_after':copy.deepcopy(identity),'auto_reopen_count':0,
             'reference_selftest':{'reference_moment_Nmm':[-40/3,40/3,0],'virtual_work_Nmm':-1/15,'reference_virtual_work_Nmm':-1/15,'max_nodal_force_error_N':0},
             'basis':weights,'legacy':{'T3':[1/6]*3,'Q4':[.25]*4,'Q8':[-1/12]*4+[1/3]*4},
-            'rejections':{v:'R1_EXPECTED' for v in ('empty','duplicate','nonfinite','folded','misordered','duplicate_reference')},'upstream_tests':{'run':4,'failures':0,'errors':0},'cases':cases}
+            'rejections':{v:'R1_EXPECTED' for v in ('empty','duplicate','nonfinite','folded','misordered','duplicate_reference')},'upstream_tests':{'run':5,'failures':0,'errors':0},'cases':cases}
 
 
 def test_complete_independent_evidence_preserves_operator_gate():
@@ -70,3 +70,25 @@ def test_incomplete_or_compensated_numerics_cannot_pass(defect):
     if defect=='bad_object':case['native_objects']=[None]
     if defect=='bad_reference_selftest':value['reference_selftest']['reference_virtual_work_Nmm']=0
     assert assess_r1(value)['automated_status']=='failed'
+
+
+@pytest.mark.parametrize('case,field,value',[
+    ('mesh_3','tip_displacement_z_mm',-1e100),
+    ('reversed','max_von_mises_MPa',1e100),
+    ('reversed','tip_displacement_z_mm',.051),
+    ('permuted','tip_displacement_z_mm',-.051),
+    ('permuted','max_von_mises_MPa',11.),
+])
+def test_physical_response_and_same_mesh_invariants_are_assessed(case,field,value):
+    from fea_r1_evidence import assess_r1
+    worker=valid_worker();worker['cases'][case]['response'][field]=value
+    assert assess_r1(worker)['automated_status']=='failed'
+
+
+def test_refinement_records_response_changes_without_claiming_convergence():
+    from fea_r1_evidence import assess_r1
+    report=assess_r1(valid_worker())
+    assert report['checks']['refinement_response'] is True
+    assert len(report['refinement_comparisons'])==2
+    assert report['convergence_status']=='not_established'
+    assert report['refinement_comparisons'][0]['displacement_change_mm']==0.

@@ -6,6 +6,8 @@ from test_fea_r1_weights import PAYLOAD
 
 
 class Quantity(float):
+    def __mul__(self,other):return Quantity(float(self)*other)
+    def __rmul__(self,other):return Quantity(other*float(self))
     @property
     def Value(self):return float(self)
     def getValueAs(self,unit):
@@ -58,3 +60,26 @@ def test_invalid_reference_cannot_emit_a_partial_force_table(defect):
     if defect=='no_mesh':tables['B']={}
     if defect=='nonfinite_force':load.Force=Quantity(math.nan)
     with pytest.raises(ValueError,match='R1_'):force(None,{},nodes,load)
+
+
+@pytest.mark.parametrize('scale',[1e-154,1e154])
+def test_finite_total_force_survives_extreme_representable_area(scale):
+    force,nodes,_,obj,load=fixture();load.References=[(obj,('A',))]
+    nodes={n:tuple(v*scale for v in p) for n,p in nodes.items()}
+    values=[float(v) for _,table in force(None,{},nodes,load) for v in table.values()]
+    assert all(math.isfinite(v) for v in values)
+    assert values==pytest.approx([0,0,0,40/3,40/3,40/3],abs=1e-12)
+    assert math.fsum(values)==pytest.approx(40,abs=1e-12)
+
+
+def test_unrepresentable_rescaled_weights_are_explicitly_rejected():
+    force,nodes,_,obj,load=fixture();load.References=[(obj,('A',))]
+    nodes={n:tuple(v*1e-161 for v in p) for n,p in nodes.items()}
+    with pytest.raises(ValueError,match='R1_T6_UNREPRESENTABLE_WEIGHTS'):
+        force(None,{},nodes,load)
+
+
+def test_nonfinite_emitted_quantity_cannot_escape_validation():
+    force,nodes,_,obj,load=fixture();load.References=[(obj,('A',))]
+    force.__globals__['get_ref_facenodes_areas']=lambda nodes,table:list(zip(range(1,7),(1e308,-1e308,1.,0.,0.,0.)))
+    with pytest.raises(ValueError,match='R1_NONFINITE_NODE_LOAD'):force(None,{},nodes,load)

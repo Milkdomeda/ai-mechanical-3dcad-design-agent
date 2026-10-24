@@ -97,7 +97,11 @@ Structural code fingerprints avoid treating Python marshal interning details
 as code changes while still rejecting stale bytecode. User home/data/config
 are explicit isolated paths; bytecode writes are disabled. Windows extended
 device paths are compared by canonical name and file identity. V1 continues
-to require the unchanged official native module; it cannot silently select R1.
+to require an exact approved official native module hash; it cannot silently select R1.
+The official Windows archive carries CRLF source bytes. Its separately pinned
+raw SHA and canonical LF SHA must both match before patching. Unknown bytes
+are refused even if normalizing their line endings would match; both platforms
+produce identical patched LF bytes. Original raw digests remain in receipts.
 
 The R1 automated evidence adds independent analytic graph integration, signed
 corner weights, legacy T3/Q4/Q8, invalid-map/reference rejection, order-20
@@ -105,8 +109,18 @@ Vandermonde/NumPy surface integration of original input, node-by-node forces,
 moments and quadratic virtual work. NumPy is already bundled with native
 FreeCAD; no new numerical dependency is installed. Three mesh levels and
 reversed/permuted reference cases run the native solver, retaining result
-inventories and response measurements. These measurements do not establish a
-general curved-mesh or engineering-strength acceptance policy.
+inventories and response measurements. Same-mesh reference permutation must
+preserve displacement and von Mises stress; reversal negates displacement and
+preserves von Mises stress (rtol 1e-9). Each of the three circular cantilever
+deflections is checked against the independent uniform-load beam formula
+`F L^3 / (8 E I)`, `I = pi R^4 / 4`, using the existing P0 cantilever 5%
+tolerance. Adjacent displacement changes must also be within 5% of that
+reference. Actual displacement/stress changes are retained, with asymptotic
+and maximum-stress convergence explicitly `not_established`. These fixture
+checks do not establish a general curved-mesh or engineering-strength policy.
+The five native unittests include extreme-area force tables using actual
+FreeCAD Quantity objects. Unrepresentable integration weights and nonfinite
+emitted loads fail explicitly.
 
 For these additional static, globally clamped CLOAD fixtures, raw CalculiX RF
 is retained. The support resultant is `raw RF - CLOAD on the printed constrained

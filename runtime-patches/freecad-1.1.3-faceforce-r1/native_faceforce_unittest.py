@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.0-or-later
 """FreeCAD unittest-style regression candidate; run in the native interpreter."""
 import unittest
+import math
+from types import SimpleNamespace
+from unittest.mock import patch
 import FreeCAD
 from femmesh import meshtools
 
@@ -27,3 +30,23 @@ class TestFaceForceR1(unittest.TestCase):
 
     def test_folded_face_rejected(self):
         with self.assertRaises(ValueError):self.areas(((0,0,0),(1,0,0),(0,1,0),(2,2,0),(.5,.5,0),(0,.5,0)))
+
+    def test_extreme_area_uses_real_native_quantity(self):
+        # Only reference lookup is doubled; native integrator, global force
+        # table and FreeCAD's C++ Quantity execute together.
+        points=((0,0,0),(1,0,0),(0,1,0),(.5,0,0),(.5,.5,0),(0,.5,0))
+        obj=SimpleNamespace(Name='Fixture')
+        load=SimpleNamespace(Force=FreeCAD.Units.Quantity('40 N'),References=[(obj,('Face1',))])
+        for scale in (1e-154,1e154):
+            nodes={i:FreeCAD.Vector(*(v*scale for v in p)) for i,p in enumerate(points,1)}
+            with patch.object(meshtools,'sub_shape_at_global_placement',return_value=SimpleNamespace(ShapeType='Face',Area=1.)),patch.object(meshtools,'get_ref_facenodes_table',return_value={1:tuple(nodes)}):
+                result=meshtools.get_force_obj_face_nodeload_table(None,{},nodes,load)
+            # Native meshtools intentionally returns scalar quantities already
+            # expressed in N, matching its existing writer-facing contract.
+            expected_unit=FreeCAD.Units.Quantity(load.Force.getValueAs('N')).Unit
+            self.assertTrue(all(v.Unit==expected_unit for _,table in result for v in table.values()))
+            values=[float(v.Value) for _,table in result for v in table.values()]
+            self.assertTrue(all(math.isfinite(v) for v in values))
+            self.assertAlmostEqual(math.fsum(values),40.,delta=1e-12)
+            for actual,want in zip(values,(0,0,0,40/3,40/3,40/3)):
+                self.assertAlmostEqual(actual,want,delta=1e-12)

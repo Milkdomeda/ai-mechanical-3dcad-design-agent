@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
-from fea_r1_patch import ASSETS,BASE_SHA256,PROFILE,SOURCE_COMMIT,asset_identities,digest,patched_source,patch_bytes
+from fea_r1_patch import ASSETS,BASE_SHA256,PROFILE,SOURCE_COMMIT,canonical_baseline,asset_identities,digest,patched_source,patch_bytes
 from fea_r1_runtime import tree_inventory
 
 
@@ -102,8 +102,8 @@ def prepare_runtime(source_root,destination,base_config,*,source_archive_sha256=
         children=list(source.iterdir())
         if len(children)!=1 or not children[0].is_dir() or children[0].is_symlink() or not (children[0]/relative).is_file():raise ValueError('R1_DISTRIBUTION_ROOT')
         source=children[0];modules=[source/relative]
-    if len(modules)!=1 or modules[0].is_symlink() or digest(modules[0].read_bytes())!=BASE_SHA256:raise ValueError('R1_BASE_MODULE_DIGEST')
-    original=modules[0].read_bytes();replacement=patched_source(original)
+    if len(modules)!=1 or modules[0].is_symlink():raise ValueError('R1_BASE_MODULE_DIGEST')
+    original=modules[0].read_bytes();canonical_baseline(original);replacement=patched_source(original)
     if replacement and digest(replacement)!=json.loads((ASSETS/'provenance.json').read_text())['patched_sha256']:raise ValueError('R1_PATCHED_MODULE_IDENTITY')
     if patch_bytes(original)!=(ASSETS/'meshtools.patch').read_bytes():raise ValueError('R1_REVIEWED_DIFF_MISMATCH')
     _validate_config(base_config)
@@ -130,7 +130,7 @@ def prepare_runtime(source_root,destination,base_config,*,source_archive_sha256=
     # Signing the app envelope may change a launcher's signature bytes.
     for pin in tools.values():pin['sha256']=digest(Path(pin['path']).read_bytes())
     _readonly(runtime)
-    identity=_identity(target,tools,module,'official-freecad-1.1.3' if baseline else PROFILE,BASE_SHA256 if baseline else digest(replacement))
+    identity=_identity(target,tools,module,'official-freecad-1.1.3' if baseline else PROFILE,digest(original) if baseline else digest(replacement))
     if sys.platform=='darwin':signatures['after_identity']=_signature(runtime)
     source_after={'module_sha256':digest(modules[0].read_bytes()),'tools':{n:verify_tool(p) for n,p in base_config['tools'].items()}}
     if source_identity!=source_after:raise ValueError('R1_SOURCE_INSTALL_CHANGED')

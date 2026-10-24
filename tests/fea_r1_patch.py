@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROFILE='freecad-1.1.3-fem-faceforce-r1'
 BASE_SHA256='cca1ab3f4aaded4e058295316b5276420538d3170d745c2fc96420c258cf58cc'
+BASE_VARIANTS={BASE_SHA256:'LF','0bb170d0f468a106e8ead419fb1b42bddf26e29394e9ef3bf8064f299c6af6d1':'CRLF'}
 SOURCE_COMMIT='145529fe741292ff0b3977a01195bf0247425794'
 ASSETS=Path(__file__).resolve().parents[1]/'runtime-patches/freecad-1.1.3-faceforce-r1'
 
@@ -13,8 +14,15 @@ ASSETS=Path(__file__).resolve().parents[1]/'runtime-patches/freecad-1.1.3-facefo
 def digest(data):return hashlib.sha256(data).hexdigest()
 
 
+def canonical_baseline(original: bytes) -> bytes:
+    if digest(original) not in BASE_VARIANTS:raise ValueError('R1_BASE_MODULE_DIGEST')
+    canonical=original.replace(b'\r\n',b'\n')
+    if digest(canonical)!=BASE_SHA256:raise ValueError('R1_CANONICAL_MODULE_DIGEST')
+    return canonical
+
+
 def patched_source(original: bytes) -> bytes:
-    if digest(original)!=BASE_SHA256:raise ValueError('R1_BASE_MODULE_DIGEST')
+    original=canonical_baseline(original)
     text=original.decode('utf-8');lines=text.splitlines(keepends=True);tree=ast.parse(text)
     force=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='get_force_obj_face_nodeload_table')
     areas=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='get_ref_facenodes_areas')
@@ -31,6 +39,7 @@ def patched_source(original: bytes) -> bytes:
 
 
 def patch_bytes(original: bytes) -> bytes:
+    original=canonical_baseline(original)
     return ''.join(difflib.unified_diff(original.decode().splitlines(keepends=True),patched_source(original).decode().splitlines(keepends=True),
         fromfile='a/src/Mod/Fem/femmesh/meshtools.py',tofile='b/src/Mod/Fem/femmesh/meshtools.py')).encode('utf-8')
 

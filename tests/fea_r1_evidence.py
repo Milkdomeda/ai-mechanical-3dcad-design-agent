@@ -1,4 +1,5 @@
 """Assess R1 evidence without changing the original P0 assessment policy."""
+import math
 from fea_native_probe import _near,_number
 from fea_r1_patch import PROFILE
 from fea_r1_reference import graph_reference
@@ -25,7 +26,7 @@ def assess_r1(worker):
     rejections=mapping(worker.get('rejections'))
     checks['rejections']=all(isinstance(rejections.get(k),str) and rejections[k].startswith('R1_') for k in ('empty','duplicate','nonfinite','folded','misordered','duplicate_reference'))
     upstream=mapping(worker.get('upstream_tests'))
-    checks['native_unittest']=type(upstream.get('run')) is int and upstream['run']>=4 and upstream.get('failures')==upstream.get('errors')==0
+    checks['native_unittest']=type(upstream.get('run')) is int and upstream['run']>=5 and upstream.get('failures')==upstream.get('errors')==0
     selftest=mapping(worker.get('reference_selftest'))
     checks['independent_reference_selftest']=close(selftest.get('reference_moment_Nmm'),[-40/3,40/3,0],1e-9) and _near(selftest.get('virtual_work_Nmm'),-1/15,1e-9) and _near(selftest.get('reference_virtual_work_Nmm'),-1/15,1e-9) and _number(selftest.get('max_nodal_force_error_N')) and 0<=selftest['max_nodal_force_error_N']<=1e-9
     cases=mapping(worker.get('cases'))
@@ -52,5 +53,22 @@ def assess_r1(worker):
         if label.startswith('mesh_'):
             elements.append(mesh.get('elements',0));refinement.append({'mesh_size_mm':size,'elements':mesh.get('elements'),'tip_displacement_z_mm':displacement,'max_von_mises_MPa':response.get('max_von_mises_MPa')})
     checks['refinement_counts']=all(type(v) is int for v in elements) and 0<elements[0]<elements[1]<elements[2]
+    # Frozen, independent circular cantilever reference for this software fixture:
+    # uniform transverse resultant F=40 N over L=100 mm, R=5 mm, E=200000 MPa.
+    beam_deflection=40*100**3/(8*200000*(math.pi*5**4/4))
+    checks['refinement_displacement_reference']=all(_near(abs(v['tip_displacement_z_mm']),beam_deflection,.05) if _number(v['tip_displacement_z_mm']) else False for v in refinement) and len(refinement)==3
+    comparisons=[]
+    for previous,current in zip(refinement,refinement[1:]):
+        dz=[v['tip_displacement_z_mm'] for v in (previous,current)]
+        stress=[v['max_von_mises_MPa'] for v in (previous,current)]
+        change=abs(dz[1]-dz[0]) if all(_number(v) for v in dz) else None
+        stress_change=abs(stress[1]-stress[0]) if all(_number(v) for v in stress) else None
+        comparisons.append({'from_mesh_size_mm':previous['mesh_size_mm'],'to_mesh_size_mm':current['mesh_size_mm'],'displacement_change_mm':change,'displacement_change_over_reference':change/beam_deflection if change is not None else None,'max_von_mises_change_MPa':stress_change})
+    checks['refinement_response']=len(comparisons)==2 and all(_number(v['displacement_change_mm']) and v['displacement_change_mm']<=.05*beam_deflection for v in comparisons)
+    normal=mapping(mapping(cases.get('mesh_4')).get('response'))
+    for label,sign in (('reversed',-1),('permuted',1)):
+        response=mapping(mapping(cases.get(label)).get('response'))
+        reference=normal.get('tip_displacement_z_mm')
+        checks[label+'_response_invariance']=_number(reference) and _near(response.get('tip_displacement_z_mm'),sign*reference,1e-9) and _number(normal.get('max_von_mises_MPa')) and _near(response.get('max_von_mises_MPa'),normal['max_von_mises_MPa'],1e-9)
     passed=all(checks.values())
-    return {'schema_version':'FEAR1Evidence/v1','automated_status':'passed' if passed else 'failed','status':'blocked' if passed else 'failed','native_gui_roundtrip':'not_executed','checks':checks,'refinement':refinement,'support_reactions':support_reactions,'rf_accounting_formula':'support reaction = raw CalculiX RF - native CLOAD at the printed constrained nodes','worker':worker}
+    return {'schema_version':'FEAR1Evidence/v1','automated_status':'passed' if passed else 'failed','status':'blocked' if passed else 'failed','native_gui_roundtrip':'not_executed','checks':checks,'refinement':refinement,'refinement_comparisons':comparisons,'displacement_reference_mm':beam_deflection,'convergence_status':'not_established','support_reactions':support_reactions,'rf_accounting_formula':'support reaction = raw CalculiX RF - native CLOAD at the printed constrained nodes','worker':worker}
