@@ -1,0 +1,26 @@
+{
+  "schema_version": "FreeCADNativePatch/v1",
+  "profile": "freecad-1.1.3-fem-faceforce-r1",
+  "license": "LGPL-2.0-or-later",
+  "base_repository": "https://github.com/FreeCAD/FreeCAD",
+  "base_commit": "145529fe741292ff0b3977a01195bf0247425794",
+  "base_tag": "1.1.3",
+  "source_path": "src/Mod/Fem/femmesh/meshtools.py",
+  "base_sha256": "cca1ab3f4aaded4e058295316b5276420538d3170d745c2fc96420c258cf58cc",
+  "production_changes": [
+    "get_ref_facenodes_areas: T6 branch",
+    "get_force_obj_face_nodeload_table",
+    "pure integration helpers inside meshtools.py"
+  ],
+  "distribution": "reviewed source patch only; no FreeCAD binaries or customer evidence",
+  "limitations": [
+    "conservative orientation certificate",
+    "no arbitrary curved Q4/Q8 integration claim",
+    "P0 only; operator GUI gate remains independent"
+  ],
+  "patched_sha256": "ff61d33504d78df0fe0eebcce3232fffa91bd9c6ae433b9b82f337b017813bd3",
+  "license_source_url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt",
+  "license_sha256": "1dfab741fe12676a0a7e8166ad4a74670cb536ddff56b84b36a48fab28a1a110",
+  "license_text_origin": "GNU LGPL v2 text retained in FreeCAD distribution gl2ps COPYING.LGPL",
+  "upstream_attribution": "Copyright (c) 2016 Bernd Hahnebach and FreeCAD contributors"
+}

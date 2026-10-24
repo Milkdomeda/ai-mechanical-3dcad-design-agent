@@ -356,7 +356,7 @@ def render_third_party_notices(inventory: ThirdPartyInventory) -> str:
     lines = [
         "# Third-Party Notices",
         "",
-        "AI Mechanical 3DCAD Design Agent project-owned source is licensed under Apache-2.0.",
+        "AI Mechanical 3DCAD Design Agent project-owned source is licensed under Apache-2.0, except explicitly marked source-only native maintenance patches under their per-file licenses.",
         "Third-party components retain their original ownership and licenses; this index does not relicense them.",
         "Every listed component is separately installed or external and is not distributed by this project.",
         "External service and catalog terms apply independently and do not grant rights to downloaded CAD data.",
