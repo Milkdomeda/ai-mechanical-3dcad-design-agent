@@ -331,3 +331,43 @@ def test_native_windows_requires_second_fixed_ntfs_volume() -> None:
     secure_fs = importlib.import_module("mechanical_design_agent.secure_fs")
     managed = secure_fs.validate_managed_path(Path(raw), allow_missing_leaf=False)
     assert managed.path.is_absolute()
+
+
+def test_cas_publication_waits_only_for_transient_sharing_without_relaxing_identity(monkeypatch):
+    windows = importlib.import_module("mechanical_design_agent.secure_fs_windows")
+    sleeps=[];calls=[]
+    monkeypatch.setattr(windows.time,"sleep",sleeps.append,raising=True)
+    def operation():
+        calls.append(1)
+        if len(calls)<3:
+            cause=OSError("publisher still completing rename");cause.winerror=32
+            raise windows.SecureFilesystemError("WINDOWS_PATH_IDENTITY_CHANGED","pin unavailable") from cause
+        return ("pinned identity", "verified attributes")
+    assert windows._cas_open_after_publish(operation)==("pinned identity", "verified attributes")
+    assert len(calls)==3 and 0<sum(sleeps)<1
+
+
+@pytest.mark.parametrize("code,winerror", [("WINDOWS_PATH_IDENTITY_CHANGED",5),("WINDOWS_PATH_IDENTITY_CHANGED",2),("WINDOWS_REPARSE_POINT_BLOCKED",32),("ARTIFACT_CHECKSUM_MISMATCH",32)])
+def test_cas_publication_never_retries_security_or_nonsharing_errors(monkeypatch,code,winerror):
+    windows=importlib.import_module("mechanical_design_agent.secure_fs_windows")
+    sleeps=[];calls=[]
+    monkeypatch.setattr(windows.time,"sleep",sleeps.append,raising=True)
+    def operation():
+        calls.append(1)
+        cause=OSError("failure");cause.winerror=winerror
+        raise windows.SecureFilesystemError(code,"must fail") from cause
+    with pytest.raises(windows.SecureFilesystemError) as caught:windows._cas_open_after_publish(operation)
+    assert caught.value.code==code and len(calls)==1 and sleeps==[]
+
+
+def test_cas_sharing_retry_is_bounded_and_preserves_final_error(monkeypatch):
+    windows=importlib.import_module("mechanical_design_agent.secure_fs_windows")
+    sleeps=[];calls=[]
+    monkeypatch.setattr(windows.time,"sleep",sleeps.append,raising=True)
+    def operation():
+        calls.append(1)
+        cause=OSError("permanent sharing conflict");cause.winerror=32
+        raise windows.SecureFilesystemError("WINDOWS_PATH_IDENTITY_CHANGED","still pinned elsewhere") from cause
+    with pytest.raises(windows.SecureFilesystemError) as caught:windows._cas_open_after_publish(operation)
+    assert caught.value.__cause__.winerror==32
+    assert 1<len(calls)<=10 and len(sleeps)==len(calls)-1 and sum(sleeps)<1

@@ -7,7 +7,8 @@ import importlib
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Iterator
+import time
+from typing import Any, Callable, Iterator, TypeVar
 
 from .secure_fs import (
     FileIdentity,
@@ -1039,12 +1040,39 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                 _close_handle(handle)
 
 
+_CasOpen = TypeVar("_CasOpen")
+
+
+def _cas_open_after_publish(operation: Callable[[], _CasOpen]) -> _CasOpen:
+    """Wait briefly for another CAS publisher's MoveFileEx handle to close.
+
+    Windows can expose the new name before the publisher releases its rename
+    handle. Keep the original no-delete-share, reparse and identity checks;
+    only ERROR_SHARING_VIOLATION during a CAS open can be retried. Every attempt
+    must acquire and validate the handle normally. Permanent conflicts fail.
+    """
+    for attempt in range(8):
+        try:
+            return operation()
+        except SecureFilesystemError as exc:
+            if (
+                exc.code != "WINDOWS_PATH_IDENTITY_CHANGED"
+                or getattr(exc.__cause__, "winerror", None) != 32
+                or attempt == 7
+            ):
+                raise
+            time.sleep(min(0.01 * 2**attempt, 0.05))
+    raise AssertionError("unreachable CAS retry state")
+
+
 def verify_cas_file(path: Path, expected_sha256: str) -> tuple[str, int]:
     api = load_win32_api()
     lexical = _absolute(path)
     with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
         target = parent.path / lexical.name
-        handle, identity, attributes = _open_regular_handle(target, api)
+        handle, identity, attributes = _cas_open_after_publish(
+            lambda: _open_regular_handle(target, api)
+        )
         try:
             if not attributes & getattr(
                 api.win32con, "FILE_ATTRIBUTE_READONLY", 0x1
@@ -1115,10 +1143,8 @@ def ingest_cas_file(
                 )
                 replace = False
                 if target.exists():
-                    expected_target, target_attributes = _entry_facts(
-                        target,
-                        api,
-                        directory=False,
+                    expected_target, target_attributes = _cas_open_after_publish(
+                        lambda: _entry_facts(target, api, directory=False)
                     )
                     _assert_not_reparse(target_attributes, api)
                     readonly = getattr(
