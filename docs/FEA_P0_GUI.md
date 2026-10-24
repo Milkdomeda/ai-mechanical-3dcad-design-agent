@@ -4,9 +4,10 @@ This is test infrastructure for the reviewed FreeCAD 1.1.3 R1 profile.
 It does not enable text-to-FEA, modify the native runtime, or change P0's
 numerical thresholds. Existing automated reports remain immutable.
 
-The current preparation and live launcher support macOS. Windows GUI
-acceptance remains blocked; GitHub Server evidence is not Windows 11 desktop
-acceptance. The pure input comparator is platform-neutral. The macOS source
+The legacy manual preparation and live launcher support macOS. Their Windows
+manual mode is unavailable; the separate autonomous matrix is described below.
+GitHub Server evidence is not Windows 11 desktop acceptance. The pure input
+comparator is platform-neutral. The macOS source
 preparation tests explicitly skip on other platforms rather than claiming
 native Windows protection or launch coverage.
 
@@ -114,3 +115,29 @@ already bundled in FreeCAD. The classic native nodal palette includes zero;
 positive-only data therefore starts at green rather than assigning blue to
 the smallest observed value. The legend reproduces the pinned native scalar
 anchors, with explicit provenance, and does not rescale or replace solver data.
+
+The Windows GUI test environment explicitly materializes the official archive's
+bundled `opengl32sw.dll` as a local `opengl32.dll` in the new isolated copy.
+Both Qt and native Coin calls then use the same OpenGL implementation. It does
+not replace a system DLL or edit an existing installation. Before the GUI run,
+the bundled Python compiler creates missing checked-hash caches without
+executing their source modules. Previously pinned cache bytes, all source files
+and all original binaries must remain identical. Original numerical manifests
+are retained; a separate GUI configuration and manifest pin the materialized
+revision. Source, compiler and driver provenance accompany the CI artifacts.
+
+[Run 40095737180](https://github.com/Milkdomeda/ai-mechanical-3dcad-design-agent/actions/runs/40095737180)
+at `e2e44a6` passed the complete offline suite, eight repeated native CAS races,
+unchanged numerical P0 checks, and all five native GUI cases with independent
+process round trips on Windows Server 2025 x64 and Windows 11 ARM64 using x64
+Python/FreeCAD compatibility. The Server viewport reported OpenGL 3.0 with the
+software profile. This establishes that exact test environment; it does not
+establish Windows 11 x64 desktop or hardware graphics compatibility. macOS uses
+CalculiX 2.23, while the pinned Windows distribution supplies CalculiX 2.22;
+both use Gmsh 4.15.0 and FreeCAD 1.1.3.
+
+Where project acceptance authorizes an assistant operator, visual review is a
+separate hash-bound assistant receipt. It never becomes a human attestation.
+Historical manual gate fields stay unchanged. Capability activation still
+requires all applicable numerical, GUI and visual checks for the declared
+platform profile; a green CI job alone does not activate the product interface.

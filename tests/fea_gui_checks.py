@@ -29,6 +29,7 @@ def assess_gui_objects(snapshot, expected_mesh, *, has_results):
             fields=snapshot['result_inventory']
             checks['result_fields']=fields['complete'] is True and type(fields['nodes']) is int and fields['nodes']==expected_mesh['nodes']
             checks['result_dialog']=snapshot['result_dialog_open'] is True
+            checks['result_dialog_closed']=snapshot['result_dialog_closed'] is True
             checks['visible_result_mesh']=snapshot['visible_result_mesh'] is True
             contexts=snapshot['graphics_contexts']
             checks['opengl_context']=bool(contexts) and all(c['valid'] is True and type(c['version']) is list and len(c['version'])==2 and all(type(v) is int for v in c['version']) and c['version'][0]>=2 for c in contexts)

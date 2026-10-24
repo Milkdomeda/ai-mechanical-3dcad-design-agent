@@ -24,3 +24,12 @@ def test_native_worker_import_needs_no_host_package_or_gui_until_run():
     code=f"import sys;sys.path.insert(0,{str(tests)!r});from fea_gui_native import fixture_spec;assert fixture_spec('axial_bar')['force_N']==100"
     result=subprocess.run([sys.executable,'-I','-S','-B','-c',code],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
+
+
+def test_gui_native_files_use_w1_even_when_the_delivery_path_is_chinese(tmp_path):
+    from fea_gui_native import native_case_workspace
+    scratch=tmp_path/'private-native'
+    if not str(scratch).isascii():pytest.skip('this fixture needs an ASCII parent')
+    native=native_case_workspace(scratch,'axial_bar')
+    assert native.parent==scratch and str(native).isascii()
+    with pytest.raises(ValueError):native_case_workspace(tmp_path/'中文','axial_bar')

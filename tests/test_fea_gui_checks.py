@@ -11,7 +11,7 @@ def native_snapshot():
         {'name':'CCX_Results','type_id':'Fem::FemResultObjectPython','proxy_module':'femviewprovider.view_result_mechanical','proxy_class':'VPResultMechanical'},
         {'name':'CCX_Results_Mesh','type_id':'Fem::FemMeshObjectPython','proxy_module':'femviewprovider.view_mesh_result','proxy_class':'VPFemMeshResult'},
     ]
-    return {'objects':objects,'result_present':True,'result_dialog_open':True,'solver_dialog_open':True,'mesh_inventory':{'nodes':10,'elements':1},'result_inventory':{'complete':True,'nodes':10},'visible_result_mesh':True,'graphics_contexts':[{'valid':True,'version':[4,1]}]}
+    return {'objects':objects,'result_present':True,'result_dialog_open':True,'result_dialog_closed':True,'solver_dialog_open':True,'mesh_inventory':{'nodes':10,'elements':1},'result_inventory':{'complete':True,'nodes':10},'visible_result_mesh':True,'graphics_contexts':[{'valid':True,'version':[4,1]}]}
 
 
 def test_standard_native_gui_contract_accepts_typed_view_providers_and_actual_panels():
@@ -20,7 +20,7 @@ def test_standard_native_gui_contract_accepts_typed_view_providers_and_actual_pa
     assert result['status']=='passed'
 
 
-@pytest.mark.parametrize('defect',['integer_proxy','missing_solver','unexpected_proxy','wrong_type','duplicate_object','no_result_panel','no_solver_panel','wrong_nodes','empty_fields','hidden_result','no_gl','old_gl','invalid_gl'])
+@pytest.mark.parametrize('defect',['integer_proxy','missing_solver','unexpected_proxy','wrong_type','duplicate_object','no_result_panel','result_did_not_close','no_solver_panel','wrong_nodes','empty_fields','hidden_result','no_gl','old_gl','invalid_gl'])
 def test_missing_or_stale_gui_bindings_cannot_pass_even_with_solver_fields(defect):
     from fea_gui_checks import assess_gui_objects
     value=deepcopy(native_snapshot())
@@ -30,6 +30,7 @@ def test_missing_or_stale_gui_bindings_cannot_pass_even_with_solver_fields(defec
     if defect=='wrong_type':value['objects'][2]['type_id']='App::FeaturePython'
     if defect=='duplicate_object':value['objects'].append(deepcopy(value['objects'][0]))
     if defect=='no_result_panel':value['result_dialog_open']=False
+    if defect=='result_did_not_close':value['result_dialog_closed']=False
     if defect=='no_solver_panel':value['solver_dialog_open']=False
     if defect=='wrong_nodes':value['mesh_inventory']['nodes']=11
     if defect=='empty_fields':value['result_inventory']={'complete':False,'nodes':0}
