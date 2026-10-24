@@ -42,8 +42,13 @@ The root must have an existing parent, be outside the source checkout and
 resolve to ASCII. The runner creates private directories, validates existing
 ownership/access, rejects reparse/symlink paths through the secure filesystem
 backend, locks the owned directory, and verifies FreeCAD's actual temporary
-path. Only child-process `FREECAD_USER_TEMP` changes. Normal scope exit cleans
-the cache after native processes exit; exceptions preserve owned diagnostics.
+path. Only child-process `FREECAD_USER_TEMP` changes. Normal scope exit clears
+cache contents while the owner lock and directory handle remain held, after
+native processes exit. An empty directory and owner lock remain deliberately:
+POSIX has no atomic compare-inode-and-unlink-directory operation. A fresh UUID
+is used for every run; retained shells are never reused. Exceptions preserve
+owned diagnostics. Root and owner lock identities are checked before cleanup;
+an advisory lock alone does not pin a POSIX directory name.
 Input, result, FCStd and report paths remain in the external workspace.
 An unavailable or unsafe root fails explicitly; no global settings, 8.3 names
 or directory aliases are silently substituted.

@@ -4,7 +4,7 @@ import pytest
 from fea_native_scratch import native_scratch, verify_native_temp
 
 
-def test_cache_is_private_unique_and_removed_after_owner_scope(tmp_path):
+def test_cache_is_private_unique_and_cleared_after_owner_scope(tmp_path):
     root=tmp_path/'native-cache'
     with native_scratch(root) as owned:
         first=owned.path
@@ -12,7 +12,7 @@ def test_cache_is_private_unique_and_removed_after_owner_scope(tmp_path):
         (first/'native.tmp').write_bytes(b'synthetic native data')
         verify_native_temp(str(first),owned)
         if os.name=='posix':assert first.stat().st_mode & 0o077 == 0
-    assert not first.exists()
+    assert {p.name for p in first.iterdir()}=={'.native-owner.lock'}
     with native_scratch(root) as another:assert another.path!=first
 
 
@@ -65,3 +65,50 @@ def test_directory_identity_change_never_deletes_replacement(tmp_path):
                 owned.path.rename(owned.path.with_name('moved'))
                 owned.path.mkdir(mode=0o700);(owned.path/'foreign').write_text('do not delete')
         assert (owned.path/'foreign').read_text()=='do not delete'
+
+
+def test_cleanup_entry_swap_preserves_foreign_directory(tmp_path, monkeypatch):
+    import fea_native_scratch as scratch
+    real=scratch._clear_owned_scratch
+    def swap(owned):
+        moved=owned.path.with_name('moved-at-cleanup')
+        if os.name=='nt':
+            with pytest.raises(OSError):owned.path.rename(moved)
+        else:
+            owned.path.rename(moved);owned.path.mkdir(mode=0o700)
+            (owned.path/'foreign').write_text('keep me')
+        return real(owned)
+    monkeypatch.setattr(scratch,'_clear_owned_scratch',swap)
+    if os.name=='nt':
+        with native_scratch(tmp_path/'cache'):pass
+    else:
+        with pytest.raises(ValueError,match='IDENTITY'):
+            with native_scratch(tmp_path/'cache') as owned:pass
+        assert (owned.path/'foreign').read_text()=='keep me'
+
+
+@pytest.mark.skipif(os.name!='posix',reason='POSIX permits rename of a pinned directory')
+def test_swap_after_cleanup_pin_cannot_delete_replacement(tmp_path, monkeypatch):
+    import fea_native_scratch as scratch
+    real=scratch.shutil.rmtree
+    def swap(name, *, dir_fd):
+        owned.path.rename(owned.path.with_name('moved-after-pin'))
+        owned.path.mkdir(mode=0o700)
+        (owned.path/'foreign').write_text('keep me')
+        return real(name,dir_fd=dir_fd)
+    swap.avoids_symlink_attacks=real.avoids_symlink_attacks
+    monkeypatch.setattr(scratch.shutil,'rmtree',swap)
+    with pytest.raises(ValueError,match='IDENTITY'):
+        with native_scratch(tmp_path/'cache') as owned:
+            (owned.path/'nested').mkdir();(owned.path/'nested'/'native.tmp').write_bytes(b'ours')
+    assert (owned.path/'foreign').read_text()=='keep me'
+
+
+@pytest.mark.skipif(os.name!='posix',reason='Windows pins the lock and its ancestors')
+def test_replaced_root_lock_is_detected_before_cleanup(tmp_path):
+    with pytest.raises(ValueError,match='IDENTITY'):
+        with native_scratch(tmp_path/'cache') as owned:
+            lock=owned.path.parent/'.native-root.lock'
+            lock.rename(lock.with_suffix('.moved'));lock.write_bytes(b'foreign')
+            (owned.path/'evidence').write_text('preserve')
+    assert (owned.path/'evidence').read_text()=='preserve'

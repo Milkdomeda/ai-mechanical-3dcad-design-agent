@@ -54,6 +54,16 @@ def inspect_mesh_archive(path: Path) -> dict:
     except (OSError,ValueError,IndexError,KeyError,zipfile.BadZipFile,UnicodeError):return {'valid':False}
 
 
+def inspect_direct_unv(path: Path) -> dict:
+    try:
+        size=path.stat().st_size
+        if not 0<size<=2_000_000:return {'valid':False}
+        data=path.read_bytes()
+        inventory=unv_inventory(data.decode('ascii'))
+        return {'valid':True,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),**inventory}
+    except (OSError,ValueError,IndexError,KeyError,UnicodeError):return {'valid':False}
+
+
 def assess_case(raw: dict, external: Path, native_temp: Path, *, system: str) -> dict:
     def expected(operation, success):
         result=raw.get(operation,{})
@@ -61,6 +71,7 @@ def assess_case(raw: dict, external: Path, native_temp: Path, *, system: str) ->
     mesh_ok=system!='Windows' or str(native_temp).isascii()
     direct_ok=system!='Windows' or str(external).isascii()
     archive=raw.get('mesh_archive',{})
+    direct=raw.get('direct_archive',{})
     checks={'worker': 'error' not in raw,
             'version':raw.get('version')=='1.1.3',
             'actual_temp':os.path.normcase(os.path.abspath(raw.get('temp_path',''))) == os.path.normcase(os.path.abspath(native_temp)),
@@ -69,6 +80,7 @@ def assess_case(raw: dict, external: Path, native_temp: Path, *, system: str) ->
             'mesh_save':expected('mesh_save',mesh_ok),
             'plain_control':raw.get('plain_save',{}).get('ok') is True,
             'direct_unv':expected('direct_unv',direct_ok),
+            'direct_written_inventory':direct.get('valid') is True and direct.get('nodes')==10 and direct.get('tet10')==1 and bool(direct.get('sha256')),
             'archive':not mesh_ok or (archive.get('valid') is True and archive.get('nodes')==10 and archive.get('tet10')==1)}
     return {'diagnostic_status':'passed' if all(checks.values()) else 'failed','p0_status':'blocked','checks':checks,'expected_mesh_save':mesh_ok,'expected_direct_unv':direct_ok,'observed':raw}
 
@@ -97,6 +109,7 @@ def run_matrix(config: dict, root: Path) -> dict:
         raw=json.loads(response.read_text(encoding='utf-8')) if response.is_file() else {'error':'Worker response missing'}
         if outcome.reason!='exited' or outcome.returncode:raw['error']=f'Worker {outcome.reason}/{outcome.returncode}'
         raw['mesh_archive']=inspect_mesh_archive(external/'mesh.FCStd')
+        raw['direct_archive']=inspect_direct_unv(external/'direct.unv')
         value=assess_case(raw,external,temp,system=platform.system())
         value.update(external=str(external),requested_temp=str(temp))
         report['cells'][cell['name']]=value

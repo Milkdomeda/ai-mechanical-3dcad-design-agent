@@ -214,7 +214,7 @@ def probe_native(config: dict, workspace: Path, *, native_scratch_root: Path | N
     from fea_native_scratch import native_scratch
     with native_scratch(native_scratch_root) as owned:
         report=_probe_native(config,workspace,owned=owned)
-    report['native_scratch']['cleanup']='removed_after_owned_process_exit'
+    report['native_scratch']['cleanup']='contents_cleared_shell_and_lock_retained_after_owned_process_exit'
     (Path(workspace)/'probe.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     return report
 

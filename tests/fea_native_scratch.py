@@ -2,6 +2,8 @@
 from contextlib import contextmanager
 import os
 import hashlib
+import shutil
+import stat
 from pathlib import Path
 import uuid
 from mechanical_design_agent import secure_fs
@@ -50,6 +52,38 @@ def _assert_identity(owned):
     if secure_fs.validate_managed_path(owned.path,allow_missing_leaf=False).identity!=owned.identity:raise ValueError('NATIVE_SCRATCH_IDENTITY_CHANGED')
 
 
+def _clear_owned_scratch(owned):
+    """Clear contents through a pinned directory; retain its lock/empty shell.
+
+    POSIX cannot atomically compare an inode and unlink its directory name.
+    Retaining the shell avoids deleting a replacement after a final check.
+    Windows's enclosing owner lock pins the directory against rename/delete.
+    """
+    if os.name=='nt':
+        _assert_identity(owned)
+        for child in owned.path.iterdir():
+            if child.name=='.native-owner.lock':continue
+            checked=secure_fs.validate_managed_path(child,allow_missing_leaf=False)
+            if checked.path.is_dir():secure_fs.remove_owned_tree(checked.path,expected_parent=owned.path,label='native scratch contents')
+            else:checked.path.unlink()
+        _assert_identity(owned)
+        return
+    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+    descriptor=os.open(owned.path,flags)
+    try:
+        facts=os.fstat(descriptor)
+        if secure_fs.FileIdentity(facts.st_dev,facts.st_ino)!=owned.identity:raise ValueError('NATIVE_SCRATCH_IDENTITY_CHANGED')
+        if not shutil.rmtree.avoids_symlink_attacks:raise ValueError('NATIVE_SCRATCH_SAFE_CLEANUP_UNAVAILABLE')
+        for name in os.listdir(descriptor):
+            if name=='.native-owner.lock':continue
+            facts=os.stat(name,dir_fd=descriptor,follow_symlinks=False)
+            if stat.S_ISDIR(facts.st_mode):shutil.rmtree(name,dir_fd=descriptor)
+            else:os.unlink(name,dir_fd=descriptor)
+        os.fsync(descriptor)
+        _assert_identity(owned)
+    finally:os.close(descriptor)
+
+
 def verify_native_temp(actual, owned):
     try:
         if not isinstance(actual,str) or not actual:raise ValueError('missing native temp')
@@ -77,13 +111,16 @@ def native_scratch(root: Path):
         if not str(pinned.path).isascii():raise ValueError('NATIVE_SCRATCH_REQUIRES_ASCII_ROOT')
         _require_private(pinned.path)
     with secure_fs.exclusive_file_lock(pinned.path/'.native-root.lock'):
+        root_lock=secure_fs.validate_managed_path(pinned.path/'.native-root.lock',allow_missing_leaf=False)
         _assert_identity(pinned)
         child=pinned.path/uuid.uuid4().hex
         _create_private(child)
         owned=secure_fs.validate_managed_path(child,allow_missing_leaf=False)
         with secure_fs.exclusive_file_lock(owned.path/'.native-owner.lock'):
+            owner_lock=secure_fs.validate_managed_path(owned.path/'.native-owner.lock',allow_missing_leaf=False)
             yield owned
             _assert_identity(pinned);_assert_identity(owned)
-        # Reached only after the caller's owned process scope finished normally.
-        # Exceptions preserve the directory; identity changes never delete it.
-        secure_fs.remove_owned_tree(owned.path,expected_parent=pinned.path,label='native FEA scratch')
+            _assert_identity(root_lock);_assert_identity(owner_lock)
+            # Only after the caller's owned process scope finished normally.
+            # Keep the owner lock held while clearing; exceptions preserve data.
+            _clear_owned_scratch(owned)

@@ -9,6 +9,7 @@ def raw(temp, *, native_ok=True, direct_ok=True):
             'mesh_nodes': 10, 'mesh_volumes': 1,
             'mesh_save': {'ok': native_ok, 'error': '' if native_ok else 'Salome Exception: ERROR: Output file not good.'},
             'plain_save': {'ok': True}, 'direct_unv': {'ok': direct_ok, 'error': '' if direct_ok else 'ERROR: Output file not good.'},
+            'direct_archive': {'valid':True,'nodes':10,'tet10':1,'sha256':'synthetic-inventory-receipt'},
             'mesh_archive': {'valid': native_ok, 'nodes': 10, 'tet10': 1}}
 
 
@@ -50,3 +51,18 @@ def test_zip_crc_alone_is_insufficient(tmp_path):
     path=tmp_path/'empty.FCStd'
     with zipfile.ZipFile(path,'w') as z:z.writestr('FemMesh.unv','')
     assert matrix.inspect_mesh_archive(path)['valid'] is False
+
+
+@pytest.mark.parametrize('content', [None,b'',b'    -1\n  2411\n',b'    -1\n  2411\n         1 1 1 1\n0 0 0\n    -1\n'])
+def test_direct_export_requires_complete_expected_inventory(tmp_path,content):
+    path=tmp_path/'direct.unv'
+    if content is not None:path.write_bytes(content)
+    value=raw(tmp_path/'temp')
+    value['direct_archive']=matrix.inspect_direct_unv(path)
+    assert matrix.assess_case(value,tmp_path/'external',tmp_path/'temp',system='Windows')['diagnostic_status']=='failed'
+
+
+def test_expected_unicode_export_error_still_requires_written_mesh(tmp_path):
+    value=raw(tmp_path/'temp',direct_ok=False)
+    value['direct_archive']={'valid':False}
+    assert matrix.assess_case(value,tmp_path/'外部',tmp_path/'temp',system='Windows')['diagnostic_status']=='failed'
