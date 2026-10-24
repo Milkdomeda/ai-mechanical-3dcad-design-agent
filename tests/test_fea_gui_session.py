@@ -13,7 +13,8 @@ def test_visible_gui_spec_has_no_document_argument_or_offscreen_backend(tmp_path
     config={'tools':{name:{'path':str(tmp_path/name)} for name in ('gmsh','ccx')}}
     argv,env=launch_spec(gui,home,scratch,config)
     expected_home=canonical_path(home);expected_scratch=canonical_path(scratch)
-    assert argv==(str(gui),'-u',str(expected_home/'user.cfg'),'-s',str(expected_home/'system.cfg'))
+    assert argv==(str(canonical_path(gui)),'-u',str(expected_home/'user.cfg'),'-s',str(expected_home/'system.cfg'))
+    assert os.path.samefile(argv[0],gui) and not argv[0].startswith('\\\\?\\')
     assert os.path.samefile(argv[2],home/'user.cfg') and os.path.samefile(argv[4],home/'system.cfg')
     assert not argv[2].startswith('\\\\?\\') and not argv[4].startswith('\\\\?\\')
     assert not any(value.lower().endswith('.fcstd') for value in argv)
@@ -24,6 +25,20 @@ def test_visible_gui_spec_has_no_document_argument_or_offscreen_backend(tmp_path
     assert os.path.samefile(env['FREECAD_USER_HOME'],home)
     assert env['PYTHONDONTWRITEBYTECODE']=='1'
     assert str(home) in (home/'user.cfg').read_text() or 'gmshBinaryPath' in (home/'user.cfg').read_text()
+
+
+def test_software_opengl_is_explicit_and_confined_to_private_launch_preferences(tmp_path):
+    from fea_gui_session import launch_spec
+    home=tmp_path/'home';home.mkdir();scratch=tmp_path/'scratch';scratch.mkdir()
+    gui=tmp_path/'FreeCAD';gui.write_bytes(b'fixture')
+    config={'tools':{name:{'path':str(tmp_path/name)} for name in ('gmsh','ccx')}}
+    _,default_env=launch_spec(gui,home,scratch,config)
+    assert 'QT_OPENGL' not in default_env
+    assert 'UseSoftwareOpenGL' not in (home/'user.cfg').read_text()
+    _,software_env=launch_spec(gui,home,scratch,config,software_opengl=True)
+    assert software_env['QT_OPENGL']=='software'
+    assert 'Name="UseSoftwareOpenGL" Value="1"' in (home/'user.cfg').read_text()
+    assert gui.read_bytes()==b'fixture'
 
 
 def test_owned_ascii_scratch_lives_until_child_exit_and_is_then_cleared(tmp_path):

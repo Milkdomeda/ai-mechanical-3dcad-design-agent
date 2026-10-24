@@ -11,7 +11,7 @@ from fea_gui_evidence import digest,pin,read_json,write_json
 from fea_gui_input import compare_inputs
 from fea_gui_native import CASE_IDS
 from fea_gui_session import launch_spec,owned_gui_process,descendant
-from fea_r1_runtime import canonical_path,verify_runtime
+from fea_r1_runtime import canonical_path,verify_runtime,tree_inventory
 
 
 def assess_case(value,reference,exported):
@@ -24,7 +24,7 @@ def assess_case(value,reference,exported):
     return {'native':value,'gui_objects':objects,'input_comparison':comparison,'status':'passed' if valid else 'failed'}
 
 
-def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None):
+def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False):
     if not case_ids or len(case_ids)!=len(set(case_ids)) or any(key not in CASE_IDS for key in case_ids):raise ValueError('fixed GUI cases required')
     if sys.platform not in ('darwin','win32'):raise ValueError('native GUI platform not supported')
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
@@ -44,7 +44,8 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     report['producer']=producer
     def build(owned):
         home=owned.path/'user-home';home.mkdir()
-        argv,env=launch_spec(gui,home,owned.path,config)
+        argv,env=launch_spec(gui,home,owned.path,config,software_opengl=software_opengl)
+        report['requested_opengl']='software' if software_opengl else 'default'
         request={'schema_version':'P0NativeGuiRequest/v1','request_id':request_id,'workspace':str(target),'home':str(canonical_path(home)),'scratch':str(canonical_path(owned.path)),'config':config,'native':native,'case_ids':list(case_ids),'worker_sources':sources,'mode':'restore_generated_fixtures' if producer else 'build_fixtures','producer':producer}
         write_json(request_path,request)
         macro=owned.path/'P0GuiAutomation.FCMacro'
@@ -63,7 +64,12 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
                 startup_verified=True;report['startup']=pin(path);report['startup_pid']=pid
         return tick
     def finalize(*args):
-        if verify_runtime(config)!=native:raise ValueError('runtime changed during GUI automation')
+        try:
+            if verify_runtime(config)!=native:raise ValueError('runtime changed during GUI automation')
+        except Exception:
+            actual=tree_inventory(runtime);expected=manifest['tree']
+            report['runtime_changes']={'added':sorted(set(actual)-set(expected)),'removed':sorted(set(expected)-set(actual)),'changed':sorted(k for k in set(actual)&set(expected) if actual[k]!=expected[k])}
+            raise
         report['runtime_unchanged']=True
     try:
         outcome=owned_gui_process(target/'logs',scratch_root,build,observe,timeout_seconds=600,finalize=finalize)
@@ -89,16 +95,16 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     return report
 
 
-def run_gui_automation(config,workspace,scratch_root,*,case_ids=CASE_IDS):
+def run_gui_automation(config,workspace,scratch_root,*,case_ids=CASE_IDS,software_opengl=False):
     """Build and then verify frozen deliveries in an independent GUI process."""
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
     if target.exists() or target.is_relative_to(Path(__file__).resolve().parents[1]):raise ValueError('new external GUI workspace required')
     verify_runtime(config)
     target.mkdir(mode=0o700)
-    first=_run_gui_pass(config,target/'build',scratch_root,case_ids=case_ids)
+    first=_run_gui_pass(config,target/'build',scratch_root,case_ids=case_ids,software_opengl=software_opengl)
     report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','passes':{'build':first},'cases':first['cases'],'runtime_unchanged':first['runtime_unchanged']}
     if first['automated_status']=='passed':
-        second=_run_gui_pass(config,target/'roundtrip',scratch_root,case_ids=case_ids,producer=first['native'])
+        second=_run_gui_pass(config,target/'roundtrip',scratch_root,case_ids=case_ids,producer=first['native'],software_opengl=software_opengl)
         report['passes']['roundtrip']=second;report['cases']=second['cases']
         report['runtime_unchanged']=first['runtime_unchanged'] and second['runtime_unchanged']
         if second['automated_status']=='passed' and first['startup_pid']!=second['startup_pid']:report['automated_status']='passed'

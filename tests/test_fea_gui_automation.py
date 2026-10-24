@@ -25,3 +25,14 @@ def test_gui_automation_cli_is_explicit_and_rejects_arbitrary_source_restore():
     invalid=subprocess.run([sys.executable,str(script),'--source','customer.FCStd'],capture_output=True,text=True)
     assert invalid.returncode==2
     assert 'Traceback' not in invalid.stderr
+
+
+def test_gui_summary_roundtrips_chinese_paths_through_legacy_windows_console():
+    import runpy
+    module=runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts'/'fea_gui_automation.py'))
+    path=Path('GUI automation 中文')
+    result={'automated_status':'failed','visual_review_status':'pending','overall_p0_status':'blocked','error':'路径错误'}
+    text=module['result_summary'](path,result)
+    restored=json.loads(text.encode('cp1252').decode('cp1252'))
+    assert restored['report']==str(path/'gui-automation.json')
+    assert restored['error']=='路径错误'

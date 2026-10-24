@@ -5,6 +5,11 @@ from pathlib import Path
 import sys
 
 
+def result_summary(workspace,result):
+    # ASCII transport also works with Windows consoles using legacy code pages.
+    return json.dumps({'report':str(workspace/'gui-automation.json'),'automated_status':result['automated_status'],'visual_review_status':result['visual_review_status'],'overall_p0_status':result['overall_p0_status'],'error':result.get('error')},ensure_ascii=True)
+
+
 def main():
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tests'))
     from fea_gui_native import CASE_IDS
@@ -13,11 +18,12 @@ def main():
     parser.add_argument('--workspace',type=Path,required=True)
     parser.add_argument('--native-scratch-root',type=Path,required=True)
     parser.add_argument('--case',action='append',choices=CASE_IDS)
+    parser.add_argument('--software-opengl',action='store_true',help='Explicitly request the official distribution\'s bundled software OpenGL; no runtime files are changed.')
     args=parser.parse_args()
     from fea_native_probe import parse_config
     from fea_gui_automation import run_gui_automation
-    result=run_gui_automation(parse_config(args.config),args.workspace,args.native_scratch_root,case_ids=tuple(args.case or CASE_IDS))
-    print(json.dumps({'report':str(args.workspace/'gui-automation.json'),'automated_status':result['automated_status'],'visual_review_status':result['visual_review_status'],'overall_p0_status':result['overall_p0_status'],'error':result.get('error')},ensure_ascii=False))
+    result=run_gui_automation(parse_config(args.config),args.workspace,args.native_scratch_root,case_ids=tuple(args.case or CASE_IDS),software_opengl=args.software_opengl)
+    print(result_summary(args.workspace,result))
     return 0 if result['automated_status']=='passed' else 3
 
 

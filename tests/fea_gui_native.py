@@ -133,6 +133,19 @@ def run(request_path):
     def capture_field():
         key,radio,unit,values=state['field_values'][state['field_index']]
         if not values or len(values)!=state['case']['mesh_inventory']['nodes'] or not all(math.isfinite(v) for v in values):raise ValueError('invalid native scalar field')
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget
+        contexts=[]
+        for widget in Gui.getMainWindow().findChildren(QOpenGLWidget):
+            if not widget.isVisible():continue
+            widget.makeCurrent()
+            try:
+                context=widget.context()
+                if context is None:raise ValueError('native viewport has no OpenGL context')
+                format=context.format()
+                contexts.append({'valid':context.isValid(),'version':[format.majorVersion(),format.minorVersion()],'is_opengl_es':context.isOpenGLES()})
+            finally:widget.doneCurrent()
+        if not contexts or not all(c['valid'] and c['version'][0]>=2 for c in contexts):raise ValueError('native viewport needs valid OpenGL 2.0 or newer')
+        state['case']['graphics_contexts']=contexts
         record={'radio_button':radio,'unit':unit,'raw_min':min(values),'raw_max':max(values),'nodal_values_sha256':hashlib.sha256(json.dumps(values,allow_nan=False).encode()).hexdigest()}
         for name in ('le_min','le_max'):
             widget=Gui.getMainWindow().findChild(QtGui.QWidget,name)

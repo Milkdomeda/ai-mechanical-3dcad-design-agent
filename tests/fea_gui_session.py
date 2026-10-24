@@ -18,8 +18,8 @@ class StopSession(Exception):
     pass
 
 
-def launch_spec(gui,home,scratch,config):
-    home=canonical_path(home);scratch=canonical_path(scratch)
+def launch_spec(gui,home,scratch,config,*,software_opengl=False):
+    gui=canonical_path(gui);home=canonical_path(home);scratch=canonical_path(scratch)
     root=ET.Element('FCParameters');group=ET.SubElement(root,'FCParamGroup',Name='Root')
     base=ET.SubElement(group,'FCParamGroup',Name='BaseApp')
     prefs=ET.SubElement(base,'FCParamGroup',Name='Preferences')
@@ -28,6 +28,9 @@ def launch_spec(gui,home,scratch,config):
     document=ET.SubElement(prefs,'FCParamGroup',Name='Document')
     ET.SubElement(document,'FCBool',Name='AutoSaveEnabled',Value='0')
     ET.SubElement(document,'FCBool',Name='SaveBackup',Value='0')
+    if software_opengl:
+        view=ET.SubElement(prefs,'FCParamGroup',Name='View')
+        ET.SubElement(view,'FCBool',Name='UseSoftwareOpenGL',Value='1')
     fem=ET.SubElement(ET.SubElement(prefs,'FCParamGroup',Name='Mod'),'FCParamGroup',Name='Fem')
     for group_name,key,tool in (('Gmsh','gmshBinaryPath','gmsh'),('Ccx','ccxBinaryPath','ccx')):
         child=ET.SubElement(fem,'FCParamGroup',Name=group_name)
@@ -39,6 +42,7 @@ def launch_spec(gui,home,scratch,config):
     (home/'system.cfg').write_text('<FCParameters><FCParamGroup Name="Root"/></FCParameters>',encoding='utf-8')
     env={k:v for k,v in os.environ.items() if k in {'SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'}}
     env.update(HOME=str(home),USERPROFILE=str(home),FREECAD_USER_HOME=str(home),FREECAD_USER_DATA=str(home),FREECAD_USER_TEMP=str(scratch),TMPDIR=str(scratch),TEMP=str(scratch),TMP=str(scratch),PATH=os.defpath,PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',LANG='en_US.UTF-8')
+    if software_opengl:env['QT_OPENGL']='software'
     return (str(gui),'-u',str(home/'user.cfg'),'-s',str(home/'system.cfg')),env
 
 
