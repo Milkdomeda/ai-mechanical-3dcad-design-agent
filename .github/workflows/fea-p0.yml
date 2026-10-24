@@ -74,6 +74,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native automated FEA feasibility failed' }
           $report = Get-Content -LiteralPath (Join-Path $root 'probe.json') -Raw | ConvertFrom-Json
           if ($report.automated_status -ne 'passed' -or $report.status -ne 'blocked') { throw 'Expected automated PASS with separately unmet interactive/calibration gates' }
+      - name: Record ASCII-path diagnostic control after native failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $original = Join-Path $env:RUNNER_TEMP 'FEA 空格 evidence/probe.json'
+          if (Test-Path -LiteralPath $original) {
+            $control = Join-Path $env:RUNNER_TEMP 'FEA ASCII control'
+            uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/fea-config.json" --workspace $control --phase p0 --automated-only
+            # This diagnostic never substitutes for the failed Unicode gate.
+            exit $LASTEXITCODE
+          }
       - name: Upload synthetic evidence, including failure logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -81,6 +92,7 @@ jobs:
           name: windows-fea-p0-evidence
           path: |
             ${{ runner.temp }}/FEA 空格 evidence/
+            ${{ runner.temp }}/FEA ASCII control/
             ${{ runner.temp }}/process-tests.xml
             ${{ runner.temp }}/full-offline.xml
           retention-days: 14

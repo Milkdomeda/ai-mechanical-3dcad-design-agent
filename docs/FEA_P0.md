@@ -20,10 +20,17 @@ python scripts/fea_p0_config.py --root <verified-extracted-root> --output <confi
 python scripts/fea_acceptance.py --config <config.json> --workspace <new-isolated-root> --phase p0 --automated-only
 ```
 
-The workspace must be new and outside the source checkout. Paths with spaces
-and non-ASCII characters remain supported; the Windows console command uses
-ASCII Python escapes rather than renaming the workspace. FreeCAD settings
-are redirected to this isolated workspace.
+The workspace must be new and outside the source checkout. The probe retains
+spaces and non-ASCII characters to test their compatibility; it never renames
+the workspace to hide a failure. The Windows console command uses ASCII
+Python escapes and the native Gmsh writer uses its relative-directory API.
+FreeCAD settings are redirected to this isolated workspace.
+
+The tested official Windows build fails while saving a mesh-containing FCStd
+when its SMESH temporary output is under a non-ASCII path. This is a P0
+compatibility blocker. It is not resolved by the Python command transport or
+relative Gmsh paths. No Windows Unicode-path or native-delivery support is
+claimed while this failure remains.
 
 The runner builds standard native FEM objects, generates Gmsh second-order
 tetrahedra and the unmodified native CalculiX input, executes CalculiX,

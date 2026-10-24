@@ -183,6 +183,18 @@ def _native_cancellation(config, workspace):
     return {"status": "passed" if passed else "failed", "phase": "startup", "programs": programs, "scope": "actual native executable startup cancellation, not a long-running convergence test"}
 
 
+def record_native_cancellation(report, config, workspace):
+    # Saving an FCStd may fail after native input generation. Cancellation
+    # remains independently testable on those generated synthetic inputs.
+    if any((workspace / "axial_bar").glob("*.inp")):
+        check = _native_cancellation(config, workspace)
+    else:
+        check = {"status": "not_executed", "details": "No generated axial native input"}
+    report["checks"]["native_startup_cancellation"] = check
+    if check["status"] != "passed":
+        report["automated_status"] = report["status"] = "failed"
+
+
 def probe_native(config: dict, workspace: Path) -> dict:
     _validate_config(config)
     identities = {name: verify_tool(pin) for name, pin in config["tools"].items()}
@@ -219,12 +231,7 @@ def probe_native(config: dict, workspace: Path) -> dict:
     if "error" not in result and any(result.get("versions", {}).get(name) != pin["version"] for name, pin in config["tools"].items()):
         raise ProbeError("TOOL_VERSION_MISMATCH")
     report = assess_native(result)
-    # Cancellation is an independent capability; a curved-load discrepancy
-    # must not suppress it when the axial native input was generated safely.
-    if result.get("cases", {}).get("axial_bar", {}).get("input_file"):
-        report["checks"]["native_startup_cancellation"] = _native_cancellation(config, workspace)
-        if report["checks"]["native_startup_cancellation"]["status"] != "passed":
-            report["automated_status"] = report["status"] = "failed"
+    record_native_cancellation(report, config, workspace)
     for name, pin in config["tools"].items():
         if verify_tool(pin) != identities[name]:
             raise ProbeError("TOOL_IDENTITY_CHANGED")

@@ -209,3 +209,17 @@ def test_force_sum_alone_cannot_pass_distribution_or_field_gate(kind):
     if kind == 'curved_missing': worker.pop('curved_multiface', None)
     if kind == 'inventory_missing': worker['cases']['axial_bar'].pop('result_inventory', None)
     assert assess_native(worker)['automated_status'] == 'failed'
+
+
+def test_native_cancellation_still_runs_after_save_failure(tmp_path, monkeypatch):
+    import fea_native_probe as probe
+    axial = tmp_path / 'axial_bar'
+    axial.mkdir()
+    (axial / 'Mesh.inp').write_text('native generated input')
+    calls = []
+    monkeypatch.setattr(probe, '_native_cancellation', lambda config, workspace: calls.append(workspace) or {'status': 'passed'})
+    report = {'status': 'failed', 'automated_status': 'failed', 'checks': {}}
+    probe.record_native_cancellation(report, {}, tmp_path)
+    assert calls == [tmp_path]
+    assert report['checks']['native_startup_cancellation']['status'] == 'passed'
+    assert report['status'] == report['automated_status'] == 'failed'
