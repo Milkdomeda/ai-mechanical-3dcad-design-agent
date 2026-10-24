@@ -126,8 +126,8 @@ and all original binaries must remain identical. Original numerical manifests
 are retained; a separate GUI configuration and manifest pin the materialized
 revision. Source, compiler and driver provenance accompany the CI artifacts.
 
-[Run 40095737180](https://github.com/Milkdomeda/ai-mechanical-3dcad-design-agent/actions/runs/40095737180)
-at `e2e44a6` passed the complete offline suite, eight repeated native CAS races,
+[Run 40104183802](https://github.com/Milkdomeda/ai-mechanical-3dcad-design-agent/actions/runs/40104183802)
+at `4266ecf` passed the complete offline suite, eight repeated native CAS races,
 unchanged numerical P0 checks, and all five native GUI cases with independent
 process round trips on Windows Server 2025 x64 and Windows 11 ARM64 using x64
 Python/FreeCAD compatibility. The Server viewport reported OpenGL 3.0 with the
@@ -135,6 +135,11 @@ software profile. This establishes that exact test environment; it does not
 establish Windows 11 x64 desktop or hardware graphics compatibility. macOS uses
 CalculiX 2.23, while the pinned Windows distribution supplies CalculiX 2.22;
 both use Gmsh 4.15.0 and FreeCAD 1.1.3.
+
+The later viewport gate checks the original native pixels for visible palette
+foreground, complete framing and adequate screen coverage. Blank, clipped or
+tiny exports fail even when the result task opens and numerical fields are
+complete. GUI redraw and capture retries preserve failed images for diagnosis.
 
 Where project acceptance authorizes an assistant operator, visual review is a
 separate hash-bound assistant receipt. It never becomes a human attestation.

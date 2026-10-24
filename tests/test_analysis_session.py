@@ -28,7 +28,7 @@ def session(tmp_path, *, unavailable=False):
     spec.update(design_id='fixture-design', analysis_id='static', source=None, unresolved=[], status='draft')
     spec['mesh'] = {'element_type': 'C3D10', 'initial_size': {'value': '4', 'unit': 'mm'}, 'refinement_ratio': {'value': '.7', 'unit': '1'}, 'levels': 3, 'minimum_scaled_jacobian': {'value': '.1', 'unit': '1'}, 'minimum_thickness_elements': 2}
     spec['budget'] = {'wall_seconds': 300, 'stage_seconds': 120, 'threads': 1, 'max_nodes': 100000, 'max_elements': 100000, 'max_disk_bytes': 1000000000, 'max_attempts': 1, 'memory_mode': 'observed_only', 'max_memory_mb': 1024}
-    settings = {'runtime': {'manifest_sha256': 'c' * 64}, 'configuration_sha256': 'd' * 64, 'tools': {
+    settings = {'configuration_path': str(tmp_path / 'config/fea.json'), 'runtime': {'manifest_sha256': 'c' * 64}, 'configuration_sha256': 'd' * 64, 'tools': {
         name: {'path': str(tmp_path / name), 'version': version, 'sha256': sha(name.encode()), 'identity': {'volume': 1, 'file_index': index}}
         for index, (name, version) in enumerate([('freecadcmd', '1.1.3'), ('freecadgui', '1.1.3'), ('gmsh', '4.15.0'), ('ccx', '2.23')], 1)}}
     def inspect(context):
@@ -53,7 +53,7 @@ def session(tmp_path, *, unavailable=False):
         image = b'\x89PNG\r\n\x1a\nsynthetic unit-test producer image'
         (folder / 'regions.png').write_bytes(image)
         spec = context['spec']
-        return {'schema_version': 'AnalysisPreviewReceipt/v1', 'status': 'completed', 'operator': 'assistant', 'design_id': 'fixture-design', 'analysis_id': 'static', 'spec_sha256': context['spec_sha256'], 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'visible_region_ids': sorted(entry['region_id'] for entry in context['regions']['bindings']), 'images': [{'relative_path': 'regions.png', 'sha256': sha(image)}]}
+        return {'schema_version': 'AnalysisPreviewReceipt/v1', 'status': 'completed', 'operator': 'assistant', 'design_id': spec['design_id'], 'analysis_id': spec['analysis_id'], 'spec_sha256': context['spec_sha256'], 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'visible_region_ids': sorted(entry['region_id'] for entry in context['regions']['bindings']), 'images': [{'relative_path': 'regions.png', 'sha256': sha(image)}]}
     store = AnalysisStore(tmp_path)
     service = AnalysisSessionService(store, configuration_loader=lambda: deepcopy(settings), geometry_inspector=inspect, knowledge_loader=lambda context: knowledge.retrieve(**context), gui_previewer=preview)
     request = {'schema_version': 'AnalysisPrepareRequest/v1', 'source_path': str(source), 'expected_source_sha256': source_sha, 'draft_spec': spec,
@@ -228,6 +228,20 @@ def test_concurrent_prepares_have_one_revision_winner(tmp_path):
     assert set(results) - {2} == {'ANALYSIS_REVISION_CONFLICT'}
     assert store.read_state('fixture-design', 'static')['spec_revision'] == 2
     assert not list((root / 'analyses/static/revisions').glob('.staging-*'))
+
+
+def test_frozen_revision_keeps_explicit_configuration_and_survives_new_spec(tmp_path):
+    from mechanical_design_agent.analysis_revision import read_artifact, read_frozen_revision
+    root, service, store, request, settings = session(tmp_path)
+    prepared = service.prepare(design_id='fixture-design', analysis_id='static', request=request, expected_revision=None)
+    approved = service.approve(design_id='fixture-design', analysis_id='static', spec_sha256=prepared['spec_sha256'], decision_text='确认', expected_revision=prepared['state_revision'])
+    reference = approved['current_revision']
+    next_spec = service.prepare(design_id='fixture-design', analysis_id='static', request=request, expected_revision=approved['state_revision'])
+    folder, frozen = read_frozen_revision(store, 'fixture-design', 'static', reference)
+    tools = json.loads(read_artifact(folder, frozen['artifacts']['tools']).content)
+    assert tools['configuration_path'] == settings['configuration_path']
+    assert frozen['spec_status'] == 'approved' and frozen['spec_revision'] == 1
+    assert next_spec['spec_revision'] == 2
 
 
 def test_crash_after_revision_publish_preserves_previous_pointer(tmp_path, monkeypatch):

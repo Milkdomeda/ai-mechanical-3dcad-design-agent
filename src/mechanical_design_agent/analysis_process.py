@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 import importlib
 import os
 from pathlib import Path
+import stat
 import threading
 import time
 from typing import Mapping
@@ -19,6 +20,7 @@ class ProcessRequest:
     stderr_path: Path
     env: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float = 300
+    max_log_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class ProcessController:
             raise ValueError("nonempty explicit argv required")
         if not 0 < request.timeout_seconds <= 86400:
             raise ValueError("bounded positive timeout required")
+        if request.max_log_bytes is not None and (type(request.max_log_bytes) is not int or not 0 < request.max_log_bytes <= 2**40):
+            raise ValueError('bounded positive integer log budget required')
         environment = dict(request.env)
         environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
         request = replace(request, env=environment)
@@ -96,6 +100,14 @@ class ProcessController:
             if record is None:
                 return ProcessOutcome(None, "identity_mismatch", identity)
             _, child, started, request = record
+            if request.max_log_bytes is not None:
+                sizes = [Path(path).lstat() for path in (request.stdout_path, request.stderr_path)]
+                if any(not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 for value in sizes) or sum(value.st_size for value in sizes) > request.max_log_bytes:
+                    # This is a polling budget, not a filesystem quota. Retain
+                    # the original bytes and report failure even if the child
+                    # exited between writing the excess and this observation.
+                    code = child.poll()
+                    return self._finish(identity, child, code if code is not None else child.terminate(), 'budget_exceeded')
             code = child.poll()
             if code is not None:
                 return self._finish(identity, child, code, "exited")
@@ -104,7 +116,7 @@ class ProcessController:
             return None
 
     def terminate(self, identity: ProcessIdentity, *, reason: str) -> ProcessOutcome:
-        if reason not in {"cancelled", "timed_out", "interrupted"}:
+        if reason not in {"cancelled", "timed_out", "interrupted", "budget_exceeded"}:
             raise ValueError("invalid termination reason")
         with self._lock:
             if identity in self._results:

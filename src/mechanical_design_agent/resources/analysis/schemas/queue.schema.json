@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:queue:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisQueue/v1"
+    },
+    "queue_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workspace_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "design_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "analysis_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "run_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "request_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "claimed"
+            ]
+          },
+          "worker_uuid": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "design_id",
+          "analysis_id",
+          "run_id",
+          "request_sha256",
+          "status",
+          "worker_uuid"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 10000
+    },
+    "claim_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recovery_required": {
+      "type": "boolean"
+    },
+    "recovery_diagnostic": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "queue_revision",
+    "workspace_id",
+    "entries",
+    "claim_id",
+    "recovery_required",
+    "recovery_diagnostic"
+  ],
+  "additionalProperties": false
+}

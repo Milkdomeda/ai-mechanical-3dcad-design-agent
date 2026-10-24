@@ -135,7 +135,7 @@ class AnalysisStore:
                     'snapshot_ref':{'relative_path':relative,'sha256':expected_sha256},
                 }
                 _capture_source(stage, source)
-                state={'schema_version':'AnalysisSession/v1','design_id':design_id,'analysis_id':analysis_id,'state_revision':0,'status':'draft' if initial.sha256==model.sha256 else 'needs_input','source':source,'spec_revision':0,'current_revision':None,'approval':None,'active_run_id':None,'latest_delivery':None,'accepted_delivery':None,'created_at':now,'updated_at':now}
+                state={'schema_version':'AnalysisSession/v1','design_id':design_id,'analysis_id':analysis_id,'state_revision':0,'status':'draft' if initial.sha256==model.sha256 else 'needs_input','source':source,'spec_revision':0,'current_revision':None,'approval':None,'active_run_id':None,'latest_run_id':None,'latest_delivery':None,'accepted_delivery':None,'created_at':now,'updated_at':now}
                 secure_fs.atomic_publish_new(stage/'analysis.json',canonical_record(state,schema_name='session'))
                 secure_fs.atomic_publish_directory(stage,final)
                 stage=None
@@ -180,6 +180,7 @@ class AnalysisStore:
 
     def rebind_source(self, *, design_id: str, analysis_id: str, source_path: Path, expected_sha256: str, expected_revision: int) -> JsonObject:
         """New draft source only; frozen revisions keep their own capture refs."""
+        from .analysis_queue import pending, scheduler_guard
         if type(expected_revision) is not int or expected_revision < 0 or type(expected_sha256) is not str or re.fullmatch('[0-9a-f]{64}', expected_sha256) is None:
             raise AnalysisError('ANALYSIS_REVISION_INVALID', 'an exact state revision and source SHA-256 are required')
         requested = Path(source_path).expanduser()
@@ -187,12 +188,12 @@ class AnalysisStore:
             raise AnalysisError('ANALYSIS_SOURCE_INVALID', 'an explicit absolute FCStd source path is required')
         design = self._design(design_id)
         root = self._root(design_id, analysis_id)
-        with secure_fs.exclusive_file_lock(design / '.design.lock'):
+        with scheduler_guard(self.workspace) as scheduler, secure_fs.exclusive_file_lock(design / '.design.lock'):
             with secure_fs.exclusive_file_lock(root / '.analysis.lock'):
                 state = self._state(root, design_id, analysis_id)
                 if state['state_revision'] != expected_revision:
                     raise AnalysisError('ANALYSIS_REVISION_CONFLICT', 'analysis revision changed before source rebind')
-                if state['active_run_id'] is not None or state['status'] in ('queued', 'running'):
+                if pending(scheduler, design_id, analysis_id) or state['active_run_id'] is not None or state['status'] in ('queued', 'running'):
                     raise AnalysisError('ANALYSIS_BUSY', 'an active run prevents changing the current source')
                 _, design_read = _read(design / 'design.json')
                 design_state = _validate_design_state(json.loads(design_read.content.decode('utf-8')))

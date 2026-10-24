@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:idempotency:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisIdempotency/v1"
+    },
+    "idempotency_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fingerprint_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "idempotency_sha256",
+    "fingerprint_sha256",
+    "run_id",
+    "request_sha256"
+  ],
+  "additionalProperties": false
+}

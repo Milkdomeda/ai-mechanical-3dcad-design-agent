@@ -111,6 +111,27 @@ def test_python_logs_are_utf8_even_with_conflicting_parent_encoding(tmp_path):
     assert (tmp_path / "stdout.log").read_text(encoding="utf-8").strip() == "静力学"
 
 
+def test_log_budget_stops_owned_process_and_retains_raw_bytes(tmp_path):
+    controller = ProcessController()
+    script = "import sys,time; print('静力学' * 3000, flush=True); time.sleep(20)"
+    configured = replace(request(tmp_path, [sys.executable, '-c', script]), max_log_bytes=4096)
+    identity = controller.start(configured)
+    try:
+        outcome = wait_for(lambda: controller.poll(identity))
+        assert outcome.reason == 'budget_exceeded'
+        assert (tmp_path / 'stdout.log').stat().st_size > 4096
+        assert '静力学' in (tmp_path / 'stdout.log').read_text(encoding='utf-8')
+    finally:
+        controller.terminate(identity, reason='cancelled')
+
+
+@pytest.mark.parametrize('limit', [0, -1, True, 1.5, 2**41])
+def test_invalid_log_budget_never_starts_a_child(tmp_path, limit):
+    with pytest.raises(ValueError, match='log budget'):
+        ProcessController().start(replace(request(tmp_path), max_log_bytes=limit))
+    assert not (tmp_path / 'stdout.log').exists()
+
+
 def test_owner_exit_cleans_process_tree(tmp_path):
     owner = tmp_path / "owner.py"
     owner.write_text("from pathlib import Path\nimport os,time\nfrom mechanical_design_agent.analysis_process import ProcessController,ProcessRequest\n"

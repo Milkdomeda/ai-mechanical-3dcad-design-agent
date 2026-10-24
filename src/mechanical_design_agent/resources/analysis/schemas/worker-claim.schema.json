@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:worker-claim:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisWorkerClaim/v1"
+    },
+    "workspace_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "worker_uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "secret": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "ready",
+        "stopped",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "pid": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_ns": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "port": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "diagnostic": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "workspace_id",
+    "worker_uuid",
+    "secret",
+    "state",
+    "pid",
+    "created_ns",
+    "port",
+    "requested_at",
+    "updated_at",
+    "diagnostic"
+  ],
+  "additionalProperties": false
+}

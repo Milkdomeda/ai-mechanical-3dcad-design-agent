@@ -45,7 +45,7 @@ def _policy(spec):
 
 
 def _tools(settings, spec):
-    return {'configuration_sha256': settings['configuration_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'adapter_version': 'native-solid-static-v1', 'policy_sha256': _policy(spec), 'tools': settings['tools']}
+    return {'configuration_path': settings['configuration_path'], 'configuration_sha256': settings['configuration_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'adapter_version': 'native-solid-static-v1', 'policy_sha256': _policy(spec), 'tools': settings['tools']}
 
 
 class AnalysisSessionService:

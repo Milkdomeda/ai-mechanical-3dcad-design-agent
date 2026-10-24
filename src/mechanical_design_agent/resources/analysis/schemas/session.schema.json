@@ -201,6 +201,17 @@
           "type": "null"
         }
       ]
+    },
+    "latest_run_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -217,7 +228,8 @@
     "created_at",
     "updated_at",
     "current_revision",
-    "approval"
+    "approval",
+    "latest_run_id"
   ],
   "additionalProperties": false
 }
