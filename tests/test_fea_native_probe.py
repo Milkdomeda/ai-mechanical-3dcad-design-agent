@@ -191,3 +191,8 @@ def test_console_transport_is_ascii_without_losing_unicode_paths(tmp_path):
     completed = subprocess.run([sys.executable, "-c", statement], capture_output=True, encoding="utf-8", env=env)
     assert completed.returncode == 0
     assert completed.stdout.strip() == "中文 请求"
+
+
+def test_windows_probe_checkout_preserves_frozen_resource_bytes():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/fea-p0.yml").read_text(encoding="utf-8")
+    assert workflow.index("git config --global core.autocrlf false") < workflow.index("uses: actions/checkout@")
