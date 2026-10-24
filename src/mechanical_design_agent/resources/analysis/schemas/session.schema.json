@@ -23,7 +23,8 @@
         "needs_input",
         "needs_attention",
         "completed",
-        "cancelled"
+        "cancelled",
+        "ready_for_review"
       ]
     },
     "state_revision": {
@@ -146,6 +147,60 @@
     "updated_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "current_revision": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approval": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -160,7 +215,9 @@
     "latest_delivery",
     "accepted_delivery",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "current_revision",
+    "approval"
   ],
   "additionalProperties": false
 }

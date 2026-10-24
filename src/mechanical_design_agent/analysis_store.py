@@ -135,7 +135,7 @@ class AnalysisStore:
                     'snapshot_ref':{'relative_path':relative,'sha256':expected_sha256},
                 }
                 _capture_source(stage, source)
-                state={'schema_version':'AnalysisSession/v1','design_id':design_id,'analysis_id':analysis_id,'state_revision':0,'status':'draft' if initial.sha256==model.sha256 else 'needs_input','source':source,'spec_revision':0,'active_run_id':None,'latest_delivery':None,'accepted_delivery':None,'created_at':now,'updated_at':now}
+                state={'schema_version':'AnalysisSession/v1','design_id':design_id,'analysis_id':analysis_id,'state_revision':0,'status':'draft' if initial.sha256==model.sha256 else 'needs_input','source':source,'spec_revision':0,'current_revision':None,'approval':None,'active_run_id':None,'latest_delivery':None,'accepted_delivery':None,'created_at':now,'updated_at':now}
                 secure_fs.atomic_publish_new(stage/'analysis.json',canonical_record(state,schema_name='session'))
                 secure_fs.atomic_publish_directory(stage,final)
                 stage=None
