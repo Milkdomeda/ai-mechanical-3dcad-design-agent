@@ -144,8 +144,8 @@ def run(request_path):
                 format=context.format()
                 contexts.append({'valid':context.isValid(),'version':[format.majorVersion(),format.minorVersion()],'is_opengl_es':context.isOpenGLES()})
             finally:widget.doneCurrent()
-        if not contexts or not all(c['valid'] and c['version'][0]>=2 for c in contexts):raise ValueError('native viewport needs valid OpenGL 2.0 or newer')
         state['case']['graphics_contexts']=contexts
+        if not contexts or not all(c['valid'] and c['version'][0]>=2 for c in contexts):raise ValueError('native viewport needs valid OpenGL 2.0 or newer')
         record={'radio_button':radio,'unit':unit,'raw_min':min(values),'raw_max':max(values),'nodal_values_sha256':hashlib.sha256(json.dumps(values,allow_nan=False).encode()).hexdigest()}
         for name in ('le_min','le_max'):
             widget=Gui.getMainWindow().findChild(QtGui.QWidget,name)

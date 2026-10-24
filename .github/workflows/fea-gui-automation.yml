@@ -121,10 +121,15 @@ jobs:
         run: |
           uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --workspace "$env:RUNNER_TEMP/GUI numerical P0 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --phase p0 --automated-only
           if ($LASTEXITCODE -ne 0) { throw 'Unchanged numerical P0 gates failed' }
+      - name: Materialize separate official bundled OpenGL GUI test environment
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_gui_environment.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --output "$env:RUNNER_TEMP/gui-environment.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Explicit native GUI environment preparation failed' }
       - name: Run five native GUI cases and independent-process round trip
         shell: pwsh
         run: |
-          uv run --offline --group test python scripts/fea_gui_automation.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --workspace "$env:RUNNER_TEMP/GUI automation 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --software-opengl
+          uv run --offline --group test python scripts/fea_gui_automation.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/GUI automation 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --gui-environment "$env:RUNNER_TEMP/gui-environment.json"
           if ($LASTEXITCODE -ne 0) { throw 'Actual native GUI checks failed; do not substitute headless or mark a skip as passed' }
           $report = Get-Content -LiteralPath "$env:RUNNER_TEMP/GUI automation 中文/gui-automation.json" -Raw | ConvertFrom-Json
           if ($report.automated_status -ne 'passed' -or @($report.cases.PSObject.Properties).Count -ne 5) { throw 'Incomplete GUI matrix' }
@@ -153,9 +158,13 @@ jobs:
             ${{ runner.temp }}/GUI automation 中文/
             ${{ runner.temp }}/GUI numerical P0 中文/
             ${{ runner.temp }}/gui-platform.json
+            ${{ runner.temp }}/gui-environment.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-materialization/
             ${{ runner.temp }}/gui-offline.xml
             ${{ runner.temp }}/gui-cas-*.xml
             ${{ runner.temp }}/freecad-r1-runtime/config.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-config.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-runtime-manifest.json
             ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
             ${{ runner.temp }}/freecad-r1-runtime/identity/
           retention-days: 14

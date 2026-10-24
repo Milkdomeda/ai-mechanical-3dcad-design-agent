@@ -18,7 +18,8 @@ class StopSession(Exception):
     pass
 
 
-def launch_spec(gui,home,scratch,config,*,software_opengl=False):
+def launch_spec(gui,home,scratch,config,*,software_opengl=False,desktop_opengl=False):
+    if software_opengl and desktop_opengl:raise ValueError('choose exactly one OpenGL loader')
     gui=canonical_path(gui);home=canonical_path(home);scratch=canonical_path(scratch)
     root=ET.Element('FCParameters');group=ET.SubElement(root,'FCParamGroup',Name='Root')
     base=ET.SubElement(group,'FCParamGroup',Name='BaseApp')
@@ -43,6 +44,7 @@ def launch_spec(gui,home,scratch,config,*,software_opengl=False):
     env={k:v for k,v in os.environ.items() if k in {'SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'}}
     env.update(HOME=str(home),USERPROFILE=str(home),FREECAD_USER_HOME=str(home),FREECAD_USER_DATA=str(home),FREECAD_USER_TEMP=str(scratch),TMPDIR=str(scratch),TEMP=str(scratch),TMP=str(scratch),PATH=os.defpath,PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',LANG='en_US.UTF-8')
     if software_opengl:env['QT_OPENGL']='software'
+    if desktop_opengl:env['QT_OPENGL']='desktop'
     return (str(gui),'-u',str(home/'user.cfg'),'-s',str(home/'system.cfg')),env
 
 

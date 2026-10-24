@@ -24,12 +24,17 @@ def assess_case(value,reference,exported):
     return {'native':value,'gui_objects':objects,'input_comparison':comparison,'status':'passed' if valid else 'failed'}
 
 
-def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False):
+def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False,gui_environment=None):
     if not case_ids or len(case_ids)!=len(set(case_ids)) or any(key not in CASE_IDS for key in case_ids):raise ValueError('fixed GUI cases required')
     if sys.platform not in ('darwin','win32'):raise ValueError('native GUI platform not supported')
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
     if target.exists() or target.is_relative_to(Path(__file__).resolve().parents[1]):raise ValueError('new external GUI workspace required')
     native=verify_runtime(config)
+    environment=None
+    if gui_environment is not None:
+        from fea_gui_environment import verify_environment
+        environment=verify_environment(gui_environment,config)
+        if software_opengl:raise ValueError('prepared native Mesa profile requires a single desktop OpenGL loader')
     manifest=read_json(config['runtime']['manifest_path']);runtime=Path(manifest['runtime_root'])
     relative='Contents/MacOS/FreeCAD' if sys.platform=='darwin' else 'bin/freecad.exe'
     gui=runtime/relative
@@ -38,14 +43,15 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     request_id=uuid.uuid4().hex
     report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','request_id':request_id,'automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','cases':{},'runtime_unchanged':False,'platform':sys.platform,'gui_executable':pin(gui)}
     here=Path(__file__).parent;request_path=target/'request.json'
-    sources=[pin(here/name) for name in ('fea_gui_native.py','fea_gui_checks.py','fea_gui_plot.py','fea_gui_identity.py','fea_gui_session.py','fea_gui_automation.py')]
+    sources=[pin(here/name) for name in ('fea_gui_native.py','fea_gui_checks.py','fea_gui_plot.py','fea_gui_identity.py','fea_gui_session.py','fea_gui_automation.py','fea_gui_environment.py','fea_gui_compile.py')]
     sources.extend(pin(here/'fixtures'/'fea'/(name+'.json')) for name in ('axial_bar','cantilever'))
     startup_verified=False
     report['producer']=producer
     def build(owned):
         home=owned.path/'user-home';home.mkdir()
-        argv,env=launch_spec(gui,home,owned.path,config,software_opengl=software_opengl)
-        report['requested_opengl']='software' if software_opengl else 'default'
+        argv,env=launch_spec(gui,home,owned.path,config,software_opengl=software_opengl,desktop_opengl=environment is not None)
+        report['requested_opengl']=environment['profile'] if environment else ('software' if software_opengl else 'default')
+        report['gui_environment']=pin(gui_environment) if environment else None
         request={'schema_version':'P0NativeGuiRequest/v1','request_id':request_id,'workspace':str(target),'home':str(canonical_path(home)),'scratch':str(canonical_path(owned.path)),'config':config,'native':native,'case_ids':list(case_ids),'worker_sources':sources,'mode':'restore_generated_fixtures' if producer else 'build_fixtures','producer':producer}
         write_json(request_path,request)
         macro=owned.path/'P0GuiAutomation.FCMacro'
@@ -66,6 +72,7 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     def finalize(*args):
         try:
             if verify_runtime(config)!=native:raise ValueError('runtime changed during GUI automation')
+            if environment is not None and verify_environment(gui_environment,config)!=environment:raise ValueError('GUI environment evidence changed during execution')
         except Exception:
             actual=tree_inventory(runtime);expected=manifest['tree']
             report['runtime_changes']={'added':sorted(set(actual)-set(expected)),'removed':sorted(set(expected)-set(actual)),'changed':sorted(k for k in set(actual)&set(expected) if actual[k]!=expected[k])}
@@ -95,16 +102,16 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     return report
 
 
-def run_gui_automation(config,workspace,scratch_root,*,case_ids=CASE_IDS,software_opengl=False):
+def run_gui_automation(config,workspace,scratch_root,*,case_ids=CASE_IDS,software_opengl=False,gui_environment=None):
     """Build and then verify frozen deliveries in an independent GUI process."""
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
     if target.exists() or target.is_relative_to(Path(__file__).resolve().parents[1]):raise ValueError('new external GUI workspace required')
     verify_runtime(config)
     target.mkdir(mode=0o700)
-    first=_run_gui_pass(config,target/'build',scratch_root,case_ids=case_ids,software_opengl=software_opengl)
+    first=_run_gui_pass(config,target/'build',scratch_root,case_ids=case_ids,software_opengl=software_opengl,gui_environment=gui_environment)
     report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','passes':{'build':first},'cases':first['cases'],'runtime_unchanged':first['runtime_unchanged']}
     if first['automated_status']=='passed':
-        second=_run_gui_pass(config,target/'roundtrip',scratch_root,case_ids=case_ids,producer=first['native'],software_opengl=software_opengl)
+        second=_run_gui_pass(config,target/'roundtrip',scratch_root,case_ids=case_ids,producer=first['native'],software_opengl=software_opengl,gui_environment=gui_environment)
         report['passes']['roundtrip']=second;report['cases']=second['cases']
         report['runtime_unchanged']=first['runtime_unchanged'] and second['runtime_unchanged']
         if second['automated_status']=='passed' and first['startup_pid']!=second['startup_pid']:report['automated_status']='passed'
