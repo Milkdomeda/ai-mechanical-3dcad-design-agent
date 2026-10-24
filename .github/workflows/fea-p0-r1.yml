@@ -137,4 +137,5 @@ jobs:
             ${{ runner.temp }}/native-source-identity/
             ${{ runner.temp }}/process-tests.xml
             ${{ runner.temp }}/full-offline.xml
+          include-hidden-files: true
           retention-days: 14
