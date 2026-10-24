@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
 COMPOSE_SHA256 = "f6c798e8ecaa7eaf0d83cb9785c309ddc0e2dba1af59923e33b1e3413fad3ef2"
 EXPECTED_DEPENDENCIES = [
+    "jsonschema>=4.23.0,<5",
     "mcp[cli]>=1.3.0,<2",
     "psycopg[binary]>=3.2.0,<4",
     "pywin32>=312; sys_platform == 'win32'",

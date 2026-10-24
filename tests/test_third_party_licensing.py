@@ -103,6 +103,7 @@ def test_inventory_covers_dependency_closures_and_directness() -> None:
         if component["scope"] == "runtime" and component.get("direct") is True
     }
     assert direct_runtime == {
+        "jsonschema",
         "mcp",
         "neo4j",
         "psycopg",

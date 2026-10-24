@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:configuration:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "FEAConfiguration/v1"
+    },
+    "tools": {
+      "type": "object",
+      "properties": {
+        "freecadcmd": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        "freecadgui": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        "gmsh": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        "ccx": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "version"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "freecadcmd",
+        "freecadgui",
+        "gmsh",
+        "ccx"
+      ],
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "freecad-1.1.3-fem-faceforce-r1"
+        },
+        "manifest_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "profile",
+        "manifest_path",
+        "manifest_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "native_scratch_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "software_opengl": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tools",
+    "runtime",
+    "native_scratch_root",
+    "software_opengl"
+  ],
+  "additionalProperties": false
+}

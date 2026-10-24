@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:prepare-request:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisPrepareRequest/v1"
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "expected_source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "draft_spec": {
+      "$ref": "urn:mechanical-design:analysis:spec:v1"
+    },
+    "region_selectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "region_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "object_name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "surface_type": {
+            "enum": [
+              "plane",
+              "cylinder"
+            ]
+          },
+          "centroid": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                },
+                "unit": {
+                  "const": "mm"
+                },
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                    },
+                    "unit": {
+                      "enum": [
+                        "mm",
+                        "m",
+                        "cm",
+                        "um",
+                        "mm^2",
+                        "m^2",
+                        "mm^3",
+                        "m^3",
+                        "tonne",
+                        "kg",
+                        "g",
+                        "s",
+                        "N",
+                        "kN",
+                        "MPa",
+                        "N/mm^2",
+                        "Pa",
+                        "GPa",
+                        "tonne/mm^3",
+                        "kg/m^3",
+                        "g/cm^3",
+                        "mm/s^2",
+                        "m/s^2",
+                        "N*mm",
+                        "N*m",
+                        "J",
+                        "1"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "value",
+                "unit"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "centroid_tolerance": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "area": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm^2"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "area_tolerance": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm^2"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "expected_faces": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "normal": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                    },
+                    "unit": {
+                      "const": "1"
+                    },
+                    "input": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "maxLength": 128,
+                          "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                        },
+                        "unit": {
+                          "enum": [
+                            "mm",
+                            "m",
+                            "cm",
+                            "um",
+                            "mm^2",
+                            "m^2",
+                            "mm^3",
+                            "m^3",
+                            "tonne",
+                            "kg",
+                            "g",
+                            "s",
+                            "N",
+                            "kN",
+                            "MPa",
+                            "N/mm^2",
+                            "Pa",
+                            "GPa",
+                            "tonne/mm^3",
+                            "kg/m^3",
+                            "g/cm^3",
+                            "mm/s^2",
+                            "m/s^2",
+                            "N*mm",
+                            "N*m",
+                            "J",
+                            "1"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "unit"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "region_id",
+          "object_name",
+          "surface_type",
+          "centroid",
+          "centroid_tolerance",
+          "area",
+          "area_tolerance",
+          "expected_faces",
+          "normal"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "preview_receipt_ref": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_path",
+    "expected_source_sha256",
+    "draft_spec",
+    "region_selectors"
+  ],
+  "additionalProperties": false
+}

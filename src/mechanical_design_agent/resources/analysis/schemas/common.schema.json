@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:common:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisCommon/v1"
+    }
+  },
+  "required": [],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "quantity": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+        },
+        "unit": {
+          "enum": [
+            "mm",
+            "m",
+            "cm",
+            "um",
+            "mm^2",
+            "m^2",
+            "mm^3",
+            "m^3",
+            "tonne",
+            "kg",
+            "g",
+            "s",
+            "N",
+            "kN",
+            "MPa",
+            "N/mm^2",
+            "Pa",
+            "GPa",
+            "tonne/mm^3",
+            "kg/m^3",
+            "g/cm^3",
+            "mm/s^2",
+            "m/s^2",
+            "N*mm",
+            "N*m",
+            "J",
+            "1"
+          ]
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+            },
+            "unit": {
+              "enum": [
+                "mm",
+                "m",
+                "cm",
+                "um",
+                "mm^2",
+                "m^2",
+                "mm^3",
+                "m^3",
+                "tonne",
+                "kg",
+                "g",
+                "s",
+                "N",
+                "kN",
+                "MPa",
+                "N/mm^2",
+                "Pa",
+                "GPa",
+                "tonne/mm^3",
+                "kg/m^3",
+                "g/cm^3",
+                "mm/s^2",
+                "m/s^2",
+                "N*mm",
+                "N*m",
+                "J",
+                "1"
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "unit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "relative_path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}
