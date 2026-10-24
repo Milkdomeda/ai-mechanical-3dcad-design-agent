@@ -179,13 +179,34 @@
             "sha256"
           ],
           "additionalProperties": false
+        },
+        "level": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
         "data",
         "mapping",
         "native_mesh",
-        "gmsh_geometry"
+        "gmsh_geometry",
+        "level"
       ],
       "additionalProperties": false
     }

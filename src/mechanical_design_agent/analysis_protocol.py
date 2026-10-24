@@ -44,6 +44,8 @@ def _check_json(value, depth=0):
     if kind is dict:
         if any(type(key) is not str for key in value):
             raise AnalysisError("ANALYSIS_JSON_INVALID", "JSON keys must be strings")
+        for key in value:
+            _check_json(key, depth + 1)
         for child in value.values():
             _check_json(child, depth + 1)
     elif kind is list:
@@ -55,6 +57,11 @@ def _check_json(value, depth=0):
     elif kind is int:
         if value.bit_length() > 512:
             raise AnalysisError("ANALYSIS_JSON_LIMIT", "JSON integer is too large")
+    elif kind is str:
+        try:
+            value.encode('utf-8')
+        except UnicodeError as exc:
+            raise AnalysisError('ANALYSIS_JSON_INVALID', 'analysis strings must be valid UTF-8 without unpaired surrogates') from exc
     elif kind not in (str, bool, type(None)):
         raise AnalysisError("ANALYSIS_JSON_INVALID", "record contains a non-JSON value")
 
@@ -124,7 +131,13 @@ def _check_quantities(value):
 def parse_record(text: str, *, schema_name: str) -> JsonObject:
     if schema_name not in _NAMES:
         raise AnalysisError("ANALYSIS_SCHEMA_UNKNOWN", "select a registered analysis schema")
-    if type(text) is not str or len(text.encode("utf-8")) > _MAX_BYTES:
+    if type(text) is not str:
+        raise AnalysisError("ANALYSIS_JSON_LIMIT", "analysis JSON exceeds the supported size")
+    try:
+        encoded = text.encode('utf-8')
+    except UnicodeError as exc:
+        raise AnalysisError('ANALYSIS_JSON_INVALID', 'analysis JSON must be valid UTF-8') from exc
+    if len(encoded) > _MAX_BYTES:
         raise AnalysisError("ANALYSIS_JSON_LIMIT", "analysis JSON exceeds the supported size")
     try:
         record = json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)

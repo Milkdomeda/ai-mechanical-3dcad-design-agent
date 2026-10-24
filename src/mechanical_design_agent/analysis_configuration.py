@@ -37,7 +37,7 @@ def _read_pinned(path):
     return managed.path,content
 
 
-def _verify_manifest(config: JsonObject, workspace: Path) -> dict:
+def _verify_manifest(config: JsonObject, workspace: Path, *, checkpoint=None) -> dict:
     reference = config["runtime"]
     try:
         path = _resolve(workspace, reference["manifest_path"])
@@ -62,6 +62,7 @@ def _verify_manifest(config: JsonObject, workspace: Path) -> dict:
         expected = manifest["tree"]
         actual = {}
         for child in sorted(root.rglob("*")):
+            if checkpoint is not None: checkpoint()
             relative = child.relative_to(root).as_posix()
             if getattr(child, "is_junction", lambda: False)():
                 raise AnalysisError("FEA_RUNTIME_CHANGED", "runtime junction is unsupported")
@@ -81,7 +82,8 @@ def _verify_manifest(config: JsonObject, workspace: Path) -> dict:
         raise AnalysisError("FEA_RUNTIME_INVALID", "FEA runtime manifest or files cannot be verified") from exc
 
 
-def load_analysis_configuration(runtime) -> JsonObject:
+def load_analysis_configuration(runtime, *, checkpoint=None) -> JsonObject:
+    if checkpoint is not None: checkpoint()
     manifest = runtime._manifest()
     workspace = manifest.workspace
     value = str(runtime.environ.get("MECH_DESIGN_FEA_CONFIG", "")).strip()
@@ -100,6 +102,7 @@ def load_analysis_configuration(runtime) -> JsonObject:
         raise AnalysisError('FEA_CONFIG_INVALID','FEA configuration must use UTF-8') from exc
     tools = {}
     for name, tool in config["tools"].items():
+        if checkpoint is not None: checkpoint()
         supported = {"1.1.3"} if name.startswith("freecad") else ({"4.15.0"} if name == "gmsh" else {"2.22", "2.23"})
         if tool["version"] not in supported:
             raise AnalysisError("FEA_TOOL_VERSION_UNSUPPORTED", "configured native version requires a compatibility run", details={"tool": name})
@@ -110,7 +113,7 @@ def load_analysis_configuration(runtime) -> JsonObject:
         if actual.sha256 != tool["sha256"] or actual.link_count != 1:
             raise AnalysisError("FEA_TOOL_DIGEST_CHANGED", "configured native executable identity or checksum changed", details={"tool": name})
         tools[name] = {**tool, "path": str(tool_path), "identity": {"volume": actual.identity.volume, "file_index": actual.identity.file_index}}
-    proof = _verify_manifest(config, workspace)
+    proof = _verify_manifest(config, workspace, checkpoint=checkpoint)
     try:
         scratch = validate_managed_path(_resolve(workspace, config["native_scratch_root"]), allow_missing_leaf=True).path
     except (OSError,SecureFilesystemError) as exc:

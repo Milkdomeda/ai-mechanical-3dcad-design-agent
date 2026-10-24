@@ -140,6 +140,17 @@ def _face_hits(points, origin, direction):
     f, g = projected
     a, b, c = [f[3]], [f[1], f[4]], [f[0], f[2], f[5]]
     d, e, h = [g[3]], [g[1], g[4]], [g[0], g[2], g[5]]
+    projected_scale = max(1., *(abs(value) for row in projected for value in row))
+    # Account for projection rank before computing its resultant: roundoff in
+    # nominally zero coefficients otherwise produces spurious roots. The
+    # common-root uncertainty margin exceeds the dropped coefficient bound;
+    # near contact remains ambiguous and is rejected.
+    if max(abs(value) for value in [*a, *b, *d, *e]) <= 1e-13*projected_scale:
+        stronger, other = (c, h) if max(map(abs, c)) >= max(map(abs, h)) else (h, c)
+        if max(map(abs, stronger)) == 0: raise ValueError('MESH_RAY_DEGENERATE')
+        if not any(abs(_evaluate(other, root)) <= 1e-9*projected_scale for root in _roots_unit(stronger)):
+            return []
+        raise ValueError('MESH_RAY_TANGENT')
     linear = abs(a[0])+abs(d[0]) < 1e-13 * max(1., *(abs(value) for row in projected for value in row))
     A = _poly_add(_poly_mul(a, e), _poly_mul(b, d), -1)
     B = _poly_add(_poly_mul(a, h), _poly_mul(c, d), -1)
@@ -150,13 +161,6 @@ def _face_hits(points, origin, direction):
         # projection. The zero resultant then says nothing about intersection.
         # Resolve the remaining two quadratics in v; a common root is an
         # ambiguous tangent/ruling and remains a failure, not an empty hit.
-        projected_scale = max(1., *(abs(value) for row in projected for value in row))
-        if max(abs(value) for value in [*a, *b, *d, *e]) <= 1e-13*projected_scale:
-            stronger, other = (c, h) if max(map(abs, c)) >= max(map(abs, h)) else (h, c)
-            if max(map(abs, stronger)) == 0: raise ValueError('MESH_RAY_DEGENERATE')
-            if not any(abs(_evaluate(other, root)) <= 1e-9*projected_scale for root in _roots_unit(stronger)):
-                return []
-            raise ValueError('MESH_RAY_TANGENT')
         normal = cross(sub(points[1], points[0]), sub(points[2], points[0]))
         if norm(normal) and all(abs(dot(sub(point, points[0]), normal)) <= 1e-10*norm(normal) for point in points) and abs(dot(direction, normal)) < 1e-12*norm(normal) and abs(dot(points[0], normal)) > 1e-10*norm(normal):
             return []
@@ -166,7 +170,9 @@ def _face_hits(points, origin, direction):
     for v in _roots_unit(resultant):
         if linear:
             bv, ev = _evaluate(b, v), _evaluate(e, v)
-            if max(abs(bv), abs(ev)) < 1e-12: raise ValueError('MESH_RAY_DEGENERATE')
+            if max(abs(bv), abs(ev)) < 1e-12:
+                if max(abs(_evaluate(c,v)), abs(_evaluate(h,v))) > 1e-9*projected_scale: continue
+                raise ValueError('MESH_RAY_DEGENERATE')
             candidates = [-_evaluate(c, v)/bv] if abs(bv) >= abs(ev) else [-_evaluate(h, v)/ev]
         elif abs(_evaluate(A, v)) > 1e-12*scale**2:
             candidates = [-_evaluate(B, v)/_evaluate(A, v)]

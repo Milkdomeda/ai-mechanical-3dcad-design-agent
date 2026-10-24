@@ -20,6 +20,16 @@ def test_parser_rejects_duplicate_nonfinite_and_nonobject_json(text):
     with pytest.raises(AnalysisError):parse_record(text,schema_name='spec')
 
 
+@pytest.mark.parametrize('escaped', [False, True])
+def test_unpaired_unicode_surrogate_is_a_controlled_boundary_error(escaped):
+    from mechanical_design_agent.analysis_protocol import canonical_record, parse_record
+    from mechanical_design_agent.analysis_types import AnalysisError
+    value = spec()
+    value['assumptions'] = ['invalid \ud800 text']
+    with pytest.raises(AnalysisError): canonical_record(value, schema_name='spec')
+    with pytest.raises(AnalysisError): parse_record(json.dumps(value, ensure_ascii=escaped), schema_name='spec')
+
+
 @pytest.mark.parametrize('defect',['unknown_root','unknown_nested','wrong_version','wrong_unit','bool_revision','nan_in_memory','nonstring_key'])
 def test_strict_schema_rejects_unknown_fields_units_and_versions(defect):
     from mechanical_design_agent.analysis_protocol import canonical_record

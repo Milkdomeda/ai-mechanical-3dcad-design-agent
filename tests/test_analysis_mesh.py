@@ -129,6 +129,31 @@ def test_bernstein_bound_covers_independent_dense_samples():
                 assert det(jacobian)/math.prod(norm(column) for column in jacobian) >= lower
 
 
+def test_seed_after_mesh_generation_does_not_establish_determinism():
+    from mechanical_design_agent.analysis_mesh import validate_native_mesh_recipe
+    good = 'General.NumThreads = 1;\nMesh.ElementOrder = 2;\nMesh.SecondOrderLinear = 0;\nMesh.Algorithm = 5;\nMesh.Algorithm3D = 1;\nMesh.RandomSeed = 1;\nMesh 3;\n'
+    assert validate_native_mesh_recipe(good)['status'] == 'passed'
+    late = good.replace('Mesh.RandomSeed = 1;\n', '')+'Mesh.RandomSeed = 1;\n'
+    with pytest.raises(AnalysisError): validate_native_mesh_recipe(late)
+    with pytest.raises(AnalysisError): validate_native_mesh_recipe(good.replace('NumThreads = 1', 'NumThreads = 8'))
+
+
+def test_parallel_projection_roundoff_on_actual_local_mesh():
+    from mechanical_design_agent.resources.freecad.analysis_mesh_math import tetra_ray_intervals
+    from fea_helpers import _solve
+    points = [[32.5458034725701,4.999999999999998,4.999999999999997],[35.09459112896304,0.,4.9999999999999964],[35.09459112896305,0.,2.1131577501637686],[37.891718219593244,4.997223507672833,4.994848269409192],[33.820197300766566,2.499999999999999,4.9999999999999964],[35.094591128963046,0.,3.5565788750818825],[33.82019730076658,2.499999999999999,3.556578875081883],[35.21876084608167,4.998611753836416,4.997424134704595],[36.493154674278145,2.4986117538364163,4.997424134704595],[36.493154674278145,2.4986117538364163,3.5540030097864803]]
+    matrix = [[points[col+1][axis]-points[0][axis] for col in range(3)] for axis in range(3)]
+    intercept = _solve(matrix, [37-points[0][0], 4.3-points[0][1], -points[0][2]])
+    slope = _solve(matrix, [0,0,1])
+    low, high = 0., 10.
+    for a,b in zip([1-sum(intercept),*intercept],[-sum(slope),*slope]):
+        if b > 0: low=max(low,-a/b)
+        elif b < 0: high=min(high,-a/b)
+    actual = tetra_ray_intervals(points,[37.,4.3,0.],[37.,4.3,10.])
+    assert len(actual) == 1
+    assert actual[0] == pytest.approx((low,high),abs=1e-8)
+
+
 def test_mesh_budget_exhaustion_is_inconclusive(tmp_path):
     from mechanical_design_agent.analysis_mesh import plan_mesh_levels, validate_mesh
     level = plan_mesh_levels(mesh_spec(tmp_path))[0]
@@ -161,3 +186,14 @@ def test_numerical_policy_and_local_sizes_are_frozen_before_meshing(tmp_path):
     assert len({level['policy_sha256'] for level in first}) == 1
     spec['budget']['stage_seconds'] = 0
     with pytest.raises(AnalysisError): plan_mesh_levels(spec)
+def test_physical_regions_use_full_exterior_t6_faces():
+    from mechanical_design_agent.analysis_mesh import validate_region_topology
+    data = {'elements': [[1, *range(1,11)]]}
+    mapping = {'regions': [{'region_id': 'surface', 'node_ids': [1,2,3,5,6,7], 'element_faces': [[1,1]]}]}
+    validate_region_topology(data, mapping)
+    for nodes in ([1,2,3,5,6], [1,2,3,5,6,7,8]):
+        broken = deepcopy(mapping)
+        broken['regions'][0]['node_ids'] = nodes
+        with pytest.raises(AnalysisError): validate_region_topology(data, broken)
+    shared = {'elements': [[1,*range(1,11)], [2,1,2,3,11,5,6,7,12,13,14]]}
+    with pytest.raises(AnalysisError): validate_region_topology(shared, mapping)

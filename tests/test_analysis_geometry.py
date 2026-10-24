@@ -122,3 +122,22 @@ def test_partition_contract_requires_explicit_numerical_tolerance():
                    lambda x: x['volume_tolerance'].update(value='-1')]:
         bad = deepcopy(request); mutate(bad)
         with pytest.raises(AnalysisError): validate_geometry_request(bad)
+def test_multiface_binding_hash_is_independent_of_decimal_context():
+    from copy import deepcopy
+    from decimal import localcontext
+    from mechanical_design_agent.analysis_geometry import resolve_regions
+    manifest = geometry()
+    face = deepcopy(manifest['faces'][1])
+    face['index'] = 3
+    face['centroid'][0]['value'] = '100.000000000012345'
+    face['area']['value'] = '99.999999999999998'
+    manifest['faces'].append(face)
+    target = selector()
+    target.update(region_id='combined', centroid=[quantity(v,'mm') for v in (100,5,5)], centroid_tolerance=quantity('.001','mm'), expected_faces=2, normal=None)
+    with localcontext() as context:
+        context.prec = 8
+        low = resolve_regions(manifest, [target])
+    with localcontext() as context:
+        context.prec = 64
+        high = resolve_regions(manifest, [target])
+    assert low == high

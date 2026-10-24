@@ -1,7 +1,7 @@
 """Source-bound geometry inspection and deterministic semantic face binding."""
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import hashlib
 from pathlib import Path
 
@@ -19,7 +19,9 @@ def _number(quantity):
 
 
 def _quantity(value, unit):
-    return {'value': canonical_decimal(str(value)), 'unit': unit}
+    # Match the ledger's fixed 24-significant-digit derived representation;
+    # native CAD measurements originate as double precision values.
+    return {'value': canonical_decimal(format(value, '.24g')), 'unit': unit}
 
 
 def validate_geometry_request(request: JsonObject) -> JsonObject:
@@ -45,10 +47,10 @@ def validate_geometry_manifest(manifest: JsonObject) -> JsonObject:
     return result
 
 
-def inspect_geometry(source: Path, request: JsonObject, settings: JsonObject, output_dir: Path) -> JsonObject:
+def inspect_geometry(source: Path, request: JsonObject, settings: JsonObject, output_dir: Path, *, transaction=None) -> JsonObject:
     from .analysis_native import run_geometry_phase
     contract = validate_geometry_request(request)
-    manifest = run_geometry_phase(Path(source), contract, settings, Path(output_dir))
+    manifest = run_geometry_phase(Path(source), contract, settings, Path(output_dir), transaction=transaction)
     result = validate_geometry_manifest(manifest)
     if result['source_sha256'] != contract['source_sha256'] or result['included_objects'] != [contract['included_object']] or result['excluded_objects'] != contract['excluded_objects'] or result['partitions'] != contract['partitions']:
         raise AnalysisError('GEOMETRY_BINDING_CHANGED', 'native geometry does not match the requested source and object selection')
@@ -58,6 +60,14 @@ def inspect_geometry(source: Path, request: JsonObject, settings: JsonObject, ou
 
 
 def resolve_regions(manifest: JsonObject, selectors: list[JsonObject]) -> JsonObject:
+    # Weighted multi-face centroids must not depend on a caller's Decimal
+    # context (the load ledger deliberately uses higher precision).
+    with localcontext() as context:
+        context.prec = 256
+        return _resolve_regions(manifest, selectors)
+
+
+def _resolve_regions(manifest: JsonObject, selectors: list[JsonObject]) -> JsonObject:
     geometry = validate_geometry_manifest(manifest)
     selected = _validated({'schema_version': 'AnalysisRegionSelectors/v1', 'selectors': selectors}, 'region-selectors')['selectors']
     ids = [item['region_id'] for item in selected]

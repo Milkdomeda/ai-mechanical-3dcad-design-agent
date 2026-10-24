@@ -11,7 +11,7 @@ import subprocess
 import sys
 import traceback
 
-from analysis_mesh_math import EDGES, freecad_to_ccx_nodes, norm, ray_coverage, sub, tet10_quality, tetra_ray_intervals
+from analysis_mesh_math import EDGES, FACES, freecad_to_ccx_nodes, norm, ray_coverage, sub, tet10_quality, tetra_ray_intervals
 
 
 def digest(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -85,13 +85,18 @@ def create_mesh(contract, geometry_path, directory):
         gmsh.get_tmp_file_paths('.')
         gmsh.write_gmsh_input_files()
         geo = Path(gmsh.temp_file_geo)
-        with geo.open('a', encoding='utf-8') as stream:
-            stream.write('\n// Fixed deterministic adapter seed.\nMesh.RandomSeed = 1;\n')
+        native_recipe = geo.read_text(encoding='utf-8')
+        geo.write_text('// Fixed seed before native mesh generation.\nMesh.RandomSeed = 1;\n'+native_recipe, encoding='utf-8')
         with (directory / 'gmsh.log').open('xb') as log:
             result = subprocess.run([contract['gmsh_path'], '-', geo.name], cwd=directory, stdout=log, stderr=subprocess.STDOUT, timeout=level['budget']['stage_seconds'], check=False)
         if result.returncode != 0: raise ValueError('MESH_GMSH_FAILED')
         native_mesh = directory / gmsh.temp_file_mesh
         mesh.FemMesh = Fem.read(str(native_mesh))
+        native_copy = directory / 'mesh.unv'
+        mesh.FemMesh.write(str(native_copy))
+        # Validate exactly the serialized mesh consumed by later phases,
+        # including any native serialization precision/numbering changes.
+        mesh.FemMesh = Fem.read(str(native_copy))
         fm = mesh.FemMesh
         nodes = {int(node): [point.x, point.y, point.z] for node, point in fm.Nodes.items()}
         elements = {int(element): freecad_to_ccx_nodes([int(node) for node in fm.getElementNodes(element)]) for element in fm.Volumes}
@@ -112,23 +117,42 @@ def create_mesh(contract, geometry_path, directory):
                     except ValueError as exc:
                         raise ValueError(str(exc) + ' ' + json.dumps({'points': points, 'start': start, 'end': end}, separators=(',', ':'))) from exc
             rays.append({'id': ray['id'], **ray_coverage(intervals)})
+        boundary = {}
+        for element_id, element in elements.items():
+            for face_id, local in enumerate(FACES, 1):
+                key = tuple(sorted(element[i] for i in local))
+                boundary.setdefault(key, []).append((element_id, face_id))
+        if any(len(owners) > 2 for owners in boundary.values()):
+            raise ValueError('MESH_NONMANIFOLD_BOUNDARY')
         mapping = {'geometry_sha256': bindings['geometry_sha256'], 'regions': []}
         for binding in bindings['bindings']:
             region_nodes, faces = set(), set()
             for face_id in binding['face_indices']:
                 face = shape.Faces[face_id-1]
                 ids = fm.getNodesByFace(face)
-                pairs = fm.getccxVolumesByFace(face)
-                if not ids or not pairs: raise ValueError('REGION_MESH_MAPPING_EMPTY')
+                surface_ids = fm.getFacesByFace(face)
+                # getccxVolumesByFace only accepts exactly six nodes on a CAD
+                # face. A tetrahedron with two exterior faces on that same
+                # curved CAD face is omitted. Match each actual native T6
+                # surface element to its unique full C3D10 boundary instead.
+                if not ids or not surface_ids: raise ValueError('REGION_MESH_MAPPING_EMPTY')
+                surface_nodes = set()
+                for surface_id in surface_ids:
+                    corners = tuple(int(node) for node in fm.getElementNodes(surface_id))
+                    owners = boundary.get(tuple(sorted(corners)), [])
+                    if len(corners) != 6 or len(set(corners)) != 6 or len(owners) != 1:
+                        raise ValueError('REGION_SURFACE_BOUNDARY_MISMATCH')
+                    surface_nodes.update(corners)
+                    faces.add(owners[0])
+                if surface_nodes != set(ids): raise ValueError('REGION_SURFACE_NODE_MISMATCH')
                 region_nodes.update(int(node) for node in ids)
-                faces.update((int(pair[0]), int(pair[1])) for pair in pairs)
             mapping['regions'].append({'region_id': binding['region_id'], 'face_indices': binding['face_indices'], 'node_ids': sorted(region_nodes), 'element_faces': [list(pair) for pair in sorted(faces)]})
         data_path, mapping_path = directory / 'mesh-data.json', directory / 'mesh-regions.json'
         data_path.write_text(json.dumps({'node_order': 'CalculiX_C3D10', 'nodes': [[node, *point] for node, point in sorted(nodes.items())], 'elements': [[element, *ids] for element, ids in sorted(elements.items())]}, allow_nan=False, separators=(',', ':')), encoding='utf-8')
         mapping_path.write_text(json.dumps(mapping, allow_nan=False, separators=(',', ':')), encoding='utf-8')
-        native_copy = directory / 'mesh.unv'
-        fm.write(str(native_copy))
-        artifacts = {key: {'relative_path': path.name, 'sha256': digest(path)} for key, path in [('data', data_path), ('mapping', mapping_path), ('native_mesh', native_copy), ('gmsh_geometry', geo)]}
+        level_path = directory / 'level.json'
+        level_path.write_text(json.dumps(level, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':')), encoding='utf-8')
+        artifacts = {key: {'relative_path': path.name, 'sha256': digest(path)} for key, path in [('data', data_path), ('mapping', mapping_path), ('native_mesh', native_copy), ('gmsh_geometry', geo), ('level', level_path)]}
         quality = {'checked_elements': len(elements), 'min_det_mm3': min(item['min_det_mm3'] for item in qualities), 'min_scaled_jacobian': min(item['min_scaled_jacobian'] for item in qualities), 'sample_points_per_element': 15, 'bernstein_scaled_lower_bound': min(item['bernstein_scaled_lower_bound'] for item in qualities), 'bound_subdivision_depth': max(item['bound_subdivision_depth'] for item in qualities), 'thickness_rays': rays}
         return {'schema_version': 'AnalysisMeshReceipt/v1', 'geometry_sha256': level['geometry_sha256'], 'region_bindings_sha256': level['region_bindings_sha256'], 'level': level['level'], 'element_type': 'C3D10', 'node_count': len(nodes), 'element_count': len(elements), 'disk_bytes': sum(path.stat().st_size for path in directory.iterdir() if path.is_file()), 'quality': quality, 'artifacts': artifacts}
     finally:

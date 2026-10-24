@@ -89,3 +89,20 @@ def test_invalid_utf8_configuration_is_a_controlled_fea_error(tmp_path):
     (tmp_path/'config/fea.json').write_bytes(b'\xff')
     result=analysis_capabilities(selected)
     assert result['status']=='setup_required' and result['code']=='FEA_CONFIG_INVALID'
+
+
+def test_full_inventory_verification_has_cooperative_cancellation(tmp_path, monkeypatch):
+    from mechanical_design_agent.analysis_configuration import load_analysis_configuration
+    from mechanical_design_agent.analysis_types import AnalysisError
+    selected, path, tools = configured(tmp_path, monkeypatch)
+    before = {p: p.read_bytes() for p in (tmp_path/'native').iterdir()}
+    checkpoints = []
+    def cancel():
+        checkpoints.append(True)
+        if len(checkpoints) == 5:
+            raise AnalysisError('ANALYSIS_CANCELLED', 'Synthetic cancellation during inventory verification.')
+    with pytest.raises(AnalysisError) as error:
+        load_analysis_configuration(selected, checkpoint=cancel)
+    assert error.value.code == 'ANALYSIS_CANCELLED'
+    assert before == {p: p.read_bytes() for p in (tmp_path/'native').iterdir()}
+    assert not (tmp_path/'private-cache').exists()

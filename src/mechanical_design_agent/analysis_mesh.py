@@ -7,6 +7,7 @@ import hashlib
 from importlib.resources import files
 import json
 import math
+import re
 
 from .analysis_types import AnalysisError
 from .analysis_units import canonical_decimal, validate_normalized_quantity
@@ -97,6 +98,43 @@ def validate_mesh(receipt, policy):
     return {'status': 'passed', 'code': None}
 
 
-def generate_mesh(geometry, bindings, level, settings, output_dir):
+def generate_mesh(geometry, bindings, level, settings, output_dir, *, transaction=None):
     from .analysis_native import run_mesh_phase
-    return run_mesh_phase(geometry, bindings, level, settings, output_dir)
+    return run_mesh_phase(geometry, bindings, level, settings, output_dir, transaction=transaction)
+
+
+def validate_region_topology(data, mapping):
+    """A physical surface needs complete six-node exterior element faces."""
+    from .resources.freecad.analysis_mesh_math import FACES
+    elements = {row[0]: row[1:] for row in data['elements']}
+    owners = {}
+    for element, ids in elements.items():
+        for face, local in enumerate(FACES, 1):
+            key = tuple(sorted(ids[i] for i in local))
+            owners.setdefault(key, []).append((element,face))
+    if any(len(value) > 2 for value in owners.values()):
+        raise AnalysisError('MESH_NONMANIFOLD_BOUNDARY', 'an element face has more than two owners')
+    for region in mapping['regions']:
+        nodes = set()
+        for element, face in region['element_faces']:
+            key = tuple(sorted(elements[element][i] for i in FACES[face-1]))
+            if owners[key] != [(element,face)]:
+                raise AnalysisError('REGION_MESH_MAPPING_INVALID', 'physical regions cannot contain interior element faces')
+            nodes.update(key)
+        if nodes != set(region['node_ids']):
+            raise AnalysisError('REGION_MESH_MAPPING_INVALID', 'physical node and full T6 exterior-face inventories disagree')
+
+
+def validate_native_mesh_recipe(text):
+    """Check effective fixed options before the native generation command."""
+    commands = re.sub(r'//[^\n]*', '', text)
+    starts = list(re.finditer(r'\bMesh\s+3\s*;', commands))
+    if len(starts) != 1:
+        raise AnalysisError('MESH_NATIVE_RECIPE_INVALID', 'exactly one native 3D mesh generation command is required')
+    before = commands[:starts[0].start()]
+    expected = {'General.NumThreads': '1', 'Mesh.ElementOrder': '2', 'Mesh.SecondOrderLinear': '0', 'Mesh.Algorithm': '5', 'Mesh.Algorithm3D': '1', 'Mesh.RandomSeed': '1'}
+    for name, value in expected.items():
+        matches = re.findall(r'(?<![\w.])'+re.escape(name)+r'\s*=\s*([0-9.+eE-]+)\s*;', before)
+        if not matches or Decimal(matches[-1]) != Decimal(value):
+            raise AnalysisError('MESH_NATIVE_RECIPE_INVALID', 'fixed mesh options must take effect before generation', details={'option': name})
+    return {'status': 'passed', 'options': expected}
