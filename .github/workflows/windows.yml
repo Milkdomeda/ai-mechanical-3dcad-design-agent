@@ -68,7 +68,8 @@ jobs:
           }
           # Live database/GUI gates remain opt-in; second-volume tests run.
           # One additional opt-in native FEA test; its live gate runs separately.
-          $expectedSkipped = 19
+          # POSIX guardian receipt-I/O regression is platform-specific.
+          $expectedSkipped = 20
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }

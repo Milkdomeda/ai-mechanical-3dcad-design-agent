@@ -124,6 +124,8 @@ def assess_native(worker: dict) -> dict:
         check(name + "_stress", _near(result.get("stress_MPa"), stress, rtol), result.get("stress_MPa"))
         check(name + "_reaction", isinstance(reaction, list) and len(reaction) == 3 and all(_near(a, b, 0.001) for a, b in zip(reaction, force)), reaction)
         check(name + "_native_rf", result.get("rf_native_output") is True)
+        inventory = result.get("result_inventory", {})
+        check(name + "_result_inventory", inventory.get("complete") is True and type(inventory.get("nodes")) is int and inventory["nodes"] > 0, inventory)
         check(name + "_mesh", type(result.get("elements")) is int and result["elements"] > 0 and result.get("element_nodes") == [10] and result.get("input_element_types") == ["C3D10"] and result.get("finite") is True)
         check(name + "_geometry", result.get("geometry_valid") is True and result.get("solid_count") == 1 and _near(result.get("volume_mm3"), volume, 1e-9))
     qualities = [worker.get("cases", {}).get(name, {}).get("quality", {}) for name in ("axial_bar", "cantilever")]
@@ -131,8 +133,16 @@ def assess_native(worker: dict) -> dict:
     check("mesh_quality_calibration", quality_ok, {"scope": "straight synthetic benchmarks", "criterion": "15-point sampled determinant/scaled Jacobian > 0 and >=2 elements on each of 3 full-thickness rays", "measurements": qualities})
     patch = worker.get("partial_face", {})
     check("partial_face", patch.get("valid") is True and patch.get("solid_count") == 1 and _near(patch.get("volume_delta_mm3"), 0, 0))
-    force = worker.get("multiface", {}).get("force_N")
-    check("multiface_conservation", isinstance(force, list) and len(force) == 3 and all(_near(a, b, 1e-9) for a, b in zip(force, [0, 0, -40])) and worker.get("multiface", {}).get("faces", 0) >= 2, force)
+    for name in ("multiface", "curved_multiface"):
+        load = worker.get(name, {})
+        force, moment = load.get("force_N"), load.get("moment_Nmm")
+        # These moment tolerances belong only to the declared synthetic cases.
+        valid = (isinstance(force, list) and len(force) == 3 and all(_near(a, b, 1e-9) for a, b in zip(force, [0, 0, -40]))
+                 and isinstance(moment, list) and len(moment) == 3 and all(_near(a, b, 0.01 if name == "curved_multiface" else 1e-6) for a, b in zip(moment, [-200, 2000, 0]))
+                 and load.get("moment_origin_mm") == [0, 0, 0] and load.get("load_region_valid") is True
+                 and load.get("faces", 0) >= 2 and load.get("loaded_nodes", 0) > 0
+                 and (name != "curved_multiface" or load.get("curved_faces", 0) >= 2))
+        check(name + "_conservation", valid, load)
     automated = "passed" if all(item["status"] == "passed" for item in checks.values()) else "failed"
     for name in ("native_gui_roundtrip",):
         checks[name] = {"status": "not_executed", "details": "Separate same-version evidence required; not inferred from solver success."}

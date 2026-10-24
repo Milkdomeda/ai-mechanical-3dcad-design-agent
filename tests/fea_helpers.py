@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import contextlib
 import math
 from pathlib import Path
 import re
@@ -150,6 +151,64 @@ def _cloads(path):
     return total
 
 
+def validate_result_fields(mesh_nodes, ids, displacement, stress, mises):
+    if (not ids or len(set(ids)) != len(ids) or set(ids) != set(mesh_nodes)
+            or any(type(node) is not int or node <= 0 for node in ids)):
+        raise RuntimeError("RESULT_NODE_INVENTORY")
+    if any(len(field) != len(ids) for field in (displacement, stress, mises)):
+        raise RuntimeError("RESULT_FIELD_LENGTH")
+    if any(len(vector) != 3 for vector in displacement):
+        raise RuntimeError("RESULT_VECTOR_LENGTH")
+    values = list(stress) + list(mises) + [value for vector in displacement for value in vector]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        raise RuntimeError("RESULT_NONFINITE")
+    return {"complete": True, "nodes": len(ids)}
+
+
+def nodal_load_evidence(path, allowed_nodes):
+    """Read actual native node coordinates and loads, about the global origin."""
+    nodes, loads = {}, []
+    active = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            active = line.split(",", 1)[0].upper()
+        elif active == "*NODE":
+            node, *xyz = line.split(",")
+            nodes[int(node)] = tuple(float(value) for value in xyz[:3])
+        elif active == "*CLOAD":
+            node, axis, value = line.split(",")[:3]
+            loads.append((int(node), int(axis), float(value)))
+    force, moment = [0., 0., 0.], [0., 0., 0.]
+    for node, axis, value in loads:
+        if node not in nodes or axis not in (1, 2, 3) or not math.isfinite(value):
+            raise RuntimeError("NATIVE_LOAD_MAPPING")
+        vector = [0., 0., 0.]
+        vector[axis - 1] = value
+        x, y, z = nodes[node]
+        fx, fy, fz = vector
+        for i, component in enumerate(vector):
+            force[i] += component
+        for i, component in enumerate((y*fz-z*fy, z*fx-x*fz, x*fy-y*fx)):
+            moment[i] += component
+    return {"force_N": force, "moment_Nmm": moment, "moment_origin_mm": [0, 0, 0],
+            "loaded_nodes": len({node for node, _, _ in loads}),
+            "load_region_valid": bool(loads) and all(node in allowed_nodes for node, _, _ in loads)}
+
+
+def prepare_native_gmsh_input(gmsh, output):
+    # FreeCAD's embedded Windows Python can ignore PYTHONUTF8. The native
+    # writer writes its working path into comments with the locale encoding.
+    # Its public relative-working-directory API avoids that encoding boundary
+    # while keeping every file in the requested Unicode workspace.
+    with contextlib.chdir(output):
+        gmsh.get_tmp_file_paths(".")
+        gmsh.write_gmsh_input_files()
+        return output / gmsh.temp_file_geo, output / gmsh.temp_file_mesh
+
+
 def build_case(spec, config, output):
     import FreeCAD as App
     import Part
@@ -165,6 +224,9 @@ def build_case(spec, config, output):
     box.Shape = Part.makeBox(spec["length_mm"], spec["width_mm"], spec["height_mm"])
     if spec["name"] == "multiface":
         box.Shape = Part.makeBox(100, 5, 10).fuse(Part.makeBox(100, 5, 10, App.Vector(0, 5, 0)))
+    if spec["name"] == "curved_multiface":
+        box.Shape = Part.makeCylinder(5, 40, App.Vector(0, 5, 5), App.Vector(1, 0, 0)).fuse(
+            Part.makeCylinder(5, 60, App.Vector(40, 5, 5), App.Vector(1, 0, 0)))
     analysis = ObjectsFem.makeAnalysis(doc, "Analysis")
     material = ObjectsFem.makeMaterialSolid(doc, "Material")
     material.Material = {"Name": "Synthetic benchmark", "YoungsModulus": f'{spec["youngs_modulus_MPa"]} MPa', "PoissonRatio": str(spec["poisson_ratio"]), "Density": "1000 kg/m^3"}
@@ -179,6 +241,8 @@ def build_case(spec, config, output):
     analysis.addObject(fixed)
     load = ObjectsFem.makeConstraintForce(doc, "Load")
     load_faces = [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if abs((face.CenterOfMass.z - 10) if spec["name"] == "multiface" else (face.CenterOfMass.x - spec["length_mm"])) < 1e-7]
+    if spec["name"] == "curved_multiface":
+        load_faces = [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if isinstance(face.Surface, Part.Cylinder)]
     load.References = [(box, load_faces)]
     load.Force = f'{spec["force_N"]} N'
     direction = doc.addObject("Part::Feature", "LoadDirection")
@@ -196,14 +260,13 @@ def build_case(spec, config, output):
     doc.recompute()
     gmsh = GmshTools(mesh)
     gmsh.update_mesh_data()
-    gmsh.get_tmp_file_paths(str(output))
     gmsh.get_gmsh_command()
-    gmsh.write_gmsh_input_files()
+    geo_path, mesh_path = prepare_native_gmsh_input(gmsh, output)
     with (output / "gmsh.log").open("w", encoding="utf-8") as log:
-        run = subprocess.run([config["tools"]["gmsh"]["path"], "-", gmsh.temp_file_geo], cwd=output, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
+        run = subprocess.run([config["tools"]["gmsh"]["path"], "-", geo_path.name], cwd=output, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
     if run.returncode:
         raise RuntimeError("Gmsh failed")
-    mesh.FemMesh = Fem.read(gmsh.temp_file_mesh)
+    mesh.FemMesh = Fem.read(str(mesh_path))
     doc.recompute()
     fea = FemToolsCcx(analysis=analysis, solver=solver)
     fea.update_objects()
@@ -213,9 +276,12 @@ def build_case(spec, config, output):
         raise RuntimeError(error)
     fea.write_inp_file()
     inp = Path(fea.inp_file_name)
-    if spec["name"] == "multiface":
+    if spec["name"] in {"multiface", "curved_multiface"}:
         doc.saveAs(str(output / "analysis.FCStd"))
-        result = {"force_N": _cloads(inp), "faces": len(load_faces), "partial_face": {"valid": box.Shape.isValid(), "solid_count": len(box.Shape.Solids), "volume_delta_mm3": box.Shape.Volume - 10000}}
+        allowed_nodes = {node for face in load_faces for node in mesh.FemMesh.getNodesByFace(box.Shape.getElement(face))}
+        result = {**nodal_load_evidence(inp, allowed_nodes), "faces": len(load_faces),
+                  "curved_faces": sum(isinstance(box.Shape.getElement(face).Surface, Part.Cylinder) for face in load_faces),
+                  "partial_face": {"valid": box.Shape.isValid(), "solid_count": len(box.Shape.Solids), "volume_delta_mm3": box.Shape.Volume - (math.pi*2500 if spec["name"] == "curved_multiface" else 10000)}}
         App.closeDocument(doc.Name)
         return result
     with (output / "ccx.log").open("w", encoding="utf-8") as log:
@@ -229,6 +295,8 @@ def build_case(spec, config, output):
     result = next(obj for obj in analysis.Group if hasattr(obj, "vonMises"))
     ids = list(result.NodeNumbers)
     displacement = list(result.DisplacementVectors)
+    inventory = validate_result_fields(mesh.FemMesh.Nodes, ids,
+        [(v.x, v.y, v.z) for v in displacement], list(result.NodeStressXX), list(result.vonMises))
     if spec["name"] == "axial_bar":
         tips = [v.x for n, v in zip(ids, displacement) if abs(mesh.FemMesh.getNodeById(n).x - spec["length_mm"]) < 1e-6]
         far = [value for n, value in zip(ids, result.NodeStressXX) if 40 < mesh.FemMesh.getNodeById(n).x < 60]
@@ -255,6 +323,7 @@ def build_case(spec, config, output):
         "element_nodes": sorted({len(mesh.FemMesh.getElementNodes(e)) for e in mesh.FemMesh.Volumes}),
         "input_element_types": sorted(set(re.findall(r"^\*ELEMENT,\s*TYPE=([^,\s]+)", inp.read_text(encoding="utf-8"), re.M | re.I))),
         "finite": bool(values) and all(math.isfinite(value) for value in values),
+        "result_inventory": inventory,
         "geometry_valid": box.Shape.isValid(),
         "solid_count": len(box.Shape.Solids),
         "volume_mm3": box.Shape.Volume,
@@ -295,6 +364,8 @@ def main(request_path, response_path):
         multi = {"name": "multiface", "length_mm": 100, "width_mm": 10, "height_mm": 10, "youngs_modulus_MPa": 200000, "poisson_ratio": 0.3, "force_N": 40, "mesh_size_mm": 4}
         report["multiface"] = build_case(multi, config, Path(response_path).parent / "multiface")
         report["partial_face"] = report["multiface"].pop("partial_face")
+        multi["name"] = "curved_multiface"
+        report["curved_multiface"] = build_case(multi, config, Path(response_path).parent / "curved_multiface")
     except Exception:
         report["error"] = traceback.format_exc()
     finally:

@@ -28,12 +28,15 @@ class Child:
         return win32process.GetExitCodeProcess(self.process)
 
     def close(self):
+        import win32api
         self.job.Close()
-        self.process.Close()
+        win32api.CloseHandle(self.process)
 
 
 def start(request, token, stdout, stderr):
+    import _winapi
     import msvcrt
+    import win32api
     import win32con
     import win32job
     import win32process
@@ -49,22 +52,25 @@ def start(request, token, stdout, stderr):
     try:
         for handle in handles:
             os.set_handle_inheritable(handle, True)
-        startup = win32process.STARTUPINFO()
+        startup = subprocess.STARTUPINFO()
         startup.dwFlags |= win32con.STARTF_USESTDHANDLES
         startup.hStdInput, startup.hStdOutput, startup.hStdError = handles
-        process, thread, pid, _ = win32process.CreateProcess(None, subprocess.list2cmdline(request.argv), None, None, True, win32process.CREATE_SUSPENDED | win32process.CREATE_NEW_PROCESS_GROUP | win32process.CREATE_UNICODE_ENVIRONMENT, dict(request.env), str(request.cwd), startup)
+        startup.lpAttributeList = {"handle_list": handles}
+        # CPython's Windows adapter supplies STARTUPINFOEX and a handle allowlist.
+        # Keep the primary thread suspended until the worker-owned Job accepts it.
+        process, thread, pid, _ = _winapi.CreateProcess(None, subprocess.list2cmdline(request.argv), None, None, True, win32process.CREATE_SUSPENDED | win32process.CREATE_NEW_PROCESS_GROUP | win32process.CREATE_UNICODE_ENVIRONMENT, dict(request.env), str(request.cwd), startup)
         win32job.AssignProcessToJobObject(job, process)
         win32process.ResumeThread(thread)
         return Child(process, pid, job)
     except BaseException:
-        if process:
+        if process is not None:
             win32process.TerminateProcess(process, 1)
-            process.Close()
+            win32api.CloseHandle(process)
         job.Close()
         raise
     finally:
-        if thread:
-            thread.Close()
+        if thread is not None:
+            win32api.CloseHandle(thread)
         for handle in handles:
             os.set_handle_inheritable(handle, False)
         null.close()

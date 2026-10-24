@@ -34,6 +34,7 @@ def completed_worker() -> dict:
                 "element_nodes": [10],
                 "input_element_types": ["C3D10"],
                 "finite": True,
+                "result_inventory": {"complete": True, "nodes": 300},
                 "geometry_valid": True,
                 "solid_count": 1,
                 "volume_mm3": 10000.0,
@@ -48,6 +49,7 @@ def completed_worker() -> dict:
                 "element_nodes": [10],
                 "input_element_types": ["C3D10"],
                 "finite": True,
+                "result_inventory": {"complete": True, "nodes": 600},
                 "geometry_valid": True,
                 "solid_count": 1,
                 "volume_mm3": 20000.0,
@@ -56,7 +58,8 @@ def completed_worker() -> dict:
             },
         },
         "partial_face": {"valid": True, "volume_delta_mm3": 0.0, "solid_count": 1},
-        "multiface": {"force_N": [0.0, 0.0, -40.0], "faces": 2},
+        "multiface": {"force_N": [0.0, 0.0, -40.0], "faces": 2, "moment_Nmm": [-200, 2000, 0], "moment_origin_mm": [0, 0, 0], "load_region_valid": True, "loaded_nodes": 100},
+        "curved_multiface": {"force_N": [0.0, 0.0, -40.0], "faces": 2, "curved_faces": 2, "moment_Nmm": [-200, 2000, 0], "moment_origin_mm": [0, 0, 0], "load_region_valid": True, "loaded_nodes": 100},
     }
 
 
@@ -196,3 +199,13 @@ def test_console_transport_is_ascii_without_losing_unicode_paths(tmp_path):
 def test_windows_probe_checkout_preserves_frozen_resource_bytes():
     workflow = (Path(__file__).parents[1] / ".github/workflows/fea-p0.yml").read_text(encoding="utf-8")
     assert workflow.index("git config --global core.autocrlf false") < workflow.index("uses: actions/checkout@")
+
+
+@pytest.mark.parametrize('kind', ['wrong_moment', 'wrong_region', 'curved_missing', 'inventory_missing'])
+def test_force_sum_alone_cannot_pass_distribution_or_field_gate(kind):
+    worker = completed_worker()
+    if kind == 'wrong_moment': worker['multiface']['moment_Nmm'] = [-100, 2000, 0]
+    if kind == 'wrong_region': worker['multiface']['load_region_valid'] = False
+    if kind == 'curved_missing': worker.pop('curved_multiface', None)
+    if kind == 'inventory_missing': worker['cases']['axial_bar'].pop('result_inventory', None)
+    assert assess_native(worker)['automated_status'] == 'failed'
