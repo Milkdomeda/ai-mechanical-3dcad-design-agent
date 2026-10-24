@@ -19,7 +19,7 @@ from referencing.exceptions import NoSuchResource
 from .analysis_types import AnalysisError, JsonObject
 from .analysis_units import canonical_decimal, validate_normalized_quantity
 
-_NAMES = frozenset({"prepare-request", "spec", "session", "run", "region", "result", "gui-request", "gui-receipt", "manifest", "completion", "configuration", "geometry-request", "geometry", "region-selectors", "region-bindings", "load-ledger"})
+_NAMES = frozenset({"prepare-request", "spec", "session", "run", "region", "result", "gui-request", "gui-receipt", "manifest", "completion", "configuration", "geometry-request", "geometry", "region-selectors", "region-bindings", "load-ledger", "source-binding", "knowledge-receipt"})
 _PREFIX = "urn:mechanical-design:analysis:"
 _MAX_BYTES = 4 * 1024 * 1024
 
