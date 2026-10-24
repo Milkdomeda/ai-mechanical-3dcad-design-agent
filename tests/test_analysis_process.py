@@ -25,6 +25,7 @@ def wait_for(predicate, timeout=8):
 
 def alive(pid):
     if os.name == "nt":
+        import pywintypes
         import win32api
         import win32process
         try:
@@ -33,8 +34,10 @@ def alive(pid):
                 return win32process.GetExitCodeProcess(handle) == 259
             finally:
                 handle.Close()
-        except OSError:
-            return False
+        except pywintypes.error as exc:
+            if exc.winerror in {87, 1168}:
+                return False
+            raise
     try:
         os.kill(pid, 0)
         # A terminated unreaped descendant is no longer executing.

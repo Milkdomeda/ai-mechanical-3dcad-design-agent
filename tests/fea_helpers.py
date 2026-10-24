@@ -20,6 +20,86 @@ def read_version(name, result):
     return match.group(1)
 
 
+def _det(matrix):
+    a, b, c = matrix
+    return a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])
+
+
+def tet10_quality(coordinates):
+    """Sample the actual C3D10 map, including quadratic midside geometry.
+
+    This sampling is evidence, not a global positivity proof for arbitrary
+    curved elements. P0 calibration applies only to these straight benchmarks.
+    """
+    samples = [(1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1), (.25,) * 4]
+    edges = [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)]
+    for i, j in edges:
+        point = [0.0] * 4
+        point[i] = point[j] = .5
+        samples.append(point)
+    for i in range(4):
+        samples.append(tuple(.5854101966249685 if j == i else .1381966011250105 for j in range(4)))
+    gradients = [(-1, -1, -1), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    determinants, scaled = [], []
+    for point in samples:
+        derivatives = [[(4 * point[i] - 1) * value for value in gradients[i]] for i in range(4)]
+        derivatives.extend([[4 * (point[i] * gradients[j][k] + point[j] * gradients[i][k]) for k in range(3)] for i, j in edges])
+        matrix = [[sum(coordinates[n][axis] * derivatives[n][k] for n in range(10)) for k in range(3)] for axis in range(3)]
+        determinant = _det(matrix)
+        scale = math.prod(math.sqrt(sum(matrix[axis][k] ** 2 for axis in range(3))) for k in range(3))
+        determinants.append(determinant)
+        scaled.append(determinant / scale if scale else 0)
+    return {"min_det_mm3": min(determinants), "min_scaled_jacobian": min(scaled), "sample_points": len(samples)}
+
+
+def _solve(matrix, values):
+    determinant = _det(matrix)
+    return [_det([[values[row] if col == axis else matrix[row][col] for col in range(3)] for row in range(3)]) / determinant for axis in range(3)]
+
+
+def mesh_quality(inp, length, width, height):
+    nodes, elements = {}, []
+    section = ""
+    for line in inp.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            section = "nodes" if line.upper().startswith("*NODE,") else "elements" if line.upper().startswith("*ELEMENT,") and "C3D10" in line.upper() else ""
+            continue
+        data = [value.strip() for value in line.split(",") if value.strip()]
+        if section == "nodes":
+            nodes[int(data[0])] = tuple(float(value) for value in data[1:4])
+        elif section == "elements":
+            if len(data) != 11:
+                raise RuntimeError("Expected one native ten-node tetrahedron per record")
+            elements.append([int(value) for value in data[1:]])
+    qualities = [tet10_quality([nodes[n] for n in element]) for element in elements]
+    rays = []
+    for x, y in ((.37 * length, .43 * width), (.51 * length, .57 * width), (.73 * length, .37 * width)):
+        intervals = []
+        for element in elements:
+            points = [nodes[n] for n in element[:4]]
+            matrix = [[points[col + 1][row] - points[0][row] for col in range(3)] for row in range(3)]
+            intercept = _solve(matrix, [x - points[0][0], y - points[0][1], -points[0][2]])
+            slope = _solve(matrix, [0, 0, 1])
+            intercept = [1 - sum(intercept), *intercept]
+            slope = [-sum(slope), *slope]
+            low, high = 0.0, float(height)
+            for a, b in zip(intercept, slope):
+                if abs(b) < 1e-12:
+                    if a < -1e-9:
+                        high = -1
+                elif b > 0:
+                    low = max(low, -a / b)
+                else:
+                    high = min(high, -a / b)
+            if high - low > 1e-7:
+                intervals.append((low, high))
+        rays.append({"xy_mm": [x, y], "elements": len(intervals), "covered_mm": sum(b - a for a, b in intervals)})
+    return {"checked_elements": len(elements), "min_det_mm3": min(q["min_det_mm3"] for q in qualities), "min_scaled_jacobian": min(q["min_scaled_jacobian"] for q in qualities), "sample_points_per_element": 15, "thickness_rays": rays, "scope": "straight synthetic benchmarks only; not a global curved-element positivity proof"}
+
+
 def _reaction(text):
     match = re.search(r"total force.*?\n\s*\n?\s*([-+\d.Ee]+)\s+([-+\d.Ee]+)\s+([-+\d.Ee]+)", text, re.I)
     if not match:
@@ -154,6 +234,7 @@ def build_case(spec, config, output):
         "result_properties": result.PropertiesList,
         "input_file": inp.name,
         "cload_N": _cloads(inp),
+        "quality": mesh_quality(inp, spec["length_mm"], spec["width_mm"], spec["height_mm"]),
         "object_factories": ["makeAnalysis", "makeMaterialSolid", "makeSolverCalculiXCcxTools", "makeConstraintFixed", "makeConstraintForce", "makeMeshGmsh"],
     }
     App.closeDocument(doc.Name)

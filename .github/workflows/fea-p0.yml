@@ -25,7 +25,7 @@ jobs:
       - name: Run native Windows process ownership tests
         shell: pwsh
         run: |
-          uv run --offline --group test python -m pytest tests/test_analysis_process.py tests/test_analysis_process_windows.py tests/test_fea_native_probe.py -q --junitxml="$env:RUNNER_TEMP/process-tests.xml"
+          uv run --offline --group test python -m pytest tests/test_analysis_process.py tests/test_analysis_process_windows.py tests/test_fea_native_probe.py tests/test_fea_mesh_quality.py -q --junitxml="$env:RUNNER_TEMP/process-tests.xml"
           if ($LASTEXITCODE -ne 0) { throw 'Process/probe contract tests failed' }
       - name: Download and verify official FreeCAD 1.1.3
         shell: pwsh

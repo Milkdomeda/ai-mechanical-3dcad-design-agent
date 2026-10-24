@@ -36,6 +36,7 @@ def completed_worker() -> dict:
                 "solid_count": 1,
                 "volume_mm3": 10000.0,
                 "rf_native_output": True,
+                "quality": {"checked_elements": 120, "min_det_mm3": 0.2, "min_scaled_jacobian": 0.3, "thickness_rays": [{"elements": 4, "covered_mm": 10}] * 3},
             },
             "cantilever": {
                 "displacement_mm": 0.16,
@@ -49,6 +50,7 @@ def completed_worker() -> dict:
                 "solid_count": 1,
                 "volume_mm3": 20000.0,
                 "rf_native_output": True,
+                "quality": {"checked_elements": 240, "min_det_mm3": 0.2, "min_scaled_jacobian": 0.3, "thickness_rays": [{"elements": 4, "covered_mm": 10}] * 3},
             },
         },
         "partial_face": {"valid": True, "volume_delta_mm3": 0.0, "solid_count": 1},
@@ -63,7 +65,7 @@ def test_native_probe_records_evidence_and_never_reopens_fem() -> None:
     assert report["automated_status"] == "passed"
     assert report["status"] == "blocked"
     assert report["checks"]["native_gui_roundtrip"]["status"] == "not_executed"
-    assert report["checks"]["mesh_quality_calibration"]["status"] == "not_executed"
+    assert report["checks"]["mesh_quality_calibration"]["status"] == "passed"
 
 
 @pytest.mark.parametrize("field,value", [("displacement_mm", None), ("stress_MPa", float("nan")), ("elements", 0), ("rf_native_output", False)])
@@ -83,6 +85,18 @@ def test_wrong_reaction_or_linear_tets_cannot_pass() -> None:
 def test_native_writer_must_emit_quadratic_tets() -> None:
     worker = completed_worker()
     worker["cases"]["axial_bar"]["input_element_types"] = ["C3D4"]
+    assert assess_native(worker)["automated_status"] == "failed"
+
+
+def test_inverted_or_unresolved_thickness_mesh_cannot_pass() -> None:
+    worker = completed_worker()
+    worker["cases"]["axial_bar"]["quality"]["min_det_mm3"] = -1
+    assert assess_native(worker)["checks"]["mesh_quality_calibration"]["status"] == "failed"
+
+
+def test_worker_error_cannot_be_hidden_by_valid_measurements() -> None:
+    worker = completed_worker()
+    worker["error"] = "Failed to finish the probe"
     assert assess_native(worker)["automated_status"] == "failed"
 
 

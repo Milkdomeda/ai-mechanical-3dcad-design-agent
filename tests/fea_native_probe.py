@@ -94,6 +94,7 @@ def assess_native(worker: dict) -> dict:
         checks[name] = {"status": "passed" if passed else "failed", "details": details}
 
     check("freecad_version", worker.get("version") == "1.1.3")
+    check("worker_completed", "error" not in worker)
     check("no_automatic_fem_reopen", worker.get("auto_reopen_count") == 0)
     for name, displacement, stress, force, rtol, volume in (
         ("axial_bar", 0.1, 1.0, [-100, 0, 0], 0.02, 10000),
@@ -107,12 +108,15 @@ def assess_native(worker: dict) -> dict:
         check(name + "_native_rf", result.get("rf_native_output") is True)
         check(name + "_mesh", type(result.get("elements")) is int and result["elements"] > 0 and result.get("element_nodes") == [10] and result.get("input_element_types") == ["C3D10"] and result.get("finite") is True)
         check(name + "_geometry", result.get("geometry_valid") is True and result.get("solid_count") == 1 and _near(result.get("volume_mm3"), volume, 1e-9))
+    qualities = [worker.get("cases", {}).get(name, {}).get("quality", {}) for name in ("axial_bar", "cantilever")]
+    quality_ok = all(_number(q.get("min_det_mm3")) and q["min_det_mm3"] > 0 and _number(q.get("min_scaled_jacobian")) and q["min_scaled_jacobian"] > 0 and q.get("checked_elements") == worker["cases"][name].get("elements") and len(q.get("thickness_rays", [])) == 3 and all(ray.get("elements", 0) >= 2 and _near(ray.get("covered_mm"), 10, 1e-6) for ray in q["thickness_rays"]) for name, q in zip(("axial_bar", "cantilever"), qualities))
+    check("mesh_quality_calibration", quality_ok, {"scope": "straight synthetic benchmarks", "criterion": "15-point sampled determinant/scaled Jacobian > 0 and >=2 elements on each of 3 full-thickness rays", "measurements": qualities})
     patch = worker.get("partial_face", {})
     check("partial_face", patch.get("valid") is True and patch.get("solid_count") == 1 and _near(patch.get("volume_delta_mm3"), 0, 0))
     force = worker.get("multiface", {}).get("force_N")
     check("multiface_conservation", isinstance(force, list) and len(force) == 3 and all(_near(a, b, 1e-9) for a, b in zip(force, [0, 0, -40])) and worker.get("multiface", {}).get("faces", 0) >= 2, force)
     automated = "passed" if all(item["status"] == "passed" for item in checks.values()) else "failed"
-    for name in ("native_gui_roundtrip", "mesh_quality_calibration"):
+    for name in ("native_gui_roundtrip",):
         checks[name] = {"status": "not_executed", "details": "Separate same-version evidence required; not inferred from solver success."}
     return {
         "schema_version": "FEANativeProbe/v1",
