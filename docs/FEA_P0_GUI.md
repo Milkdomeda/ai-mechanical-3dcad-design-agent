@@ -67,3 +67,43 @@ owned GUI normally. Only the living owner terminates its process tree; a
 different session's stop request is ignored. W1 contents are cleared only
 after owned process exit. Startup/identity failures retain scratch for
 diagnosis. No existing installation or user CAD is part of cleanup.
+
+## Autonomous native GUI regression
+
+The separate P0 automation entry uses a fresh normal GUI process and fixed
+synthetic specifications. It records `actor=assistant`; historical human
+receipts remain unchanged. It is test infrastructure, not the deployable
+analysis product interface.
+
+```text
+python scripts/fea_gui_automation.py --config <pinned-r1-config.json> --workspace <new-external-workspace> --native-scratch-root <private-ascii-root>
+```
+
+The first process generates complete native GUI fixtures through standard
+`ObjectsFem` factories. A second independent process restores exactly those
+hash-bound fixtures after auditing the archive and native JSON-null Proxy
+metadata. The second process checks standard ViewProviders, result and solver
+task panels, mesh/field inventory, displayed quantities, and new input written
+by the native task-panel button. Input comparison uses the unchanged semantic,
+force, moment and work checks. Each process retains W1 until exit and verifies
+the runtime before and after. No command accepts an arbitrary source FEM file.
+This acceptance-only restore path does not change the product CAD security
+policy or authorize automated customer Proxy restoration.
+
+A headless-generated FCStd can contain complete result fields while omitting
+`GuiDocument.xml` and native Python ViewProviders. Such a file can open without
+showing the standard result/solver panels. A deployable native delivery needs
+GUI-context construction, the correct standard ViewProviders, and actual
+save/reopen checks. Reassigning Proxy objects on a previously restored placeholder
+can also leave native attachment state incomplete; that is not the production
+reconstruction strategy.
+
+The report separates native GUI regression, pending visual review, unexecuted
+human review, and overall P0 status. A successful automation command establishes
+only its recorded checks. It does not certify engineering strength or close an
+unverified platform/visual gate.
+
+The CI workflow records Windows Server x64 and Windows 11 ARM64 with the x64
+FreeCAD archive as distinct compatibility runs. Windows 11 ARM64 execution is
+not Windows 11 x64 evidence. OpenGL or desktop startup failures remain failures;
+the workflow does not switch to an offscreen backend or relabel them as passes.
