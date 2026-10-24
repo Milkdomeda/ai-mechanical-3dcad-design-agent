@@ -36,8 +36,8 @@ def patch_bytes(original: bytes) -> bytes:
 
 
 def asset_identities() -> dict:
-    identities={str(path.relative_to(ASSETS)):digest(path.read_bytes()) for path in (ASSETS/'native_faceforce.py',ASSETS/'meshtools.patch',ASSETS/'provenance.json',ASSETS/'COPYING.LESSER')}
-    for name in ('fea_r1_patch.py','fea_r1_runtime.py','fea_r1_prepare.py','fea_r1_identity.py','fea_native_probe.py','fea_helpers.py'):
+    identities={str(path.relative_to(ASSETS)):digest(path.read_bytes()) for path in (ASSETS/'native_faceforce.py',ASSETS/'meshtools.patch',ASSETS/'provenance.json',ASSETS/'COPYING.LESSER',ASSETS/'native_faceforce_unittest.py')}
+    for name in ('fea_r1_patch.py','fea_r1_runtime.py','fea_r1_prepare.py','fea_r1_identity.py','fea_native_probe.py','fea_helpers.py','fea_r1_reference.py','fea_r1_evidence.py','fea_r1_worker.py','fea_r1_runner.py'):
         path=Path(__file__).with_name(name)
         identities['integration/'+name]=digest(path.read_bytes())
     return identities

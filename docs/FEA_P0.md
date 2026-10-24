@@ -59,6 +59,73 @@ unsupported. The separate manual native GUI open/recompute/input-equivalence
 gate still needs the supported startup configuration and evidence. Native
 writer or SMESH runtime patches require separate review and authorization.
 
+## Reviewed native R1 compatibility profile
+
+The source-only R1 patch candidate is in
+[`runtime-patches/freecad-1.1.3-faceforce-r1`](../runtime-patches/freecad-1.1.3-faceforce-r1/README.md).
+It installs consistent T6 integration and one total force across unique
+reference faces into native `femmesh/meshtools.py`. The standard writer still
+generates input; the agent never changes Force or post-processes CLOAD records.
+The payload/diff has its own LGPL license and provenance. It is not an enabled
+product feature or an unchanged official FreeCAD runtime.
+
+Prepare only a **new isolated copy**, using an explicitly reviewed v1 tool
+configuration and official 1.1.3 runtime root:
+
+```text
+python scripts/fea_r1_prepare.py --source-root <official-runtime-root> --base-config <v1-config.json> --destination <new-isolated-runtime-directory>
+python scripts/fea_acceptance.py --config <isolated-runtime-directory/config.json> --workspace <new-Unicode-P0-workspace> --native-scratch-root <private-ASCII-root> --phase p0 --automated-only
+python scripts/fea_r1_acceptance.py --config <isolated-runtime-directory/config.json> --workspace <new-Unicode-R1-workspace> --native-scratch-root <private-ASCII-root>
+```
+
+Preparation refuses unknown module bytes, broad directories containing
+unrelated siblings, existing destinations, aliases or source/destination
+overlap. Source files are never patched. The macOS adapter preserves detached
+signatures with the system copy tool, excludes only unsealed generated Python
+caches, verifies the baseline resource signature, then locally signs the
+isolated modified envelope and verifies it. This local ad-hoc build is not an
+official Developer ID/notarized distribution. It does not disable OS policy,
+remove quarantine metadata or alter the original installation. The copied
+bundle is made read-only. Windows uses a separate official portable copy.
+
+The generated `FEAP0Configuration/v2` requires the exact R1 profile and a
+SHA-256-pinned `FEAR1Runtime/v1` manifest. Module, source patch, integration
+scripts, complete runtime inventory, Python/Qt/OCCT and tool identities are
+bound together. Before geometry and after execution the worker verifies the
+actual imported module path, bytes and all changed function/helper code.
+Structural code fingerprints avoid treating Python marshal interning details
+as code changes while still rejecting stale bytecode. User home/data/config
+are explicit isolated paths; bytecode writes are disabled. Windows extended
+device paths are compared by canonical name and file identity. V1 continues
+to require the unchanged official native module; it cannot silently select R1.
+
+The R1 automated evidence adds independent analytic graph integration, signed
+corner weights, legacy T3/Q4/Q8, invalid-map/reference rejection, order-20
+Vandermonde/NumPy surface integration of original input, node-by-node forces,
+moments and quadratic virtual work. NumPy is already bundled with native
+FreeCAD; no new numerical dependency is installed. Three mesh levels and
+reversed/permuted reference cases run the native solver, retaining result
+inventories and response measurements. These measurements do not establish a
+general curved-mesh or engineering-strength acceptance policy.
+
+For these additional static, globally clamped CLOAD fixtures, raw CalculiX RF
+is retained. The support resultant is `raw RF - CLOAD on the printed constrained
+nodes`, using constraints, node sets and loads read from the unchanged input
+and independently checked by the host. RF includes loading as well as support
+reaction at a node; see the official [CalculiX 2.23 manual, section 6.11.5](https://www.dhondt.de/ccx_2.23.pdf#page=397).
+Transformed/MPC/distributed/nonzero-boundary/multi-step accounting is rejected.
+This interpretation does not change existing P0 assertions, their tolerances,
+the native input, or solver output. Both raw RF and derived support resultants
+remain in evidence.
+
+The dedicated Windows R1 workflow must demonstrate the original official
+curved-force failure, then pass the unchanged P0 automated checks and the R1
+evidence against a different copied runtime. A green R1 compatibility workflow
+still records full P0 as `blocked` and the operator GUI gate as `not_executed`.
+Rollback selects the original v1 configuration and discards only the owned
+isolated copy after its processes stop. No system installation or user CAD is
+part of the patch.
+
 The runner builds standard native FEM objects, generates Gmsh second-order
 tetrahedra and the unmodified native CalculiX input, executes CalculiX,
 reads native results and RF totals, and checks them against hand-derived

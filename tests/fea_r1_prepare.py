@@ -80,6 +80,14 @@ def _readonly(root):
     root.chmod(root.stat().st_mode & ~0o222)
 
 
+def relative_source_tool(path,source):
+    from mechanical_design_agent import secure_fs
+    canonical=secure_fs.validate_managed_path(Path(path),allow_missing_leaf=False).path
+    root=secure_fs.validate_managed_path(Path(source),allow_missing_leaf=False).path
+    if not canonical.is_relative_to(root):raise ValueError('R1_BASE_TOOL_OUTSIDE_ROOT')
+    return canonical.relative_to(root)
+
+
 def prepare_runtime(source_root,destination,base_config,*,source_archive_sha256=None,baseline=False):
     from mechanical_design_agent import secure_fs
     from fea_native_probe import _validate_config,verify_tool
@@ -100,8 +108,8 @@ def prepare_runtime(source_root,destination,base_config,*,source_archive_sha256=
     if patch_bytes(original)!=(ASSETS/'meshtools.patch').read_bytes():raise ValueError('R1_REVIEWED_DIFF_MISMATCH')
     _validate_config(base_config)
     if base_config['schema_version']!='FEAP0Configuration/v1':raise ValueError('R1_BASE_CONFIG_REQUIRED')
+    relative_tools={name:relative_source_tool(pin['path'],source) for name,pin in base_config['tools'].items()}
     for pin in base_config['tools'].values():
-        if not Path(pin['path']).resolve(strict=True).is_relative_to(source):raise ValueError('R1_BASE_TOOL_OUTSIDE_ROOT')
         verify_tool(pin)
     source_identity={'module_sha256':digest(original),'tools':{n:verify_tool(p) for n,p in base_config['tools'].items()}}
     target.mkdir(mode=0o700)
@@ -118,7 +126,7 @@ def prepare_runtime(source_root,destination,base_config,*,source_archive_sha256=
         if sys.platform=='darwin':
             signatures['local_sign']=_signature(runtime,sign=True)
             signatures['patched']=_signature(runtime)
-    tools={n:{**pin,'path':str(runtime/Path(pin['path']).relative_to(source))} for n,pin in base_config['tools'].items()}
+    tools={n:{**pin,'path':str(runtime/relative_tools[n])} for n,pin in base_config['tools'].items()}
     # Signing the app envelope may change a launcher's signature bytes.
     for pin in tools.values():pin['sha256']=digest(Path(pin['path']).read_bytes())
     _readonly(runtime)

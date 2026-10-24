@@ -210,7 +210,7 @@ def prepare_native_gmsh_input(gmsh, output):
         return output / gmsh.temp_file_geo, output / gmsh.temp_file_mesh
 
 
-def build_case(spec, config, output):
+def build_case(spec, config, output, *, evidence_hook=None, reverse_force=False, permute_references=False):
     import FreeCAD as App
     import Part
     import ObjectsFem
@@ -244,12 +244,13 @@ def build_case(spec, config, output):
     load_faces = [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if abs((face.CenterOfMass.z - 10) if spec["name"] == "multiface" else (face.CenterOfMass.x - spec["length_mm"])) < 1e-7]
     if spec["name"] == "curved_multiface":
         load_faces = [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if isinstance(face.Surface, Part.Cylinder)]
+    if permute_references:load_faces=list(reversed(load_faces))
     load.References = [(box, load_faces)]
     load.Force = f'{spec["force_N"]} N'
     direction = doc.addObject("Part::Feature", "LoadDirection")
     direction.Shape = Part.makeLine(App.Vector(0, 0, 0), App.Vector(1, 0, 0) if spec["name"] == "axial_bar" else App.Vector(0, 0, -1))
     load.Direction = (direction, ["Edge1"])
-    load.Reversed = False
+    load.Reversed = reverse_force
     analysis.addObject(load)
     mesh = ObjectsFem.makeMeshGmsh(doc, "Mesh")
     mesh.Shape = box
@@ -284,6 +285,8 @@ def build_case(spec, config, output):
                   "mesh_inventory": {"nodes": mesh.FemMesh.NodeCount, "elements": mesh.FemMesh.VolumeCount},
                   "curved_faces": sum(isinstance(box.Shape.getElement(face).Surface, Part.Cylinder) for face in load_faces),
                   "partial_face": {"valid": box.Shape.isValid(), "solid_count": len(box.Shape.Solids), "volume_delta_mm3": box.Shape.Volume - (math.pi*2500 if spec["name"] == "curved_multiface" else 10000)}}
+        if evidence_hook is not None:
+            result['r1']=evidence_hook(doc=doc,analysis=analysis,mesh=mesh,fea=fea,solid=box,load=load,load_faces=load_faces,inp=inp,output=output,config=config)
         App.closeDocument(doc.Name)
         return result
     with (output / "ccx.log").open("w", encoding="utf-8") as log:

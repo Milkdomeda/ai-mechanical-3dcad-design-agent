@@ -1,6 +1,7 @@
 """P0 native runtime identity; importable by embedded Python without product deps."""
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import sys
@@ -12,12 +13,23 @@ def approved_module_digest():
     return json.loads((ASSETS/'provenance.json').read_text(encoding='utf-8'))['patched_sha256']
 
 
+def windows_path_key(value):
+    if value.startswith('\\\\?\\UNC\\'):value='\\\\'+value[8:]
+    elif value.startswith('\\\\?\\'):value=value[4:]
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def canonical_path(path):
+    resolved=Path(path).resolve(strict=True)
+    return Path(windows_path_key(str(resolved))) if os.name=='nt' else resolved
+
+
 def tree_inventory(root):
     root=Path(root).resolve(strict=True);result={}
     for path in sorted(root.rglob('*')):
         name=path.relative_to(root).as_posix()
         if path.is_symlink():
-            if not path.resolve(strict=True).is_relative_to(root):raise ValueError('R1_RUNTIME_EXTERNAL_SYMLINK')
+            if not canonical_path(path).is_relative_to(canonical_path(root)):raise ValueError('R1_RUNTIME_EXTERNAL_SYMLINK')
             result[name]={'symlink':os.readlink(path)}
         elif path.is_file():
             with path.open('rb') as stream:result[name]={'sha256':hashlib.file_digest(stream,'sha256').hexdigest()}
@@ -43,12 +55,16 @@ def verify_runtime(config, *, full_tree=True):
     if manifest.get('assets')!=asset_identities():raise ValueError('R1_PATCH_ASSET_IDENTITY')
     if manifest.get('tools')!=config['tools']:raise ValueError('R1_TOOL_CONFIG_IDENTITY')
     root=Path(manifest['runtime_root']);module=Path(manifest['module_path'])
-    if root.is_symlink() or module.is_symlink() or not module.resolve(strict=True).is_relative_to(root.resolve(strict=True)):raise ValueError('R1_MODULE_PATH')
+    if root.is_symlink() or module.is_symlink() or not canonical_path(module).is_relative_to(canonical_path(root)):raise ValueError('R1_MODULE_PATH')
+    if full_tree:
+        from mechanical_design_agent import secure_fs
+        secure_fs.validate_managed_path(root,allow_missing_leaf=False)
+        secure_fs.validate_managed_path(module,allow_missing_leaf=False)
     expected=approved_module_digest()
     if manifest.get('module_sha256')!=expected or digest(module.read_bytes())!=expected:raise ValueError('R1_NATIVE_MODULE_DIGEST')
     for tool in config['tools'].values():
         p=Path(tool['path'])
-        if p.is_symlink() or not p.resolve(strict=True).is_relative_to(root.resolve(strict=True)) or digest(p.read_bytes())!=tool['sha256']:raise ValueError('R1_TOOL_DIGEST')
+        if p.is_symlink() or not canonical_path(p).is_relative_to(canonical_path(root)) or digest(p.read_bytes())!=tool['sha256']:raise ValueError('R1_TOOL_DIGEST')
     if full_tree:
         if tree_inventory(root)!=manifest['tree']:raise ValueError('R1_RUNTIME_TREE_CHANGED')
         if sys.platform=='darwin' and root.suffix=='.app':
@@ -59,7 +75,7 @@ def verify_runtime(config, *, full_tree=True):
 
 def loaded_module_receipt(expected, module):
     path=Path(module.__file__).resolve(strict=True)
-    if path!=Path(expected['module_path']).resolve(strict=True) or digest(path.read_bytes())!=expected['module_sha256']:raise ValueError('R1_LOADED_MODULE_IDENTITY')
+    if canonical_path(path)!=canonical_path(expected['module_path']) or not os.path.samefile(path,expected['module_path']) or digest(path.read_bytes())!=expected['module_sha256']:raise ValueError('R1_LOADED_MODULE_IDENTITY')
     compiled=compile(path.read_bytes(),module.__file__,'exec',dont_inherit=True,optimize=sys.flags.optimize)
     names=['get_ref_facenodes_areas','get_force_obj_face_nodeload_table']
     codes={code.co_name:code for code in compiled.co_consts if isinstance(code,types.CodeType)}

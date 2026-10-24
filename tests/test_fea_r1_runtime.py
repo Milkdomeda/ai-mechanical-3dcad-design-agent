@@ -129,3 +129,17 @@ def test_stale_loaded_code_is_rejected_even_when_source_digest_matches(tmp_path)
     path.write_text(path.read_text().replace('duplicated literal value','different behavior'))
     expected['module_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(ValueError,match='R1_LOADED_CODE_MISMATCH'):loaded_module_receipt(expected,module)
+
+
+def test_windows_device_prefix_does_not_create_a_different_native_module_name():
+    from fea_r1_runtime import windows_path_key
+    assert windows_path_key(r'\\?\D:\Runtime\Mod\Fem\meshtools.py')==windows_path_key(r'd:\runtime\mod\fem\meshtools.py')
+    assert windows_path_key(r'D:\Other\meshtools.py')!=windows_path_key(r'D:\Runtime\meshtools.py')
+
+
+def test_source_tool_mapping_uses_the_same_canonical_root_as_secure_fs(tmp_path):
+    from fea_r1_prepare import relative_source_tool
+    from mechanical_design_agent import secure_fs
+    root=tmp_path/'runtime';tool=root/'bin/tool.exe';tool.parent.mkdir(parents=True);tool.write_bytes(b'tool')
+    canonical=secure_fs.validate_managed_path(root,allow_missing_leaf=False).path
+    assert relative_source_tool(tool,canonical)==Path('bin/tool.exe')

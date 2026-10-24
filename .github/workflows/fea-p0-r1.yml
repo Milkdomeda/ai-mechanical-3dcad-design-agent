@@ -1,0 +1,120 @@
+name: FEA P0 R1 automated compatibility
+
+on:
+  push:
+    branches: [codex/fea-p0-r1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-p0:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Preserve frozen source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Prepare Python test environment
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.11.21
+          uv sync --frozen --group test --python 3.12
+      - name: Run native Windows process ownership tests
+        shell: pwsh
+        run: |
+          uv run --offline --group test python -m pytest tests/test_analysis_process.py tests/test_analysis_process_windows.py tests/test_fea_native_probe.py tests/test_fea_mesh_quality.py tests/test_fea_native_scratch.py -q --junitxml="$env:RUNNER_TEMP/process-tests.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Process/probe contract tests failed' }
+      - name: Prewarm clean-install dependencies for the complete offline suite
+        shell: pwsh
+        run: |
+          $cache = (uv cache dir | Out-String).Trim()
+          "UV_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $second = Join-Path $env:RUNNER_TEMP 'fea-second-ntfs'
+          New-Item -ItemType Directory -Force -Path $second | Out-Null
+          "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$second" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $dist = Join-Path $env:RUNNER_TEMP 'fea-build-prewarm'
+          $venv = Join-Path $env:RUNNER_TEMP 'fea-install-prewarm'
+          $constraints = Join-Path $env:RUNNER_TEMP 'fea-constraints.txt'
+          uv build --wheel --sdist --out-dir $dist
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm build failed' }
+          uv export --frozen --group test --format requirements-txt --no-emit-project --no-hashes --output-file $constraints
+          uv venv --python 3.12 $venv
+          $python = Join-Path $venv 'Scripts/python.exe'
+          $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
+          uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm install failed' }
+      - name: Run complete supported offline suite
+        shell: pwsh
+        run: |
+          $env:UV_OFFLINE = '1'
+          uv run --offline --group test python -m pytest -q -rs --junitxml="$env:RUNNER_TEMP/full-offline.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Complete offline suite failed' }
+      - name: Download and verify official FreeCAD 1.1.3
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'FreeCAD.7z'
+          Invoke-WebRequest 'https://github.com/FreeCAD/FreeCAD/releases/download/1.1.3/FreeCAD_1.1.3-Windows-x86_64-py311.7z' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4') { throw 'Official archive digest mismatch' }
+          $tools = Join-Path $env:RUNNER_TEMP 'freecad-tools'
+          7z x $archive "-o$tools" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
+          uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned portable tool discovery failed' }
+      - name: Preserve official baseline failure at unchanged numerical gates
+        shell: pwsh
+        run: |
+          $workspace = Join-Path $env:RUNNER_TEMP 'R1 official baseline 中文'
+          uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/fea-config.json" --workspace $workspace --native-scratch-root "$env:RUNNER_TEMP/fea-native-cache" --phase p0 --automated-only
+          $code = $LASTEXITCODE
+          $report = Get-Content -LiteralPath (Join-Path $workspace 'probe.json') -Raw | ConvertFrom-Json
+          if ($code -ne 3 -or $report.automated_status -ne 'failed' -or $report.checks.curved_multiface_conservation.status -ne 'failed') { throw 'Official baseline must demonstrate the original curved-force failure' }
+          foreach ($check in $report.checks.PSObject.Properties) {
+            if ($check.Name -notin @('curved_multiface_conservation', 'native_gui_roundtrip') -and $check.Value.status -ne 'passed') { throw "Unexpected baseline failure: $($check.Name)" }
+          }
+          exit 0
+      - name: Prepare separate identity-bound R1 runtime
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'freecad-tools'
+          $copy = Join-Path $env:RUNNER_TEMP 'freecad-r1-runtime'
+          uv run --offline --group test python scripts/fea_r1_prepare.py --source-root $source --destination $copy --base-config "$env:RUNNER_TEMP/fea-config.json" --source-archive-sha256 9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4
+          if ($LASTEXITCODE -ne 0) { throw 'R1 isolation or identity failed' }
+      - name: Run unchanged P0 automated assessment against R1
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'freecad-r1-runtime/config.json'
+          $workspace = Join-Path $env:RUNNER_TEMP 'R1 P0 中文 evidence'
+          uv run --offline --group test python scripts/fea_acceptance.py --config $config --workspace $workspace --native-scratch-root "$env:RUNNER_TEMP/fea-native-cache" --phase p0 --automated-only
+          if ($LASTEXITCODE -ne 0) { throw 'R1 failed unchanged automated numerical gates' }
+          $report = Get-Content -LiteralPath (Join-Path $workspace 'probe.json') -Raw | ConvertFrom-Json
+          if ($report.automated_status -ne 'passed' -or $report.status -ne 'blocked' -or $report.checks.native_gui_roundtrip.status -ne 'not_executed') { throw 'Operator gate must remain unmet' }
+      - name: Validate native nodal forces, virtual work and refinement
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'freecad-r1-runtime/config.json'
+          $workspace = Join-Path $env:RUNNER_TEMP 'R1 detail 中文 evidence'
+          uv run --offline --group test python scripts/fea_r1_acceptance.py --config $config --workspace $workspace --native-scratch-root "$env:RUNNER_TEMP/fea-native-cache"
+          if ($LASTEXITCODE -ne 0) { throw 'Independent R1 evidence failed' }
+          $report = Get-Content -LiteralPath (Join-Path $workspace 'r1-report.json') -Raw | ConvertFrom-Json
+          if ($report.automated_status -ne 'passed' -or $report.status -ne 'blocked' -or $report.native_gui_roundtrip -ne 'not_executed') { throw 'R1 is automated evidence, not completed P0' }
+      - name: Upload synthetic R1 evidence and runtime identity only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-fea-r1-evidence
+          path: |
+            ${{ runner.temp }}/R1 official baseline 中文/
+            ${{ runner.temp }}/R1 P0 中文 evidence/
+            ${{ runner.temp }}/R1 detail 中文 evidence/
+            ${{ runner.temp }}/freecad-r1-runtime/config.json
+            ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
+            ${{ runner.temp }}/freecad-r1-runtime/identity/
+            ${{ runner.temp }}/process-tests.xml
+            ${{ runner.temp }}/full-offline.xml
+          retention-days: 14
