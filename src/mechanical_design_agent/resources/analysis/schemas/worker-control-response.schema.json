@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:worker-control-response:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisWorkerControlResponse/v1"
+    },
+    "body": {
+      "type": "object",
+      "properties": {
+        "worker_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "enum": [
+            "identity",
+            "cancel"
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "identity_verified",
+            "cancel_requested",
+            "cancel_ignored"
+          ]
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "active_run_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "heartbeat_ns": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "worker_uuid",
+        "challenge",
+        "pid",
+        "created_ns",
+        "action",
+        "run_id",
+        "status",
+        "stage",
+        "active_run_id",
+        "heartbeat_ns"
+      ],
+      "additionalProperties": false
+    },
+    "mac": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "body",
+    "mac"
+  ],
+  "additionalProperties": false
+}

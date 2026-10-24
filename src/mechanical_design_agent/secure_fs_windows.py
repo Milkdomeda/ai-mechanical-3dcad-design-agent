@@ -439,6 +439,46 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
 
 
 @contextmanager
+def try_exclusive_file_lock(path: Path) -> Iterator[bool]:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
+        handle = None
+        acquired = False
+        overlapped = api.pywintypes.OVERLAPPED()
+        try:
+            handle = api.win32file.CreateFile(str(parent.path / lexical.name), getattr(api.win32con, 'GENERIC_READ', 0x80000000) | getattr(api.win32con, 'GENERIC_WRITE', 0x40000000), getattr(api.win32con, 'FILE_SHARE_READ', 1) | getattr(api.win32con, 'FILE_SHARE_WRITE', 2), None, getattr(api.win32con, 'OPEN_ALWAYS', 4), getattr(api.win32con, 'FILE_ATTRIBUTE_NORMAL', 0x80) | getattr(api.win32con, 'FILE_FLAG_OPEN_REPARSE_POINT', 0x00200000), None)
+            _, attributes = _handle_facts(handle, api)
+            _assert_not_reparse(attributes, api)
+            if _handle_link_count(handle, api) != 1:
+                raise SecureFilesystemError('MANAGED_FILE_CONFLICT', 'worker owner lock must have one regular file identity')
+            try:
+                flags = getattr(api.win32con, 'LOCKFILE_EXCLUSIVE_LOCK', 2) | getattr(api.win32con, 'LOCKFILE_FAIL_IMMEDIATELY', 1)
+                api.win32file.LockFileEx(handle, flags, 0xFFFFFFFF, 0xFFFFFFFF, overlapped)
+            except Exception as exc:
+                if getattr(exc, 'winerror', None) == 33:
+                    acquired = False
+                else:
+                    raise
+            else:
+                acquired = True
+        except SecureFilesystemError:
+            if handle is not None: _close_handle(handle)
+            raise
+        except Exception as exc:
+            if handle is not None: _close_handle(handle)
+            raise SecureFilesystemError('WINDOWS_PATH_IDENTITY_CHANGED', 'worker lock cannot be acquired safely') from exc
+        try:
+            yield acquired
+        finally:
+            if handle is not None:
+                try:
+                    if acquired: api.win32file.UnlockFileEx(handle, 0xFFFFFFFF, 0xFFFFFFFF, overlapped)
+                finally:
+                    _close_handle(handle)
+
+
+@contextmanager
 def exclusive_creation_lock(path: Path) -> Iterator[None]:
     api = load_win32_api()
     lexical = _absolute(path)

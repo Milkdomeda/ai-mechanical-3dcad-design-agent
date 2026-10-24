@@ -474,6 +474,33 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
 
 
 @contextmanager
+def try_exclusive_file_lock(path: Path) -> Iterator[bool]:
+    target = _absolute(path)
+    validate_managed_path(target, allow_missing_leaf=True)
+    descriptor = os.open(target, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    acquired = False
+    try:
+        facts = os.fstat(descriptor)
+        if not stat.S_ISREG(facts.st_mode) or facts.st_nlink != 1:
+            raise SecureFilesystemError('MANAGED_FILE_CONFLICT', 'worker owner lock must have one regular file identity')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        acquired = True
+        identity = FileIdentity(facts.st_dev, facts.st_ino)
+        if validate_managed_path(target, allow_missing_leaf=False).identity != identity:
+            raise SecureFilesystemError('MANAGED_FILE_CONFLICT', 'worker lock identity changed before acquisition')
+        yield True
+        if validate_managed_path(target, allow_missing_leaf=False).identity != identity:
+            raise SecureFilesystemError('MANAGED_FILE_CONFLICT', 'worker lock identity changed while owned')
+    finally:
+        if acquired: fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+@contextmanager
 def exclusive_creation_lock(path: Path) -> Iterator[None]:
     target = _managed_target(path)
     parent_fd = open_directory_chain(target.parent)

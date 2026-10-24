@@ -126,6 +126,11 @@ def exclusive_file_lock(path: Path):
     return _get_backend().exclusive_file_lock(path)
 
 
+def try_exclusive_file_lock(path: Path):
+    """Yield acquisition status immediately; never infer ownership from a PID."""
+    return _get_backend().try_exclusive_file_lock(path)
+
+
 def exclusive_creation_lock(path: Path):
     return _get_backend().exclusive_creation_lock(path)
 
