@@ -13,6 +13,7 @@ from fea_native_probe import (
     assess_native,
     parse_config,
     probe_native,
+    select_bundled_tool,
     verify_tool,
 )
 from fea_helpers import read_version
@@ -158,3 +159,21 @@ def test_ccx_version_only_exit_201_is_not_solver_success() -> None:
         read_version("gmsh", subprocess.CompletedProcess([], 201, "4.15.0\n", ""))
     with pytest.raises(RuntimeError):
         read_version("ccx", subprocess.CompletedProcess([], 201, "solver failed", ""))
+
+
+def test_bundle_selects_distribution_bin_not_embedded_environment(tmp_path):
+    public = tmp_path / "FreeCAD" / "bin" / "FreeCADCmd.exe"
+    embedded = tmp_path / "FreeCAD" / "Library" / "bin" / "FreeCADCmd.exe"
+    for path in (public, embedded):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"candidate")
+    assert select_bundled_tool(tmp_path, "freecadcmd") == public
+
+
+def test_two_distribution_bins_are_ambiguous(tmp_path):
+    for name in ("First", "Second"):
+        path = tmp_path / name / "bin" / "gmsh.exe"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"candidate")
+    with pytest.raises(ProbeError, match="AMBIGUOUS"):
+        select_bundled_tool(tmp_path, "gmsh")

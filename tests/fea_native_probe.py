@@ -20,6 +20,17 @@ class ProbeError(ValueError):
     pass
 
 
+def select_bundled_tool(root: Path, name: str) -> Path:
+    candidates = [path for path in root.rglob("*") if path.is_file() and not path.is_symlink() and path.name.casefold() == name.casefold() + ".exe" and path.parent.name.casefold() == "bin"]
+    if not candidates:
+        raise ProbeError("BUNDLED_TOOL_MISSING: " + name)
+    depth = min(len(path.relative_to(root).parts) for path in candidates)
+    distribution = [path for path in candidates if len(path.relative_to(root).parts) == depth]
+    if len(distribution) != 1:
+        raise ProbeError("BUNDLED_TOOL_AMBIGUOUS: " + name)
+    return distribution[0]
+
+
 def _unique(pairs):
     result = {}
     for key, value in pairs:

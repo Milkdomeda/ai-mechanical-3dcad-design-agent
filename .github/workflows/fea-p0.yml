@@ -36,20 +36,8 @@ jobs:
           $tools = Join-Path $env:RUNNER_TEMP 'freecad-tools'
           7z x $archive "-o$tools" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
-          $pins = @{}
-          foreach ($name in @('freecadcmd', 'gmsh', 'ccx')) {
-            $file = @(Get-ChildItem -LiteralPath $tools -Recurse -File | Where-Object { $_.Name -ieq "$name.exe" })
-            if ($file.Count -ne 1) { throw "Expected one bundled $name executable, found $($file.Count)" }
-            $flag = if ($name -eq 'ccx') { '-v' } else { '--version' }
-            $rawVersion = (& $file[0].FullName $flag 2>&1 | Out-String)
-            $versionExit = $LASTEXITCODE
-            if ($versionExit -ne 0 -and -not ($name -eq 'ccx' -and $versionExit -eq 201)) { throw "Version probe failed for $name" }
-            $version = [regex]::Match($rawVersion, '\d+\.\d+(?:\.\d+)?').Value
-            if (-not $version -or ($name -eq 'freecadcmd' -and $version -ne '1.1.3')) { throw "Unsupported $name version: $rawVersion" }
-            $pins[$name] = @{path=$file[0].FullName; sha256=(Get-FileHash -LiteralPath $file[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant(); version=$version}
-          }
-          $global:LASTEXITCODE = 0
-          @{schema_version='FEAP0Configuration/v1'; tools=$pins; timeout_seconds=300} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'fea-config.json') -Encoding utf8
+          uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned portable tool discovery failed' }
       - name: Run real Windows synthetic FEA automated subset
         shell: pwsh
         run: |
