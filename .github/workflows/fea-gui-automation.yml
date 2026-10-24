@@ -126,6 +126,15 @@ jobs:
         run: |
           uv run --offline --group test python scripts/fea_gui_environment.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --output "$env:RUNNER_TEMP/gui-environment.json"
           if ($LASTEXITCODE -ne 0) { throw 'Explicit native GUI environment preparation failed' }
+      - name: Verify packaged native geometry and partial curved regions
+        shell: pwsh
+        run: |
+          $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json"
+          $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py -q --basetemp "$env:RUNNER_TEMP/Product geometry 中文" --junitxml="$env:RUNNER_TEMP/product-geometry.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Product native geometry and region checks failed' }
+          Remove-Item Env:FEA_GUI_LIVE_CONFIG
+          Remove-Item Env:FEA_GUI_LIVE_SCRATCH
       - name: Run five native GUI cases and independent-process round trip
         shell: pwsh
         run: |
@@ -162,6 +171,8 @@ jobs:
             ${{ runner.temp }}/freecad-r1-runtime/gui-materialization/
             ${{ runner.temp }}/gui-offline.xml
             ${{ runner.temp }}/gui-cas-*.xml
+            ${{ runner.temp }}/Product geometry 中文/
+            ${{ runner.temp }}/product-geometry.xml
             ${{ runner.temp }}/freecad-r1-runtime/config.json
             ${{ runner.temp }}/freecad-r1-runtime/gui-config.json
             ${{ runner.temp }}/freecad-r1-runtime/gui-runtime-manifest.json

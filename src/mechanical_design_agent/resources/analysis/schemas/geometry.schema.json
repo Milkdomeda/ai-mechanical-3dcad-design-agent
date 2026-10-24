@@ -1,0 +1,703 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:geometry:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisGeometry/v1"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "included_objects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "excluded_objects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "uniqueItems": true
+    },
+    "construction_objects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "uniqueItems": true
+    },
+    "geometry_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "volume": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+        },
+        "unit": {
+          "const": "mm^3"
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+            },
+            "unit": {
+              "enum": [
+                "mm",
+                "m",
+                "cm",
+                "um",
+                "mm^2",
+                "m^2",
+                "mm^3",
+                "m^3",
+                "tonne",
+                "kg",
+                "g",
+                "s",
+                "N",
+                "kN",
+                "MPa",
+                "N/mm^2",
+                "Pa",
+                "GPa",
+                "tonne/mm^3",
+                "kg/m^3",
+                "g/cm^3",
+                "mm/s^2",
+                "m/s^2",
+                "N*mm",
+                "N*m",
+                "J",
+                "1"
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "unit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "original_volume": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+        },
+        "unit": {
+          "const": "mm^3"
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+            },
+            "unit": {
+              "enum": [
+                "mm",
+                "m",
+                "cm",
+                "um",
+                "mm^2",
+                "m^2",
+                "mm^3",
+                "m^3",
+                "tonne",
+                "kg",
+                "g",
+                "s",
+                "N",
+                "kN",
+                "MPa",
+                "N/mm^2",
+                "Pa",
+                "GPa",
+                "tonne/mm^3",
+                "kg/m^3",
+                "g/cm^3",
+                "mm/s^2",
+                "m/s^2",
+                "N*mm",
+                "N*m",
+                "J",
+                "1"
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "unit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "center_of_mass": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+          },
+          "unit": {
+            "const": "mm"
+          },
+          "input": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "enum": [
+                  "mm",
+                  "m",
+                  "cm",
+                  "um",
+                  "mm^2",
+                  "m^2",
+                  "mm^3",
+                  "m^3",
+                  "tonne",
+                  "kg",
+                  "g",
+                  "s",
+                  "N",
+                  "kN",
+                  "MPa",
+                  "N/mm^2",
+                  "Pa",
+                  "GPa",
+                  "tonne/mm^3",
+                  "kg/m^3",
+                  "g/cm^3",
+                  "mm/s^2",
+                  "m/s^2",
+                  "N*mm",
+                  "N*m",
+                  "J",
+                  "1"
+                ]
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "bounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+          },
+          "unit": {
+            "const": "mm"
+          },
+          "input": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "enum": [
+                  "mm",
+                  "m",
+                  "cm",
+                  "um",
+                  "mm^2",
+                  "m^2",
+                  "mm^3",
+                  "m^3",
+                  "tonne",
+                  "kg",
+                  "g",
+                  "s",
+                  "N",
+                  "kN",
+                  "MPa",
+                  "N/mm^2",
+                  "Pa",
+                  "GPa",
+                  "tonne/mm^3",
+                  "kg/m^3",
+                  "g/cm^3",
+                  "mm/s^2",
+                  "m/s^2",
+                  "N*mm",
+                  "N*m",
+                  "J",
+                  "1"
+                ]
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "solid_count": {
+      "const": 1
+    },
+    "valid": {
+      "const": true
+    },
+    "closed": {
+      "const": true
+    },
+    "partitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "axis": {
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ]
+          },
+          "coordinate": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "axis",
+          "coordinate"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 16
+    },
+    "faces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "surface_type": {
+            "enum": [
+              "plane",
+              "cylinder",
+              "other"
+            ]
+          },
+          "area": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm^2"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "centroid": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                },
+                "unit": {
+                  "const": "mm"
+                },
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                    },
+                    "unit": {
+                      "enum": [
+                        "mm",
+                        "m",
+                        "cm",
+                        "um",
+                        "mm^2",
+                        "m^2",
+                        "mm^3",
+                        "m^3",
+                        "tonne",
+                        "kg",
+                        "g",
+                        "s",
+                        "N",
+                        "kN",
+                        "MPa",
+                        "N/mm^2",
+                        "Pa",
+                        "GPa",
+                        "tonne/mm^3",
+                        "kg/m^3",
+                        "g/cm^3",
+                        "mm/s^2",
+                        "m/s^2",
+                        "N*mm",
+                        "N*m",
+                        "J",
+                        "1"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "value",
+                "unit"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "normal": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                },
+                "unit": {
+                  "const": "1"
+                },
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                    },
+                    "unit": {
+                      "enum": [
+                        "mm",
+                        "m",
+                        "cm",
+                        "um",
+                        "mm^2",
+                        "m^2",
+                        "mm^3",
+                        "m^3",
+                        "tonne",
+                        "kg",
+                        "g",
+                        "s",
+                        "N",
+                        "kN",
+                        "MPa",
+                        "N/mm^2",
+                        "Pa",
+                        "GPa",
+                        "tonne/mm^3",
+                        "kg/m^3",
+                        "g/cm^3",
+                        "mm/s^2",
+                        "m/s^2",
+                        "N*mm",
+                        "N*m",
+                        "J",
+                        "1"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "value",
+                "unit"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "index",
+          "surface_type",
+          "area",
+          "centroid",
+          "normal"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 100000
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "brep": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "enum": [
+                "geometry.brep",
+                "geometry.FCStd"
+              ]
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "fcstd": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "enum": [
+                "geometry.brep",
+                "geometry.FCStd"
+              ]
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "brep",
+        "fcstd"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_sha256",
+    "included_objects",
+    "excluded_objects",
+    "construction_objects",
+    "geometry_sha256",
+    "volume",
+    "original_volume",
+    "center_of_mass",
+    "bounds",
+    "solid_count",
+    "valid",
+    "closed",
+    "partitions",
+    "faces",
+    "artifacts"
+  ],
+  "additionalProperties": false
+}

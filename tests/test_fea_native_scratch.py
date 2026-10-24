@@ -1,7 +1,15 @@
 import os
 from pathlib import Path
 import pytest
-from fea_native_scratch import native_scratch, verify_native_temp
+import importlib
+
+
+@pytest.fixture(autouse=True, params=['fea_native_scratch', 'mechanical_design_agent.analysis_scratch'])
+def scratch_backend(request, monkeypatch):
+    module = importlib.import_module(request.param)
+    monkeypatch.setitem(globals(), 'native_scratch', module.native_scratch)
+    monkeypatch.setitem(globals(), 'verify_native_temp', module.verify_native_temp)
+    monkeypatch.setitem(globals(), 'scratch', module)
 
 
 def test_cache_is_private_unique_and_cleared_after_owner_scope(tmp_path):
@@ -68,7 +76,6 @@ def test_directory_identity_change_never_deletes_replacement(tmp_path):
 
 
 def test_cleanup_entry_swap_preserves_foreign_directory(tmp_path, monkeypatch):
-    import fea_native_scratch as scratch
     real=scratch._clear_owned_scratch
     def swap(owned):
         moved=owned.path.with_name('moved-at-cleanup')
@@ -89,7 +96,6 @@ def test_cleanup_entry_swap_preserves_foreign_directory(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name!='posix',reason='POSIX permits rename of a pinned directory')
 def test_swap_after_cleanup_pin_cannot_delete_replacement(tmp_path, monkeypatch):
-    import fea_native_scratch as scratch
     real=scratch.shutil.rmtree
     def swap(name, *, dir_fd):
         owned.path.rename(owned.path.with_name('moved-after-pin'))
