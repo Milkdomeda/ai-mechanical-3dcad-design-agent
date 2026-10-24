@@ -75,3 +75,33 @@ def test_fixture_restore_audit_fails_before_any_native_open(tmp_path,defect):
     inventory=[{'name':'Material','type_id':'App::MaterialObjectPython'}]
     if defect=='wrong_inventory':inventory[0]['type_id']='App::FeaturePython'
     with pytest.raises(ValueError):inspect_generated_archive(p,inventory)
+
+
+def displayed_fields():
+    result={}
+    for name,unit,low,high,shown_low,shown_high,quantum in (
+        ('displacement_x','mm',0.,.0996635,0.,.09966,.00001),
+        ('displacement_magnitude','mm',0.,.09969,0.,.09969,.00001),
+        ('von_mises','MPa',.50571,1.08029,.50571,1.08029,.00001),
+    ):
+        result[name]={'unit':unit,'raw_min':low,'raw_max':high,'nodal_values_sha256':'a'*64,'le_min':{'normalized_value':shown_low,'display_quantum':quantum},'le_max':{'normalized_value':shown_high,'display_quantum':quantum},'deformation_scale':0,'legend_policy':'freecad-1.1.3-native-nodal'}
+    return result
+
+
+def test_native_display_matches_raw_fields_with_only_declared_format_rounding():
+    from fea_gui_checks import assess_display_fields
+    assert assess_display_fields(displayed_fields())['status']=='passed'
+
+
+@pytest.mark.parametrize('defect',['wrong_unit','wrong_value','missing_field','negative_quantum','nonfinite','wrong_scale','wrong_field_hash'])
+def test_stale_or_wrong_unit_visual_values_are_rejected(defect):
+    from fea_gui_checks import assess_display_fields
+    value=displayed_fields()
+    if defect=='wrong_unit':value['von_mises']['unit']='Pa'
+    if defect=='wrong_value':value['displacement_x']['le_max']['normalized_value']=.00009966
+    if defect=='missing_field':value.pop('von_mises')
+    if defect=='negative_quantum':value['von_mises']['le_min']['display_quantum']=-1
+    if defect=='nonfinite':value['displacement_x']['raw_max']=float('nan')
+    if defect=='wrong_scale':value['von_mises']['deformation_scale']=5
+    if defect=='wrong_field_hash':value['von_mises']['nodal_values_sha256']='unbound'
+    assert assess_display_fields(value)['status']=='failed'

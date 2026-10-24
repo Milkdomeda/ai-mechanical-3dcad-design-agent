@@ -87,3 +87,29 @@ def inspect_generated_archive(path, expected_inventory):
         if counted!=len(list(documents[filename].iter('Python'))) or found!=(set(allowed)&expected_names):raise ValueError('fixture missing/unscoped Proxy')
         seen[filename]=sorted(found)
     return {'object_inventory':inventory,'gui_view_providers':gui,'proxy_inventory':seen}
+
+
+def assess_display_fields(fields):
+    """Compare UI quantities using native formatting resolution, not solver tolerances."""
+    import math
+    import re
+    checks={}
+    expected={'displacement_x':'mm','displacement_magnitude':'mm','von_mises':'MPa'}
+    try:
+        checks['field_inventory']=set(fields)==set(expected)
+        for name,unit in expected.items():
+            field=fields[name]
+            good=field['unit']==unit and field['deformation_scale']==0 and field['legend_policy']=='freecad-1.1.3-native-nodal' and re.fullmatch('[0-9a-f]{64}',field['nodal_values_sha256']) is not None
+            low,high=field['raw_min'],field['raw_max']
+            good=good and all(type(v) in (int,float) and math.isfinite(v) for v in (low,high)) and low<=high
+            for raw,key in ((low,'le_min'),(high,'le_max')):
+                value=field[key]['normalized_value'];quantum=field[key]['display_quantum']
+                if not all(type(v) in (int,float) and math.isfinite(v) for v in (value,quantum)) or quantum<=0:good=False;continue
+                # Native ResultShow formats Stats to six significant digits,
+                # then InputField rounds in the user's displayed unit.
+                native_rounding=0.5*10**(math.floor(math.log10(abs(raw)))-5) if raw else 0.
+                allowance=quantum/2+native_rounding+math.ulp(value)+math.ulp(raw)
+                if abs(value-raw)>allowance:good=False
+            checks[name]=bool(good)
+    except (KeyError,TypeError,ValueError,OverflowError):checks['complete_display_receipt']=False
+    return {'status':'passed' if checks and all(checks.values()) else 'failed','checks':checks,'comparison_basis':'native six-significant-digit formatting plus actual displayed-unit quantum; physical tolerances unchanged'}

@@ -132,12 +132,19 @@ def run(request_path):
 
     def capture_field():
         key,radio,unit,values=state['field_values'][state['field_index']]
-        if not values or not all(math.isfinite(v) for v in values):raise ValueError('invalid native scalar field')
+        if not values or len(values)!=state['case']['mesh_inventory']['nodes'] or not all(math.isfinite(v) for v in values):raise ValueError('invalid native scalar field')
         record={'radio_button':radio,'unit':unit,'raw_min':min(values),'raw_max':max(values),'nodal_values_sha256':hashlib.sha256(json.dumps(values,allow_nan=False).encode()).hexdigest()}
         for name in ('le_min','le_max'):
             widget=Gui.getMainWindow().findChild(QtGui.QWidget,name)
-            quantity=widget.property('quantity')
-            record[name]={'text':str(widget.property('text')),'normalized_value':float(quantity.getValueAs(unit).Value)}
+            quantity=widget.property('quantity');text=str(widget.property('text'))
+            import re
+            token=re.match(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?',text)
+            if token is None:raise ValueError('unrecognized native quantity display')
+            numeric=token.group();mantissa,_,exponent=numeric.lower().partition('e')
+            decimals=len(mantissa.partition('.')[2]);power=(int(exponent) if exponent else 0)-decimals
+            displayed_unit=text[token.end():].strip()
+            quantum=App.Units.Quantity('1e'+str(power)+' '+displayed_unit)
+            record[name]={'text':text,'normalized_value':float(quantity.getValueAs(unit).Value),'display_quantum':float(quantum.getValueAs(unit).Value)}
         path=state['folder']/(key+'-native.png')
         Gui.activeDocument().activeView().saveImage(str(path),1200,800,'Black')
         record['image_path']=str(path);record['image_sha256']=digest(path)

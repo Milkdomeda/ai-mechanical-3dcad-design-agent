@@ -6,7 +6,7 @@ import sys
 import uuid
 
 from mechanical_design_agent import secure_fs
-from fea_gui_checks import assess_gui_objects
+from fea_gui_checks import assess_gui_objects,assess_display_fields
 from fea_gui_evidence import digest,pin,read_json,write_json
 from fea_gui_input import compare_inputs
 from fea_gui_native import CASE_IDS
@@ -74,6 +74,9 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
             value=worker.get('cases',{}).get(key,{})
             reference_root=Path(producer['path']).parent if producer else target
             result=assess_case(value,reference_root/'cases'/key/'native'/'Mesh.inp',target/'cases'/key/'gui-export'/'Mesh.inp')
+            if key in ('axial_bar','cantilever','r1_mesh_4'):
+                result['display_consistency']=assess_display_fields(value.get('display_fields',{}))
+                if result['display_consistency']['status']!='passed':result['status']='failed'
             source=secure_fs.validate_managed_path(reference_root/'cases'/key/'native'/'analysis.FCStd',allow_missing_leaf=False).path
             if not os.path.samefile(source,value['source_path']) or digest(source)!=value['source_sha256']:result['status']='failed'
             report['cases'][key]=result

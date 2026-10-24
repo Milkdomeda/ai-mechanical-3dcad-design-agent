@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 
 import pytest
@@ -74,7 +75,7 @@ def _cas_worker(source: str, destination: str, digest: str, queue) -> None:
             )
         )
     except BaseException as exc:  # pragma: no cover - reported to parent process
-        queue.put(("error", repr(exc)))
+        queue.put(("error", traceback.format_exc()))
 
 
 def _hold_lock(path: str, ready: multiprocessing.synchronize.Event) -> None:

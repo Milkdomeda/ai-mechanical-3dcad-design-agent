@@ -56,7 +56,7 @@ jobs:
           $primaryDrive = [IO.Path]::GetPathRoot([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
           $volume = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.FileSystem -eq 'NTFS' -and $_.DeviceID -ne $primaryDrive } | Select-Object -First 1
           if (-not $volume) {
-            $letter = @('R','S','T','U','V','W','X','Y','Z') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
+            $letter = @('D','R','S','T','U','V','W','X','Y','Z') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
             if (-not $letter) { throw 'No free test-volume drive letter' }
             $vhd = Join-Path $env:RUNNER_TEMP 'fea-second-volume.vhdx'
             if (Test-Path -LiteralPath $vhd) { throw 'Refuse to reuse an existing virtual disk' }
