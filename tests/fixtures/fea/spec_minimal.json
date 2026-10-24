@@ -34,5 +34,6 @@
   "unresolved": [
     "Geometry, load, policy and budget are not yet bound."
   ],
-  "criteria": []
+  "criteria": [],
+  "frame_mass": null
 }
