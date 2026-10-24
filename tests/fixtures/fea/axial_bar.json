@@ -1,0 +1,1 @@
+{"name":"axial_bar","length_mm":100,"width_mm":10,"height_mm":10,"youngs_modulus_MPa":1000,"poisson_ratio":0.3,"force_N":100,"mesh_size_mm":4,"expected_displacement_mm":0.1,"expected_far_stress_MPa":1,"displacement_rtol":0.02,"stress_rtol":0.02,"reaction_rtol":0.001}

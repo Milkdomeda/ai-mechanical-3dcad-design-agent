@@ -1,0 +1,69 @@
+name: FEA P0 Windows feasibility
+
+on:
+  push:
+    branches: [codex/text-to-fea-p0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-p0:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Prepare Python test environment
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.11.21
+          uv sync --frozen --group test --python 3.12
+      - name: Run native Windows process ownership tests
+        shell: pwsh
+        run: |
+          uv run --offline --group test python -m pytest tests/test_analysis_process.py tests/test_analysis_process_windows.py tests/test_fea_native_probe.py -q --junitxml="$env:RUNNER_TEMP/process-tests.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Process/probe contract tests failed' }
+      - name: Download and verify official FreeCAD 1.1.3
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'FreeCAD.7z'
+          Invoke-WebRequest 'https://github.com/FreeCAD/FreeCAD/releases/download/1.1.3/FreeCAD_1.1.3-Windows-x86_64-py311.7z' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4') { throw 'Official archive digest mismatch' }
+          $tools = Join-Path $env:RUNNER_TEMP 'freecad-tools'
+          7z x $archive "-o$tools" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
+          $pins = @{}
+          foreach ($name in @('freecadcmd', 'gmsh', 'ccx')) {
+            $file = @(Get-ChildItem -LiteralPath $tools -Recurse -File | Where-Object { $_.Name -ieq "$name.exe" })
+            if ($file.Count -ne 1) { throw "Expected one bundled $name executable, found $($file.Count)" }
+            $flag = if ($name -eq 'ccx') { '-v' } else { '--version' }
+            $rawVersion = (& $file[0].FullName $flag 2>&1 | Out-String)
+            $versionExit = $LASTEXITCODE
+            if ($versionExit -ne 0 -and -not ($name -eq 'ccx' -and $versionExit -eq 201)) { throw "Version probe failed for $name" }
+            $version = [regex]::Match($rawVersion, '\d+\.\d+(?:\.\d+)?').Value
+            if (-not $version -or ($name -eq 'freecadcmd' -and $version -ne '1.1.3')) { throw "Unsupported $name version: $rawVersion" }
+            $pins[$name] = @{path=$file[0].FullName; sha256=(Get-FileHash -LiteralPath $file[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant(); version=$version}
+          }
+          $global:LASTEXITCODE = 0
+          @{schema_version='FEAP0Configuration/v1'; tools=$pins; timeout_seconds=300} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'fea-config.json') -Encoding utf8
+      - name: Run real Windows synthetic FEA automated subset
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'FEA 空格 evidence'
+          uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/fea-config.json" --workspace $root --phase p0 --automated-only
+          if ($LASTEXITCODE -ne 0) { throw 'Native automated FEA feasibility failed' }
+          $report = Get-Content -LiteralPath (Join-Path $root 'probe.json') -Raw | ConvertFrom-Json
+          if ($report.automated_status -ne 'passed' -or $report.status -ne 'blocked') { throw 'Expected automated PASS with separately unmet interactive/calibration gates' }
+      - name: Upload synthetic evidence, including failure logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-fea-p0-evidence
+          path: |
+            ${{ runner.temp }}/FEA 空格 evidence/
+            ${{ runner.temp }}/process-tests.xml
+          retention-days: 14

@@ -1,0 +1,126 @@
+"""Owned subprocess lifecycle, independent of FEA session/protocol state."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+import importlib
+import os
+from pathlib import Path
+import threading
+import time
+from typing import Mapping
+import uuid
+
+
+@dataclass(frozen=True)
+class ProcessRequest:
+    argv: tuple[str, ...]
+    cwd: Path
+    stdout_path: Path
+    stderr_path: Path
+    env: Mapping[str, str] = field(default_factory=dict)
+    timeout_seconds: float = 300
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    worker_uuid: str
+    created_ns: int
+
+
+@dataclass(frozen=True)
+class ProcessOutcome:
+    returncode: int | None
+    reason: str
+    identity: ProcessIdentity
+
+
+class ProcessController:
+    """Only this living owner may terminate its children; no PID-only attach.
+
+    Later session recovery must establish a new authenticated ownership path,
+    not reconstruct this registry from a user-provided PID.
+    """
+
+    def __init__(self):
+        if os.name not in {"posix", "nt"}:
+            raise RuntimeError("unsupported process platform")
+        self._backend = importlib.import_module(f".analysis_process_{'windows' if os.name == 'nt' else 'posix'}", __package__)
+        self._children = {}
+        self._results = {}
+        self._lock = threading.RLock()
+
+    def start(self, request: ProcessRequest) -> ProcessIdentity:
+        if not request.argv or not all(isinstance(value, str) and value and "\0" not in value for value in request.argv):
+            raise ValueError("nonempty explicit argv required")
+        if not 0 < request.timeout_seconds <= 86400:
+            raise ValueError("bounded positive timeout required")
+        environment = dict(request.env)
+        environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        request = replace(request, env=environment)
+        directory = Path(request.cwd)
+        if not directory.is_dir() or directory.is_symlink():
+            raise ValueError("existing owned working directory required")
+        paths = [Path(request.stdout_path), Path(request.stderr_path)]
+        if paths[0].absolute() == paths[1].absolute():
+            raise ValueError("stdout and stderr must be distinct")
+        for path in paths:
+            if path.parent.resolve() != directory.resolve() or path.is_symlink():
+                raise ValueError("logs must be new files in the owned directory")
+        token = uuid.uuid4().hex
+        stdout = paths[0].open("xb")
+        try:
+            stderr = paths[1].open("xb")
+        except BaseException:
+            stdout.close()
+            raise
+        try:
+            child = self._backend.start(request, token, stdout, stderr)
+        finally:
+            stdout.close()
+            stderr.close()
+        identity = ProcessIdentity(child.pid, token, time.time_ns())
+        with self._lock:
+            self._children[token] = (identity, child, time.monotonic(), request)
+        return identity
+
+    def _owned(self, identity):
+        record = self._children.get(identity.worker_uuid)
+        return record if record is not None and record[0] == identity else None
+
+    def poll(self, identity: ProcessIdentity) -> ProcessOutcome | None:
+        with self._lock:
+            if identity in self._results:
+                return self._results[identity]
+            record = self._owned(identity)
+            if record is None:
+                return ProcessOutcome(None, "identity_mismatch", identity)
+            _, child, started, request = record
+            code = child.poll()
+            if code is not None:
+                return self._finish(identity, child, code, "exited")
+            if time.monotonic() - started >= request.timeout_seconds:
+                return self.terminate(identity, reason="timed_out")
+            return None
+
+    def terminate(self, identity: ProcessIdentity, *, reason: str) -> ProcessOutcome:
+        if reason not in {"cancelled", "timed_out", "interrupted"}:
+            raise ValueError("invalid termination reason")
+        with self._lock:
+            if identity in self._results:
+                return self._results[identity]
+            record = self._owned(identity)
+            if record is None:
+                return ProcessOutcome(None, "identity_mismatch", identity)
+            _, child, _, _ = record
+            code = child.poll()
+            if code is not None:
+                return self._finish(identity, child, code, "exited")
+            return self._finish(identity, child, child.terminate(), reason)
+
+    def _finish(self, identity, child, code, reason):
+        child.close()
+        result = ProcessOutcome(code, reason, identity)
+        self._results[identity] = result
+        self._children.pop(identity.worker_uuid)
+        return result

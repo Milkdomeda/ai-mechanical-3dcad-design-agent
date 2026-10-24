@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from dataclasses import replace
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+from mechanical_design_agent.analysis_process import ProcessController, ProcessRequest
+
+
+CHILD = Path(__file__).with_name("fea_process_child.py")
+
+
+def wait_for(predicate, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.03)
+    raise AssertionError("Owned process fixture did not reach expected state")
+
+
+def alive(pid):
+    if os.name == "nt":
+        import win32api
+        import win32process
+        try:
+            handle = win32api.OpenProcess(0x1000, False, pid)
+            try:
+                return win32process.GetExitCodeProcess(handle) == 259
+            finally:
+                handle.Close()
+        except OSError:
+            return False
+    try:
+        os.kill(pid, 0)
+        # A terminated unreaped descendant is no longer executing.
+        state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True).stdout.strip()
+        return bool(state) and not state.startswith("Z")
+    except ProcessLookupError:
+        return False
+
+
+def request(tmp_path, argv=None, timeout=30):
+    return ProcessRequest(argv=tuple(argv or [sys.executable, str(CHILD), "tree", str(tmp_path)]), cwd=tmp_path, stdout_path=tmp_path / "stdout.log", stderr_path=tmp_path / "stderr.log", env=dict(os.environ), timeout_seconds=timeout)
+
+
+def test_cancel_kills_owned_child_and_grandchild(tmp_path):
+    controller = ProcessController()
+    identity = controller.start(request(tmp_path))
+    try:
+        wait_for(lambda: (tmp_path / "grandchild.pid").exists())
+        pids = [int((tmp_path / (role + ".pid")).read_text()) for role in ("tree", "leaf", "grandchild")]
+        assert all(alive(pid) for pid in pids)
+        outcome = controller.terminate(identity, reason="cancelled")
+        assert outcome.reason == "cancelled"
+        wait_for(lambda: all(not alive(pid) for pid in pids))
+        assert controller.terminate(identity, reason="cancelled") == outcome
+    finally:
+        controller.terminate(identity, reason="cancelled")
+
+
+def test_reused_pid_is_never_killed(tmp_path):
+    controller = ProcessController()
+    identity = controller.start(request(tmp_path))
+    try:
+        forged = replace(identity, worker_uuid="not-the-owned-worker")
+        outcome = controller.terminate(forged, reason="cancelled")
+        assert outcome.reason == "identity_mismatch"
+        assert controller.poll(identity) is None
+    finally:
+        controller.terminate(identity, reason="cancelled")
+
+
+def test_timeout_kills_entire_tree(tmp_path):
+    controller = ProcessController()
+    identity = controller.start(request(tmp_path, timeout=1.5))
+    try:
+        wait_for(lambda: (tmp_path / "grandchild.pid").exists())
+        pids = [int((tmp_path / (role + ".pid")).read_text()) for role in ("tree", "leaf", "grandchild")]
+        outcome = wait_for(lambda: controller.poll(identity))
+        assert outcome.reason == "timed_out"
+        wait_for(lambda: all(not alive(pid) for pid in pids))
+    finally:
+        controller.terminate(identity, reason="cancelled")
+
+
+def test_success_preserves_exit_status_and_unicode_logs(tmp_path):
+    controller = ProcessController()
+    identity = controller.start(request(tmp_path, [sys.executable, "-c", "import sys; print('静力学'); sys.exit(7)"]))
+    outcome = wait_for(lambda: controller.poll(identity))
+    assert outcome.reason == "exited"
+    assert outcome.returncode == 7
+    assert "静力学" in (tmp_path / "stdout.log").read_text(encoding="utf-8")
+
+
+def test_python_logs_are_utf8_even_with_conflicting_parent_encoding(tmp_path):
+    controller = ProcessController()
+    configured = request(tmp_path, [sys.executable, "-c", "print('静力学')"])
+    configured.env["PYTHONIOENCODING"] = "ascii"
+    identity = controller.start(configured)
+    outcome = wait_for(lambda: controller.poll(identity))
+    assert outcome.returncode == 0
+    assert (tmp_path / "stdout.log").read_text(encoding="utf-8").strip() == "静力学"
+
+
+def test_owner_exit_cleans_process_tree(tmp_path):
+    owner = tmp_path / "owner.py"
+    owner.write_text("from pathlib import Path\nimport os,time\nfrom mechanical_design_agent.analysis_process import ProcessController,ProcessRequest\n"
+                     f"root=Path({str(tmp_path)!r})\ncontroller=ProcessController()\n"
+                     f"controller.start(ProcessRequest(argv=({sys.executable!r},{str(CHILD)!r},'tree',str(root)),cwd=root,stdout_path=root/'out',stderr_path=root/'err',env=dict(os.environ)))\n"
+                     "while not (root/'grandchild.pid').exists(): time.sleep(.03)\nos._exit(0)\n", encoding="utf-8")
+    result = subprocess.run([sys.executable, str(owner)], timeout=10)
+    assert result.returncode == 0
+    pids = [int((tmp_path / (role + ".pid")).read_text()) for role in ("tree", "leaf", "grandchild")]
+    wait_for(lambda: all(not alive(pid) for pid in pids))

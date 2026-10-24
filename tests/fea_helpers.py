@@ -1,0 +1,196 @@
+"""Run inside a clean FreeCAD interpreter, using built-in modules only."""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+import re
+import subprocess
+import sys
+import traceback
+
+
+def read_version(name, result):
+    raw = result.stdout + result.stderr
+    pattern = r"This is Version (\d+\.\d+(?:\.\d+)?)" if name == "ccx" else r"(\d+\.\d+(?:\.\d+)?)"
+    match = re.search(pattern, raw)
+    allowed_exit = result.returncode == 0 or (name == "ccx" and result.returncode == 201)
+    if not allowed_exit or not match:
+        raise RuntimeError("Cannot determine native " + name + " version")
+    return match.group(1)
+
+
+def _reaction(text):
+    match = re.search(r"total force.*?\n\s*\n?\s*([-+\d.Ee]+)\s+([-+\d.Ee]+)\s+([-+\d.Ee]+)", text, re.I)
+    if not match:
+        raise RuntimeError("Native RF totals missing from dat output")
+    return [float(value) for value in match.groups()]
+
+
+def _cloads(path):
+    total = [0.0, 0.0, 0.0]
+    active = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("**"):
+            continue
+        if line.startswith("*"):
+            active = line.upper().startswith("*CLOAD")
+        elif active:
+            _, axis, value = line.split(",")[:3]
+            total[int(axis) - 1] += float(value)
+    return total
+
+
+def build_case(spec, config, output):
+    import FreeCAD as App
+    import Part
+    import ObjectsFem
+    import Fem
+    from femmesh.gmshtools import GmshTools
+    from femtools.ccxtools import FemToolsCcx
+    from feminout.importCcxFrdResults import read_frd_result
+
+    output.mkdir()
+    doc = App.newDocument("P0_" + spec["name"])
+    box = doc.addObject("Part::Feature", "Solid")
+    box.Shape = Part.makeBox(spec["length_mm"], spec["width_mm"], spec["height_mm"])
+    if spec["name"] == "multiface":
+        box.Shape = Part.makeBox(100, 5, 10).fuse(Part.makeBox(100, 5, 10, App.Vector(0, 5, 0)))
+    analysis = ObjectsFem.makeAnalysis(doc, "Analysis")
+    material = ObjectsFem.makeMaterialSolid(doc, "Material")
+    material.Material = {"Name": "Synthetic benchmark", "YoungsModulus": f'{spec["youngs_modulus_MPa"]} MPa', "PoissonRatio": str(spec["poisson_ratio"]), "Density": "1000 kg/m^3"}
+    analysis.addObject(material)
+    solver = ObjectsFem.makeSolverCalculiXCcxTools(doc, "CalculiX")
+    solver.AnalysisType = "static"
+    solver.GeometricalNonlinearity = "linear"
+    solver.WorkingDir = str(output)
+    analysis.addObject(solver)
+    fixed = ObjectsFem.makeConstraintFixed(doc, "Fixed")
+    fixed.References = [(box, [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if abs(face.CenterOfMass.x) < 1e-7])]
+    analysis.addObject(fixed)
+    load = ObjectsFem.makeConstraintForce(doc, "Load")
+    load_faces = [f"Face{i}" for i, face in enumerate(box.Shape.Faces, 1) if abs((face.CenterOfMass.z - 10) if spec["name"] == "multiface" else (face.CenterOfMass.x - spec["length_mm"])) < 1e-7]
+    load.References = [(box, load_faces)]
+    load.Force = f'{spec["force_N"]} N'
+    direction = doc.addObject("Part::Feature", "LoadDirection")
+    direction.Shape = Part.makeLine(App.Vector(0, 0, 0), App.Vector(1, 0, 0) if spec["name"] == "axial_bar" else App.Vector(0, 0, -1))
+    load.Direction = (direction, ["Edge1"])
+    load.Reversed = False
+    analysis.addObject(load)
+    mesh = ObjectsFem.makeMeshGmsh(doc, "Mesh")
+    mesh.Shape = box
+    mesh.CharacteristicLengthMax = spec["mesh_size_mm"]
+    mesh.CharacteristicLengthMin = spec["mesh_size_mm"]
+    mesh.ElementOrder = "2nd"
+    mesh.ElementDimension = "3D"
+    analysis.addObject(mesh)
+    doc.recompute()
+    gmsh = GmshTools(mesh)
+    gmsh.update_mesh_data()
+    gmsh.get_tmp_file_paths(str(output))
+    gmsh.get_gmsh_command()
+    gmsh.write_gmsh_input_files()
+    with (output / "gmsh.log").open("w", encoding="utf-8") as log:
+        run = subprocess.run([config["tools"]["gmsh"]["path"], "-", gmsh.temp_file_geo], cwd=output, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
+    if run.returncode:
+        raise RuntimeError("Gmsh failed")
+    mesh.FemMesh = Fem.read(gmsh.temp_file_mesh)
+    doc.recompute()
+    fea = FemToolsCcx(analysis=analysis, solver=solver)
+    fea.update_objects()
+    fea.setup_working_dir(str(output))
+    error = fea.check_prerequisites()
+    if error:
+        raise RuntimeError(error)
+    fea.write_inp_file()
+    inp = Path(fea.inp_file_name)
+    if spec["name"] == "multiface":
+        doc.saveAs(str(output / "analysis.FCStd"))
+        result = {"force_N": _cloads(inp), "faces": len(load_faces), "partial_face": {"valid": box.Shape.isValid(), "solid_count": len(box.Shape.Solids), "volume_delta_mm3": box.Shape.Volume - 10000}}
+        App.closeDocument(doc.Name)
+        return result
+    with (output / "ccx.log").open("w", encoding="utf-8") as log:
+        run = subprocess.run([config["tools"]["ccx"]["path"], "-i", inp.stem], cwd=output, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
+    if run.returncode:
+        raise RuntimeError("CalculiX failed")
+    data = read_frd_result(str(inp.with_suffix(".frd")))
+    # Keep the native parser's full structured output for API characterization.
+    (output / "frd-structure.txt").write_text(repr(data)[:5000], encoding="utf-8")
+    fea.load_results()
+    result = next(obj for obj in analysis.Group if hasattr(obj, "vonMises"))
+    ids = list(result.NodeNumbers)
+    displacement = list(result.DisplacementVectors)
+    if spec["name"] == "axial_bar":
+        tips = [v.x for n, v in zip(ids, displacement) if abs(mesh.FemMesh.getNodeById(n).x - spec["length_mm"]) < 1e-6]
+        far = [value for n, value in zip(ids, result.NodeStressXX) if 40 < mesh.FemMesh.getNodeById(n).x < 60]
+        measured_disp = sum(tips) / len(tips)
+        measured_stress = sum(far) / len(far)
+    else:
+        tips = [-v.z for n, v in zip(ids, displacement) if abs(mesh.FemMesh.getNodeById(n).x - spec["length_mm"]) < 1e-6]
+        measured_disp = sum(tips) / len(tips)
+        # Native stress component field names are captured explicitly; fail
+        # rather than silently replace signed bending stress by von Mises.
+        components = getattr(result, "NodeStressXX", None)
+        if components is None:
+            raise RuntimeError("Native NodeStressXX unavailable: " + repr(result.PropertiesList))
+        selected = [(n, value) for n, value in zip(ids, components) if abs(mesh.FemMesh.getNodeById(n).x - 100) < 4 and mesh.FemMesh.getNodeById(n).z > 9.999]
+        measured_stress = sum(value for n, value in selected) / len(selected)
+    doc.recompute()
+    doc.saveAs(str(output / "analysis.FCStd"))
+    values = list(result.vonMises) + [component for v in displacement for component in (v.x, v.y, v.z)]
+    report = {
+        "displacement_mm": measured_disp,
+        "stress_MPa": measured_stress,
+        "reaction_N": _reaction(inp.with_suffix(".dat").read_text(encoding="utf-8")),
+        "elements": mesh.FemMesh.VolumeCount,
+        "element_nodes": sorted({len(mesh.FemMesh.getElementNodes(e)) for e in mesh.FemMesh.Volumes}),
+        "input_element_types": sorted(set(re.findall(r"^\*ELEMENT,\s*TYPE=([^,\s]+)", inp.read_text(encoding="utf-8"), re.M | re.I))),
+        "finite": bool(values) and all(math.isfinite(value) for value in values),
+        "geometry_valid": box.Shape.isValid(),
+        "solid_count": len(box.Shape.Solids),
+        "volume_mm3": box.Shape.Volume,
+        "rf_native_output": bool(re.search(r"\*NODE PRINT[^\n]*\nRF\s*\n", inp.read_text(encoding="utf-8"))),
+        "result_properties": result.PropertiesList,
+        "input_file": inp.name,
+        "cload_N": _cloads(inp),
+        "object_factories": ["makeAnalysis", "makeMaterialSolid", "makeSolverCalculiXCcxTools", "makeConstraintFixed", "makeConstraintForce", "makeMeshGmsh"],
+    }
+    App.closeDocument(doc.Name)
+    return report
+
+
+def main(request_path, response_path):
+    import FreeCAD as App
+    config = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Gmsh").SetString("gmshBinaryPath", config["tools"]["gmsh"]["path"])
+    App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx").SetString("ccxBinaryPath", config["tools"]["ccx"]["path"])
+    fixtures = Path(__file__).parent / "fixtures" / "fea"
+    report = {"version": ".".join(App.Version()[:3]), "auto_reopen_count": 0, "cases": {}}
+    # Enforce the no-restore boundary in the live interpreter, not by a claim
+    # inferred from a successful solver run.
+    original_open = App.openDocument
+    def deny_document_restore(*args, **kwargs):
+        report["auto_reopen_count"] += 1
+        raise RuntimeError("P0 forbids restoring persisted documents")
+    App.openDocument = deny_document_restore
+    try:
+        report["versions"] = {"freecadcmd": report["version"]}
+        for name, flag in (("gmsh", "--version"), ("ccx", "-v")):
+            version_run = subprocess.run([config["tools"][name]["path"], flag], capture_output=True, text=True, timeout=15)
+            report["versions"][name] = read_version(name, version_run)
+        for name in ("axial_bar", "cantilever"):
+            spec = json.loads((fixtures / (name + ".json")).read_text(encoding="utf-8"))
+            report["cases"][name] = build_case(spec, config, Path(response_path).parent / name)
+        multi = {"name": "multiface", "length_mm": 100, "width_mm": 10, "height_mm": 10, "youngs_modulus_MPa": 200000, "poisson_ratio": 0.3, "force_N": 40, "mesh_size_mm": 4}
+        report["multiface"] = build_case(multi, config, Path(response_path).parent / "multiface")
+        report["partial_face"] = report["multiface"].pop("partial_face")
+    except Exception:
+        report["error"] = traceback.format_exc()
+    finally:
+        App.openDocument = original_open
+    Path(response_path).write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2])

@@ -1,0 +1,1 @@
+{"name":"cantilever","length_mm":200,"width_mm":10,"height_mm":10,"youngs_modulus_MPa":200000,"poisson_ratio":0.3,"force_N":10,"mesh_size_mm":4,"expected_displacement_mm":0.16,"stress_section_x_mm":100,"expected_section_stress_MPa":6,"displacement_rtol":0.05,"stress_rtol":0.05,"reaction_rtol":0.001}
