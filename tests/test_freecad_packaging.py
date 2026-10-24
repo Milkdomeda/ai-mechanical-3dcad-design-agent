@@ -28,6 +28,8 @@ EXPECTED_FREECAD_SHA256 = os.environ.get(
 ).strip().lower()
 EXPECTED_SCRIPTS = {
     "analysis_geometry.py": "816a4bc48cecd1c59b274190baa820f733e5a2e6f1e8411fd666648c887a4d3e",
+    "analysis_mesh.py": "10b7b49d36d7d814cb8807cc2abe3e3cdc751d31e5ca24c204d1e6966f81cc5a",
+    "analysis_mesh_math.py": "ff2a1af83a1b3ec7f114ba70e9a036079c8ea02d7d5404e394ace8ffed8bc204",
     "create_empty_model.py": "f0bf474d56ff1652786a0e53c168ba83beadc8369af867322d3a4cdaf892a062",
     "extract_model_manifest.py": "cc63c6d6a9281259bb238c5c8d118115f3fb99c03b6a3ea09863bbe0ecfb267d",
     "normalize_model.py": "295de05c0f86a0fafd69df4911e101e3aaa326be86b999816c8a461f74a39a04",

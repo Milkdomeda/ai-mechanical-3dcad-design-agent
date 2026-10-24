@@ -17,6 +17,7 @@ from . import secure_fs
 from .analysis_geometry import resolve_regions, validate_geometry_manifest, validate_geometry_request
 from .analysis_knowledge import _json_bytes
 from .analysis_loads import build_load_ledger, validate_materials
+from .analysis_mesh import numerical_policy, plan_mesh_levels
 from .analysis_protocol import canonical_record, parse_record, record_sha256
 from .analysis_revision import new_stage, publish_revision, read_artifact, read_revision
 from .analysis_types import AnalysisError
@@ -41,7 +42,7 @@ def _load(folder, reference, schema=None):
 
 
 def _policy(spec):
-    return _hash({'adapter_version': 'native-solid-static-v1', 'mesh': spec['mesh'], 'validation': spec['validation'], 'budget': spec['budget'], 'distribution': 'native_uniform_surface'})
+    return _hash({'adapter_version': 'native-solid-static-v1', 'numerical_policy_sha256': numerical_policy()[1], 'mesh': spec['mesh'], 'validation': spec['validation'], 'budget': spec['budget'], 'distribution': 'native_uniform_surface'})
 
 
 def _tools(settings, spec):
@@ -127,6 +128,14 @@ class AnalysisSessionService:
         for field in ('mesh', 'validation', 'budget'):
             if spec[field] is None:
                 issue('ANALYSIS_' + field.upper() + '_UNRESOLVED', 'declare ' + field + ' before review')
+        if all(spec[field] is not None for field in ('mesh', 'validation', 'budget')) and regions is not None:
+            try:
+                plan_mesh_levels(spec)
+                names = {item['region_id'] for item in regions['bindings']}
+                if any(item['region_id'] not in names for item in spec['mesh'].get('local_sizes', [])):
+                    raise AnalysisError('MESH_LOCAL_REGION_MISSING', 'local mesh refinement must bind a reviewed semantic region')
+            except AnalysisError as exc:
+                issue(exc.code, str(exc))
         if settings is not None:
             tools = _tools(settings, spec)
             constraints = {'runtime_manifest_sha256': tools['runtime_manifest_sha256'], 'policy_sha256': tools['policy_sha256'], 'adapter_version': tools['adapter_version']}

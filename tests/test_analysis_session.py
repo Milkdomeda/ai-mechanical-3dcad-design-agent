@@ -27,6 +27,7 @@ def session(tmp_path, *, unavailable=False):
     spec, bundle = load_fixture()
     spec.update(design_id='fixture-design', analysis_id='static', source=None, unresolved=[], status='draft')
     spec['mesh'] = {'element_type': 'C3D10', 'initial_size': {'value': '4', 'unit': 'mm'}, 'refinement_ratio': {'value': '.7', 'unit': '1'}, 'levels': 3, 'minimum_scaled_jacobian': {'value': '.1', 'unit': '1'}, 'minimum_thickness_elements': 2}
+    spec['mesh']['critical_rays'] = [{'id': 'ray-' + str(index), 'start': [{'value': str(v), 'unit': 'mm'} for v in [x, y, 0]], 'end': [{'value': str(v), 'unit': 'mm'} for v in [x, y, 10]], 'coverage_atol': {'value': '0.000001', 'unit': 'mm'}, 'evidence': 'Synthetic full-thickness ray declared before execution.'} for index, (x, y) in enumerate([(37, 4.3), (51, 5.7), (73, 3.7)])]
     spec['budget'] = {'wall_seconds': 300, 'stage_seconds': 120, 'threads': 1, 'max_nodes': 100000, 'max_elements': 100000, 'max_disk_bytes': 1000000000, 'max_attempts': 1, 'memory_mode': 'observed_only', 'max_memory_mb': 1024}
     settings = {'configuration_path': str(tmp_path / 'config/fea.json'), 'runtime': {'manifest_sha256': 'c' * 64}, 'configuration_sha256': 'd' * 64, 'tools': {
         name: {'path': str(tmp_path / name), 'version': version, 'sha256': sha(name.encode()), 'identity': {'volume': 1, 'file_index': index}}

@@ -135,6 +135,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Product native geometry and region checks failed' }
           Remove-Item Env:FEA_GUI_LIVE_CONFIG
           Remove-Item Env:FEA_GUI_LIVE_SCRATCH
+      - name: Verify packaged quadratic mesh and actual curved region mapping
+        shell: pwsh
+        run: |
+          $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json"
+          $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
+          uv run --offline --group test python -m pytest tests/test_analysis_mesh_live.py -q --basetemp "$env:RUNNER_TEMP/Product mesh 中文" --junitxml="$env:RUNNER_TEMP/product-mesh.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Product native C3D10 quality, thickness or region checks failed' }
+          Remove-Item Env:FEA_GUI_LIVE_CONFIG
+          Remove-Item Env:FEA_GUI_LIVE_SCRATCH
       - name: Run five native GUI cases and independent-process round trip
         shell: pwsh
         run: |
@@ -173,6 +182,8 @@ jobs:
             ${{ runner.temp }}/gui-cas-*.xml
             ${{ runner.temp }}/Product geometry 中文/
             ${{ runner.temp }}/product-geometry.xml
+            ${{ runner.temp }}/Product mesh 中文/
+            ${{ runner.temp }}/product-mesh.xml
             ${{ runner.temp }}/freecad-r1-runtime/config.json
             ${{ runner.temp }}/freecad-r1-runtime/gui-config.json
             ${{ runner.temp }}/freecad-r1-runtime/gui-runtime-manifest.json

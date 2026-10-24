@@ -1,0 +1,49 @@
+{
+  "schema_version": "AnalysisNumericalPolicy/v1",
+  "id": "native-solid-static-v1",
+  "element_type": "C3D10",
+  "minimum_levels": 3,
+  "maximum_levels": 6,
+  "threads": 1,
+  "gmsh_algorithm_2d": "Delaunay",
+  "gmsh_algorithm_3d": "Delaunay",
+  "gmsh_random_seed": 1,
+  "second_order_linear": false,
+  "jacobian": {
+    "sample_points": 15,
+    "sampled_determinant": "strictly_positive",
+    "sampled_scaled_jacobian": "strictly_positive_and_meets_approved_minimum",
+    "additional_bound": "cubic_Bernstein_with_roundoff_margin",
+    "maximum_subdivision_depth": 5
+  },
+  "thickness": {
+    "minimum_rays": 3,
+    "minimum_elements": 2,
+    "boundary": "quadratic_T6",
+    "coverage_tolerance": "explicit_per_ray"
+  },
+  "calibration": {
+    "scope": "P0 straight axial and cantilever benchmarks; curved-map bound and T6 intersections require separate regressions",
+    "source": "tests/fea_native_probe.py: mesh_quality_calibration",
+    "original_samples": "4 vertices, 6 edge midpoints, barycentre, 4 tetrahedral Gauss points",
+    "thresholds_unchanged": true
+  },
+  "budget_outcome": "inconclusive_not_passed",
+  "native_connectivity": {
+    "internal_order": "FreeCAD_SMESH",
+    "validated_order": "CalculiX_C3D10",
+    "permutation_zero_based": [
+      1,
+      0,
+      2,
+      3,
+      4,
+      6,
+      5,
+      8,
+      7,
+      9
+    ],
+    "source": "https://github.com/FreeCAD/FreeCAD/blob/145529fe741292ff0b3977a01195bf0247425794/src/Mod/Fem/App/FemMesh.cpp"
+  }
+}
