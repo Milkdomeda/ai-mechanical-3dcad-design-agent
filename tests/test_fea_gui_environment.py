@@ -29,3 +29,14 @@ def test_gui_materialization_cannot_reseal_unreviewed_runtime_changes(defect):
     if defect=='wrong_driver':after['bin/opengl32.dll']={'sha256':'d'*64}
     if defect=='missing_driver':del after['bin/opengl32.dll']
     assert assess_materialization(before,after)['status']=='failed'
+
+
+def test_cache_compilation_never_executes_sources_and_records_invalid_upstream_samples(tmp_path):
+    import hashlib
+    from fea_gui_compile import compile_sources
+    sources={'valid.py':b'raise AssertionError("compilation must never execute this")\n','invalid.py':b'def invalid(:\n'}
+    for name,raw in sources.items():(tmp_path/name).write_bytes(raw)
+    result=compile_sources({'root':str(tmp_path),'sources':{k:hashlib.sha256(v).hexdigest() for k,v in sources.items()},'output':str(tmp_path/'result.json')})
+    assert set(result['syntax_errors'])=={'invalid.py'}
+    assert {v['source'] for v in result['compiled'].values()}=={'valid.py'}
+    assert all((tmp_path/name).read_bytes()==raw for name,raw in sources.items())
