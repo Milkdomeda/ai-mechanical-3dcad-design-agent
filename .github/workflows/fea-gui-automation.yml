@@ -93,6 +93,13 @@ jobs:
           $env:UV_OFFLINE = '1'
           uv run --offline --group test python -m pytest -q -rs --junitxml="$env:RUNNER_TEMP/gui-offline.xml"
           if ($LASTEXITCODE -ne 0) { throw 'Offline regression failed' }
+          # A prior native run exposed an intermittent concurrent CAS failure.
+          # Preserve repeated fresh-process failures with full causal tracebacks;
+          # a single green rerun does not resolve that finding.
+          for ($attempt = 1; $attempt -le 8; $attempt++) {
+            uv run --offline --group test python -m pytest tests/test_windows_secure_fs.py::test_native_windows_concurrent_cas_publishers_converge_without_temporaries -q -rs --junitxml="$env:RUNNER_TEMP/gui-cas-$attempt.xml"
+            if ($LASTEXITCODE -ne 0) { throw "Native concurrent CAS failed on repetition $attempt" }
+          }
       - name: Download and pin official FreeCAD 1.1.3 x64
         shell: pwsh
         run: |
@@ -147,6 +154,7 @@ jobs:
             ${{ runner.temp }}/GUI numerical P0 中文/
             ${{ runner.temp }}/gui-platform.json
             ${{ runner.temp }}/gui-offline.xml
+            ${{ runner.temp }}/gui-cas-*.xml
             ${{ runner.temp }}/freecad-r1-runtime/config.json
             ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
             ${{ runner.temp }}/freecad-r1-runtime/identity/
