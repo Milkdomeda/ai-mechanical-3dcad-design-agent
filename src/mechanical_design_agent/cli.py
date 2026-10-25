@@ -87,7 +87,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _print(value: object) -> None:
-    print(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, default=str))
+    # ASCII JSON escapes preserve Unicode values in UTF-8 and legacy Windows
+    # pipes, including Python -I which ignores PYTHONUTF8 environment settings.
+    print(json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2, default=str))
 
 
 def _exit_code(value: object) -> int:

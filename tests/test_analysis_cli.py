@@ -70,3 +70,14 @@ def test_decision_file_passes_exact_utf8_text_without_shell_interpolation(tmp_pa
     args=_parser().parse_args(['analysis','approve','--design-id','fixture','--analysis-id','static','--spec-sha256','a'*64,'--expected-revision','4','--decision-file',str(path)])
     dispatch(args,Service())
     assert calls[0]['decision_text']==text
+
+
+@pytest.mark.parametrize('encoding',['cp1252','utf-8'])
+def test_cli_json_preserves_unicode_in_strict_windows_and_utf8_pipes(monkeypatch,encoding):
+    import io
+    from mechanical_design_agent.cli import _print
+    buffer=io.BytesIO();stream=io.TextIOWrapper(buffer,encoding=encoding,errors='strict')
+    monkeypatch.setattr('sys.stdout',stream)
+    value={'workspace':'工作区 中文/analysis','message':'确认：位移和应力','status':'ready'}
+    _print(value);stream.flush()
+    assert json.loads(buffer.getvalue())==value

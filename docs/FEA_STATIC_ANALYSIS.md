@@ -72,6 +72,10 @@ outcomes. A valid completed report with failed engineering criteria still
 returns 0; its JSON states the criteria result. Existing CAD CLI exits are
 unchanged.
 
+CLI JSON uses Unicode escapes so its Chinese and other non-ASCII values survive
+both UTF-8 pipes and legacy Windows console encodings. JSON parsers recover the
+original text and paths; UTF-8 request and decision files retain their contents.
+
 ## Physical review and execution
 
 Reuse the existing Design Job and a selected FCStd output. Prepare captures an
