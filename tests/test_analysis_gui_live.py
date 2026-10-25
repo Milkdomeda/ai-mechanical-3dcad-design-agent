@@ -4,8 +4,7 @@ import os
 
 import pytest
 
-from test_analysis_deck_live import native_decks,declared_spec
-from test_analysis_geometry_live import native_geometry
+from test_analysis_deck_live import declared_spec
 
 
 @pytest.mark.live_fea
