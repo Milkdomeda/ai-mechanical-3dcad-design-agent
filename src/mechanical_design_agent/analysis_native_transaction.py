@@ -15,7 +15,7 @@ import uuid
 import sys
 
 from . import secure_fs
-from .analysis_native import _environment, _native_path, _read, verify_settings
+from .analysis_native import _environment, _native_path, _read, verify_settings,verify_tool_identity,verify_native_modules
 from .analysis_process import ProcessController, ProcessRequest
 from .analysis_scratch import native_scratch, verify_native_temp
 from .analysis_types import AnalysisError
@@ -26,10 +26,11 @@ _INPUTS = {'geometry': {'source.FCStd'}, 'mesh': {'geometry.brep'}, 'build': {'g
 
 
 class NativeTransaction:
-    def __init__(self, settings, *, controller=None, checkpoint=None):
+    def __init__(self, settings, *, controller=None, checkpoint=None, budget_guard=None):
         self.settings = settings
         self.controller = controller or ProcessController()
         self.checkpoint = checkpoint or (lambda: None)
+        self.budget_guard=budget_guard
         self._stack = ExitStack()
         self.owned = None
         self._failed = None
@@ -43,13 +44,15 @@ class NativeTransaction:
         self._failed, self._sealed = None, False
         try:
             self.resources = self._stack.enter_context(freecad_scripts_directory())
-            self.owned = self._stack.enter_context(native_scratch(Path(self.settings['native_scratch_root'])))
+            self.owned = self._stack.enter_context(native_scratch(Path(self.settings['native_scratch_root']),checkpoint=self.checkpoint))
+            if self.budget_guard is not None:self.budget_guard.track_root(self.owned.path)
         except BaseException:
             self._stack.close()
             raise
         return self
 
     def __exit__(self, kind, value, traceback):
+        owned_path=None if self.owned is None else self.owned.path
         try:
             try:
                 if not self._sealed: self.seal()
@@ -60,6 +63,7 @@ class NativeTransaction:
                 kind, value, traceback = self._failed
             return self._stack.__exit__(kind, value, traceback)
         finally:
+            if self.budget_guard is not None and owned_path is not None:self.budget_guard.release_root(owned_path)
             self.owned = None
 
     def seal(self):
@@ -81,6 +85,9 @@ class NativeTransaction:
         if self.owned is None or self._sealed or phase not in _PHASES or set(inputs) != _INPUTS[phase]:
             raise AnalysisError('ANALYSIS_NATIVE_PHASE_INVALID', 'only fixed package phases and their exact input names may run')
         self.checkpoint()
+        verify_tool_identity(self.settings,'freecadcmd')
+        if phase=='mesh':verify_tool_identity(self.settings,'gmsh')
+        verify_native_modules(self.settings)
         output = secure_fs.validate_managed_path(output_dir, allow_missing_leaf=True)
         if output.identity is not None:
             raise AnalysisError('ANALYSIS_OUTPUT_EXISTS', 'each native phase needs a new immutable output directory')
@@ -129,6 +136,9 @@ class NativeTransaction:
                     secure_fs.atomic_publish_new(output / ('native.json' if name == 'response.json' else name), _read(work / name).content)
             secure_fs.atomic_publish_new(output / 'process.json', json.dumps({**asdict(outcome), 'phase': phase, 'request_id': request_id, 'request_sha256': _read(work / 'request.json').sha256, 'script_hashes': assets, 'input_hashes': copied}, sort_keys=True).encode())
         self.checkpoint()
+        verify_tool_identity(self.settings,'freecadcmd')
+        if phase=='mesh':verify_tool_identity(self.settings,'gmsh')
+        verify_native_modules(self.settings)
         if any(_read(work / name).sha256 != sha for name, sha in {**assets, **copied}.items()) or _read(work / 'request.json').content != encoded:
             raise AnalysisError('ANALYSIS_NATIVE_INPUT_CHANGED', 'fixed phase source, request or copied input changed during execution')
         if outcome.reason != 'exited' or outcome.returncode != 0:

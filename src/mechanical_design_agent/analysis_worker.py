@@ -34,12 +34,17 @@ class RunContext:
         self.owner, self.entry, self.request = owner, entry, request
         self.store, self.controller = owner.store, owner.controller
         self.root = run_root(self.store, entry['design_id'], entry['analysis_id'], entry['run_id'])
+        self._cancel_read_at=0.
+        self._cancel_cached=False
 
     def cancelled(self):
         if self.owner._cancel.is_set(): return True
+        now=time.monotonic()
+        if now-self._cancel_read_at<.1:return self._cancel_cached
         with secure_fs.exclusive_file_lock(self.root / '.run.lock'):
             state, _ = read_run_unlocked(self.root, **self._identity())
-        return state['cancel_requested']
+        self._cancel_read_at=now;self._cancel_cached=state['cancel_requested']
+        return self._cancel_cached
 
     def _identity(self):
         return {key: self.entry[key] for key in ('design_id', 'analysis_id', 'run_id')}

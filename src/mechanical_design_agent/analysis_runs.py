@@ -12,11 +12,13 @@ from .analysis_types import AnalysisError
 from .models import require_safe_id
 
 TERMINAL = frozenset({'completed', 'failed', 'cancelled', 'timed_out', 'interrupted'})
-FINGERPRINT_FIELDS = ('design_id', 'analysis_id', 'spec_sha256', 'revision_ref', 'spec_ref', 'approval_ref', 'source_binding_ref', 'tool_bindings_sha256', 'policy_sha256', 'runtime_manifest_sha256', 'scope', 'retry_run_id')
+FINGERPRINT_FIELDS = ('design_id', 'analysis_id', 'spec_sha256', 'revision_ref', 'spec_ref', 'approval_ref', 'source_binding_ref', 'tool_bindings_sha256', 'policy_sha256', 'runtime_manifest_sha256', 'scope', 'retry_run_id', 'executor_sha256')
 
 
 def fingerprint(request):
-    body = {key: request[key] for key in FINGERPRINT_FIELDS}
+    # Older beta metadata remains readable; executable requests created now
+    # always include the new source/dependency fingerprint.
+    body = {key: request[key] for key in FINGERPRINT_FIELDS if key!='executor_sha256' or key in request}
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
@@ -33,6 +35,10 @@ def read_run_unlocked(root, design_id, analysis_id, run_id):
     identity = {'design_id': design_id, 'analysis_id': analysis_id, 'run_id': run_id}
     if any(record[key] != value for record in (state, request) for key, value in identity.items()) or state['request_ref'] != {'relative_path': 'request.json', 'sha256': data.sha256} or state['spec_sha256'] != request['spec_sha256'] or request['fingerprint_sha256'] != fingerprint(request):
         raise AnalysisError('ANALYSIS_RUN_INTEGRITY', 'run identity, request checksum or immutable input fingerprint changed')
+    if 'executor_sha256' in request:
+        _,code=_read(root/'executor.json')
+        if request['executor_identity_ref']!={'relative_path':'executor.json','sha256':code.sha256} or code.sha256!=request['executor_sha256']:
+            raise AnalysisError('ANALYSIS_RUN_INTEGRITY','execution source receipt differs from its immutable request')
     return state, request
 
 

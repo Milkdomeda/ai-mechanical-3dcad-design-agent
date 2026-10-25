@@ -168,6 +168,27 @@
     "created_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "executor_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "executor_identity_ref": {
+      "type": "object",
+      "properties": {
+        "relative_path": {
+          "const": "executor.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "relative_path",
+        "sha256"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -189,5 +210,13 @@
     "retry_run_id",
     "created_at"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "dependentRequired": {
+    "executor_sha256": [
+      "executor_identity_ref"
+    ],
+    "executor_identity_ref": [
+      "executor_sha256"
+    ]
+  }
 }

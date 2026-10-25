@@ -21,6 +21,21 @@ def verify_settings(settings, *, checkpoint=None):
         raise AnalysisError('FEA_RUNTIME_CHANGED', 'configured native runtime changed during analysis')
 
 
+def verify_tool_identity(settings,name):
+    if name not in ('freecadcmd','freecadgui','gmsh','ccx'):raise AnalysisError('FEA_TOOL_UNSUPPORTED','only fixed native tool roles are accepted')
+    pin=settings['tools'][name];actual=_read(Path(pin['path']))
+    if actual.sha256!=pin['sha256'] or {'volume':actual.identity.volume,'file_index':actual.identity.file_index}!=pin['identity']:
+        raise AnalysisError('FEA_TOOL_DIGEST_CHANGED','native executable identity changed before or during its owned process')
+
+
+def verify_native_modules(settings):
+    manifest=_read(Path(settings['runtime']['manifest_path']))
+    if manifest.sha256!=settings['runtime']['manifest_sha256']:raise AnalysisError('FEA_RUNTIME_CHANGED','native manifest changed')
+    record=json.loads(manifest.content)
+    for field,expected in [('module',settings['runtime']['module_sha256']),('output_module',settings['runtime'].get('output_module_sha256'))]:
+        if expected is not None and _read(Path(record[field+'_path'])).sha256!=expected:raise AnalysisError('FEA_RUNTIME_CHANGED','reviewed native FEM source changed during execution')
+
+
 def _read(path):
     located = secure_fs.validate_managed_path(path, allow_missing_leaf=False)
     data = secure_fs.read_managed_file(located.path)

@@ -32,6 +32,18 @@ class Child:
         self.job.Close()
         win32api.CloseHandle(self.process)
 
+    def memory_bytes(self):
+        import win32job
+        # Windows reports peak committed bytes for the owned Job. This is
+        # explicitly recorded as a different observation from POSIX RSS.
+        return int(win32job.QueryInformationJobObject(self.job,win32job.JobObjectExtendedLimitInformation)['PeakJobMemoryUsed'])
+
+
+def current_memory_bytes():
+    import win32api
+    import win32process
+    return int(win32process.GetProcessMemoryInfo(win32api.GetCurrentProcess())['WorkingSetSize'])
+
 
 def start(request, token, stdout, stderr):
     import _winapi

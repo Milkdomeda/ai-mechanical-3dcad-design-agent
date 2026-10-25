@@ -52,6 +52,17 @@ class ProcessController:
         self._results = {}
         self._lock = threading.RLock()
 
+    def observed_memory_bytes(self):
+        """Only this owner's children; observation is not a hard memory quota."""
+        with self._lock:
+            used=sum(child.memory_bytes() for _,child,_,_ in self._children.values())
+            return {'bytes':self._backend.current_memory_bytes()+used,'measurement':'supervisor RSS plus observed owned process-group RSS' if os.name=='posix' else 'supervisor working set plus owned Job peak committed bytes'}
+
+    def terminate_owned(self,*,reason='interrupted'):
+        with self._lock:
+            identities=[record[0] for record in self._children.values()]
+        return [self.terminate(identity,reason=reason) for identity in identities]
+
     def start(self, request: ProcessRequest) -> ProcessIdentity:
         if not request.argv or not all(isinstance(value, str) and value and "\0" not in value for value in request.argv):
             raise ValueError("nonempty explicit argv required")

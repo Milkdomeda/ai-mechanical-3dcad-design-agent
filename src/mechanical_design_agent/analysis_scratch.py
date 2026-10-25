@@ -6,6 +6,7 @@ import shutil
 import stat
 from pathlib import Path
 import uuid
+import time
 from mechanical_design_agent import secure_fs
 
 
@@ -93,7 +94,21 @@ def verify_native_temp(actual, owned):
 
 
 @contextmanager
-def native_scratch(root: Path):
+def _owner_lock(path,checkpoint):
+    if checkpoint is None:
+        with secure_fs.exclusive_file_lock(path):yield
+        return
+    while True:
+        checkpoint()
+        with secure_fs.try_exclusive_file_lock(path) as acquired:
+            if acquired:
+                checkpoint();yield
+                return
+        time.sleep(.05)
+
+
+@contextmanager
+def native_scratch(root: Path,*,checkpoint=None):
     root=Path(root)
     if not root.is_absolute() or not str(root).isascii():raise ValueError('NATIVE_SCRATCH_REQUIRES_ABSOLUTE_ASCII_ROOT')
     repository=Path(__file__).resolve().parent
@@ -101,7 +116,7 @@ def native_scratch(root: Path):
     # Use the existing backend's ancestor/reparse checks, creation lock and
     # lifetime lock. Windows pins directory handles against rename/deletion.
     bootstrap=root.parent/('.native-bootstrap-'+hashlib.sha256(str(root).encode('utf-8')).hexdigest()[:24]+'.lock')
-    with secure_fs.exclusive_file_lock(bootstrap):
+    with _owner_lock(bootstrap,checkpoint):
         checked=secure_fs.validate_managed_path(root,allow_missing_leaf=True)
         source=secure_fs.validate_managed_path(repository,allow_missing_leaf=False)
         if checked.path.is_relative_to(source.path):raise ValueError('NATIVE_SCRATCH_MUST_BE_OUTSIDE_SOURCE')
@@ -110,13 +125,13 @@ def native_scratch(root: Path):
         if not pinned.path.is_dir():raise ValueError('NATIVE_SCRATCH_NOT_DIRECTORY')
         if not str(pinned.path).isascii():raise ValueError('NATIVE_SCRATCH_REQUIRES_ASCII_ROOT')
         _require_private(pinned.path)
-    with secure_fs.exclusive_file_lock(pinned.path/'.native-root.lock'):
+    with _owner_lock(pinned.path/'.native-root.lock',checkpoint):
         root_lock=secure_fs.validate_managed_path(pinned.path/'.native-root.lock',allow_missing_leaf=False)
         _assert_identity(pinned)
         child=pinned.path/uuid.uuid4().hex
         _create_private(child)
         owned=secure_fs.validate_managed_path(child,allow_missing_leaf=False)
-        with secure_fs.exclusive_file_lock(owned.path/'.native-owner.lock'):
+        with _owner_lock(owned.path/'.native-owner.lock',checkpoint):
             owner_lock=secure_fs.validate_managed_path(owned.path/'.native-owner.lock',allow_missing_leaf=False)
             yield owned
             _assert_identity(pinned);_assert_identity(owned)

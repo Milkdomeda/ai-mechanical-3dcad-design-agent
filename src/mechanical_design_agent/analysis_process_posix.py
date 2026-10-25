@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import shutil
 
 
 class Child:
@@ -39,6 +40,24 @@ class Child:
     def close(self):
         if self.process.stdin and not self.process.stdin.closed:
             self.process.stdin.close()
+
+    def memory_bytes(self):
+        if self.process.poll() is not None:return 0
+        rows=_ps(['-axo','pgid=,rss='])
+        total=sum(int(row[1])*1024 for row in (line.split() for line in rows.splitlines()) if len(row)==2 and int(row[0])==self.pid)
+        return total if self.process.poll() is None else 0
+
+
+def _ps(arguments):
+    executable=shutil.which('ps',path=os.defpath)
+    if executable is None:raise RuntimeError('owned RSS observer requires the platform ps utility')
+    result=subprocess.run([executable,*arguments],capture_output=True,text=True,timeout=1,env={'PATH':os.defpath,'LC_ALL':'C'})
+    if result.returncode:raise RuntimeError('owned RSS query failed')
+    return result.stdout
+
+
+def current_memory_bytes():
+    return int(_ps(['-p',str(os.getpid()),'-o','rss=']).strip())*1024
 
 
 def start(request, token, stdout, stderr):

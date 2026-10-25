@@ -79,6 +79,20 @@ def test_reused_pid_is_never_killed(tmp_path):
         controller.terminate(identity, reason="cancelled")
 
 
+def test_memory_observation_includes_only_the_living_owners_children(tmp_path):
+    controller=ProcessController()
+    baseline=controller.observed_memory_bytes()
+    code="import pathlib,time;block=bytearray(64*1024*1024);block[::4096]=b'x'*(len(block)//4096);pathlib.Path('ready').write_text('ready');time.sleep(30)"
+    identity=controller.start(request(tmp_path,argv=[sys.executable,'-I','-B','-c',code]))
+    try:
+        wait_for(lambda:(tmp_path/'ready').exists())
+        measured=controller.observed_memory_bytes()
+        assert measured['bytes']>baseline['bytes']+32*1024*1024
+        assert measured['measurement']
+    finally:controller.terminate(identity,reason='cancelled')
+    assert not controller._children
+
+
 def test_timeout_kills_entire_tree(tmp_path):
     controller = ProcessController()
     identity = controller.start(request(tmp_path, timeout=1.5))

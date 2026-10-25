@@ -150,12 +150,12 @@ jobs:
         run: |
           uv run --offline --group test python scripts/fea_r2_prepare.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/R2 setup workspace" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --destination "$env:RUNNER_TEMP/freecad-r2-runtime"
           if ($LASTEXITCODE -ne 0) { throw 'Separate R2 runtime copy, signature or loaded-code verification failed' }
-      - name: Verify R2 nodal RF native fields and force gravity pressure balance
+      - name: Verify R2 fields balance and two-case three-level convergence
         shell: pwsh
         run: |
           $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r2-runtime/config.json"
           $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
-          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py tests/test_analysis_pipeline_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
           if ($LASTEXITCODE -ne 0) { throw 'R2 native input, per-node RF, original total, full fields or balance failed' }
           Remove-Item Env:FEA_GUI_LIVE_CONFIG
           Remove-Item Env:FEA_GUI_LIVE_SCRATCH

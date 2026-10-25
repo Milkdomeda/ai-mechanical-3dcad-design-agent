@@ -19,6 +19,8 @@ from .analysis_store import _read, _timestamp
 from .analysis_types import AnalysisError
 from .analysis_worker_control import contact_worker
 from .workspace_bootstrap import read_workspace_manifest
+from .analysis_executor_identity import executor_identity
+from .analysis_validation import validate_evaluation_policy
 
 
 def _load(folder, reference, schema=None):
@@ -112,6 +114,7 @@ class AnalysisCoordinator:
         if revision['spec_status'] != 'approved' or state['approval'] is None or revision['artifacts']['spec']['sha256'] != spec_sha256:
             raise AnalysisError('ANALYSIS_SPEC_NOT_APPROVED', 'only the exact frozen approved specification can run')
         spec = _load(folder, revision['artifacts']['spec'], 'spec')
+        validate_evaluation_policy(spec)
         approval = _load(folder, revision['artifacts']['approval'], 'approval')
         knowledge = _load(folder, revision['artifacts']['knowledge_receipt'], 'knowledge-receipt')
         self._authorize({'scope': knowledge['scope']})
@@ -122,10 +125,15 @@ class AnalysisCoordinator:
         if approval['spec_sha256'] != spec_sha256 or approval_ref != state['approval']:
             raise AnalysisError('ANALYSIS_RUN_INTEGRITY', 'approval pointer does not match the frozen review')
         request = {'schema_version': 'AnalysisRunRequest/v1', 'design_id': design_id, 'analysis_id': analysis_id, 'run_id': 'run-' + key_sha[:16] + '-' + uuid.uuid4().hex, 'spec_sha256': spec_sha256, 'revision_ref': state['current_revision'], 'spec_ref': {'relative_path': prefix + revision['artifacts']['spec']['relative_path'], 'sha256': spec_sha256}, 'approval_ref': approval_ref, 'source_binding_ref': revision['source_binding_ref'], 'tool_bindings_sha256': approval['tool_bindings_sha256'], 'policy_sha256': approval['policy_sha256'], 'runtime_manifest_sha256': spec['tool_constraints']['runtime_manifest_sha256'], 'scope': knowledge['scope'], 'idempotency_sha256': key_sha, 'fingerprint_sha256': '0' * 64, 'retry_run_id': retry_run_id, 'created_at': _timestamp()}
+        code_identity=executor_identity()
+        request.update(executor_sha256=code_identity['sha256'],executor_identity_ref={'relative_path':'executor.json','sha256':code_identity['sha256']})
         request['fingerprint_sha256'] = fingerprint(request)
         if retry_run_id is not None:
             parent, old = read_run(self.store, design_id, analysis_id, retry_run_id)
-            if parent['status'] not in {'failed', 'cancelled', 'timed_out', 'interrupted'} or fingerprint({**request, 'retry_run_id': old['retry_run_id']}) != old['fingerprint_sha256']:
+            comparable={**request,'retry_run_id':old['retry_run_id']}
+            if 'executor_sha256' in old:comparable['executor_sha256']=old['executor_sha256']
+            else:comparable.pop('executor_sha256',None)
+            if parent['status'] not in {'failed', 'cancelled', 'timed_out', 'interrupted'} or fingerprint(comparable) != old['fingerprint_sha256']:
                 raise AnalysisError('ANALYSIS_RETRY_MISMATCH', 'technical retry requires a terminal unsuccessful run with identical frozen inputs and tool policy')
         encoded = canonical_record(request, schema_name='run-request')
         request_sha = hashlib.sha256(encoded).hexdigest()
@@ -143,6 +151,7 @@ class AnalysisCoordinator:
                         if pending(scheduler, design_id, analysis_id) or current['active_run_id'] is not None:
                             raise AnalysisError('ANALYSIS_BUSY', 'this analysis already has a queued or active run')
                         stage = secure_fs.ensure_managed_directory(root / 'runs' / ('.creating-' + uuid.uuid4().hex), parents=False, exist_ok=False).path
+                        secure_fs.atomic_publish_new(stage/'executor.json',code_identity['bytes'])
                         secure_fs.atomic_publish_new(stage / 'request.json', encoded)
                         run = initial_run(request, request_sha)
                         secure_fs.atomic_publish_new(stage / 'run.json', canonical_record(run, schema_name='run'))
