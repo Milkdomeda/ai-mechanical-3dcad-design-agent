@@ -86,7 +86,7 @@ def prepare_environment(config_path,scratch_root,output):
     return output
 
 
-def verify_environment(path,config):
+def verify_environment(path,config,*,expected_native=None):
     value=read_json(path);manifest=read_json(config['runtime']['manifest_path'])
     if value.get('schema_version')!='P0GuiEnvironment/v1' or value.get('profile')!=PROFILE or value.get('status')!='prepared':raise ValueError('GUI environment profile')
     if value['runtime_manifest_sha256']!=config['runtime']['manifest_sha256'] or manifest.get('gui_environment',{}).get('profile')!=PROFILE:raise ValueError('GUI environment manifest binding')
@@ -95,5 +95,6 @@ def verify_environment(path,config):
     for key in ('config','base_manifest','base_config','compile_result'):
         if digest(value[key]['path'])!=value[key]['sha256']:raise ValueError('GUI environment evidence changed')
     if manifest['tree'].get('bin/opengl32.dll')!={'sha256':DRIVER_SHA256}:raise ValueError('GUI driver identity')
-    verify_runtime(config)
+    native=verify_runtime(config)
+    if expected_native is not None and native!=expected_native:raise ValueError('GUI environment native identity changed')
     return value

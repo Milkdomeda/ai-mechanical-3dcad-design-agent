@@ -8,6 +8,43 @@ from test_fea_gui_input import INPUT
 from test_fea_gui_checks import native_snapshot
 
 
+def test_each_mesa_process_boundary_hashes_the_complete_runtime_once_after_metadata(tmp_path,monkeypatch):
+    import pytest
+    import fea_gui_automation as automation
+    import fea_gui_environment as environment
+    identity={'module_sha256':'a'*64,'native_identity':{'version':'1.1.3'}};calls=[]
+    references={name:{'path':str(tmp_path/name),'sha256':name} for name in ('config','base_manifest','base_config','compile_result')}
+    value={'schema_version':'P0GuiEnvironment/v1','profile':environment.PROFILE,'status':'prepared','runtime_manifest_sha256':'b'*64,**references}
+    manifest={'gui_environment':{'profile':environment.PROFILE},'tree':{'bin/opengl32.dll':{'sha256':environment.DRIVER_SHA256}}}
+    config={'runtime':{'manifest_path':'manifest','manifest_sha256':'b'*64}}
+    monkeypatch.setattr(environment,'read_json',lambda path:manifest if path=='manifest' else value)
+    def metadata_digest(path):
+        calls.append(('metadata',Path(path).name));return Path(path).name
+    monkeypatch.setattr(environment,'digest',metadata_digest)
+    def tools(config,*,full_tree=True):
+        calls.append(('tools',full_tree));assert not full_tree
+        return identity
+    def complete(config):calls.append(('complete_tree',True));return identity
+    monkeypatch.setattr(automation,'verify_runtime',tools)
+    monkeypatch.setattr(environment,'verify_runtime',complete)
+    for boundary in ('before_native','after_native','before_next_native','after_next_native'):
+        calls.clear()
+        assert automation._verify_gui_pass_runtime(config,'environment')==(identity,value)
+        assert calls==[('tools',False),*(('metadata',name) for name in references),('complete_tree',True)],boundary
+    monkeypatch.setattr(environment,'verify_runtime',lambda config:{'module_sha256':'changed'})
+    with pytest.raises(ValueError,match='native identity'):
+        automation._verify_gui_pass_runtime(config,'environment')
+
+
+def test_unprepared_gui_boundaries_still_require_a_complete_runtime_check(monkeypatch):
+    import fea_gui_automation as module
+    calls=[]
+    def verify(config):calls.append(config);return {'full':'verified'}
+    monkeypatch.setattr(module,'verify_runtime',verify)
+    assert module._verify_gui_pass_runtime({'config':'ours'},None)==({'full':'verified'},None)
+    assert calls==[{'config':'ours'}]
+
+
 def test_gui_inventory_is_bound_to_parsed_native_input_not_its_own_claim(tmp_path):
     from fea_gui_automation import assess_case
     reference=tmp_path/'reference.inp';exported=tmp_path/'exported.inp'

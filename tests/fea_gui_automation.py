@@ -25,16 +25,24 @@ def assess_case(value,reference,exported):
     return {'native':value,'gui_objects':objects,'input_comparison':comparison,'status':'passed' if valid else 'failed'}
 
 
+def _verify_gui_pass_runtime(config,gui_environment):
+    if gui_environment is None:return verify_runtime(config),None
+    from fea_gui_environment import verify_environment
+    # Environment verification already performs the complete tree/signature
+    # check after its metadata checks. Keep tool/module pinning here, then bind
+    # that full verification to the same identity. No receipt crosses a native
+    # process boundary or is reused by a later case.
+    native=verify_runtime(config,full_tree=False)
+    return native,verify_environment(gui_environment,config,expected_native=native)
+
+
 def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False,gui_environment=None,deadline=None):
     if not case_ids or len(case_ids)!=len(set(case_ids)) or any(key not in CASE_IDS for key in case_ids):raise ValueError('fixed GUI cases required')
     if sys.platform not in ('darwin','win32'):raise ValueError('native GUI platform not supported')
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
     if target.exists() or target.is_relative_to(Path(__file__).resolve().parents[1]):raise ValueError('new external GUI workspace required')
-    native=verify_runtime(config)
-    environment=None
+    native,environment=_verify_gui_pass_runtime(config,gui_environment)
     if gui_environment is not None:
-        from fea_gui_environment import verify_environment
-        environment=verify_environment(gui_environment,config)
         if software_opengl:raise ValueError('prepared native Mesa profile requires a single desktop OpenGL loader')
     manifest=read_json(config['runtime']['manifest_path']);runtime=Path(manifest['runtime_root'])
     relative='Contents/MacOS/FreeCAD' if sys.platform=='darwin' else 'bin/freecad.exe'
@@ -72,8 +80,9 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
         return tick
     def finalize(*args):
         try:
-            if verify_runtime(config)!=native:raise ValueError('runtime changed during GUI automation')
-            if environment is not None and verify_environment(gui_environment,config)!=environment:raise ValueError('GUI environment evidence changed during execution')
+            current_native,current_environment=_verify_gui_pass_runtime(config,gui_environment)
+            if current_native!=native:raise ValueError('runtime changed during GUI automation')
+            if current_environment!=environment:raise ValueError('GUI environment evidence changed during execution')
         except Exception:
             actual=tree_inventory(runtime);expected=manifest['tree']
             report['runtime_changes']={'added':sorted(set(actual)-set(expected)),'removed':sorted(set(expected)-set(actual)),'changed':sorted(k for k in set(actual)&set(expected) if actual[k]!=expected[k])}
