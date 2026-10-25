@@ -122,7 +122,10 @@
       "type": "object",
       "properties": {
         "profile": {
-          "const": "freecad-1.1.3-fem-faceforce-r1"
+          "enum": [
+            "freecad-1.1.3-fem-faceforce-r1",
+            "freecad-1.1.3-fem-faceforce-r1-nodal-rf-r2"
+          ]
         },
         "manifest_path": {
           "type": "string",

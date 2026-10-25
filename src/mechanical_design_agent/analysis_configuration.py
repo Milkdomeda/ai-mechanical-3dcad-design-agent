@@ -45,7 +45,9 @@ def _verify_manifest(config: JsonObject, workspace: Path, *, checkpoint=None) ->
         if pinned.sha256 != reference["manifest_sha256"]:
             raise AnalysisError("FEA_RUNTIME_CHANGED", "FEA runtime manifest checksum changed")
         manifest = json.loads(pinned.content.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite")))
-        if manifest["schema_version"] != "FEAR1Runtime/v1" or manifest["profile"] != reference["profile"] or manifest["source_commit"] != _FREECAD_COMMIT or manifest["source_unchanged"] is not True:
+        from .analysis_runtime_patch import PROFILE, PATCHED_SHA256
+        r2 = reference['profile'] == PROFILE
+        if manifest["schema_version"] != ('FEAR2Runtime/v1' if r2 else 'FEAR1Runtime/v1') or manifest["profile"] != reference["profile"] or manifest["source_commit"] != _FREECAD_COMMIT or manifest["source_unchanged"] is not True:
             raise AnalysisError("FEA_RUNTIME_UNSUPPORTED", "runtime is not the reviewed FreeCAD R1 profile")
         if manifest["native_identity"]["app_version"][:3] != ["1", "1", "3"]:
             raise AnalysisError("FEA_RUNTIME_UNSUPPORTED", "FreeCAD 1.1.3 is required")
@@ -53,6 +55,14 @@ def _verify_manifest(config: JsonObject, workspace: Path, *, checkpoint=None) ->
         module_path,module = _read_pinned(_resolve(workspace, manifest["module_path"]))
         if not module_path.is_relative_to(root) or module.sha256 != _R1_MODULE_SHA256 or manifest["module_sha256"] != _R1_MODULE_SHA256:
             raise AnalysisError("FEA_RUNTIME_CHANGED", "reviewed native FEM source changed")
+        extra = {}
+        if r2:
+            output_path, output = _read_pinned(_resolve(workspace, manifest['output_module_path']))
+            if output_path != module_path.parent.parent/'femsolver/calculix/write_step_output.py' or output.sha256 != PATCHED_SHA256 or manifest['output_module_sha256'] != PATCHED_SHA256:
+                raise AnalysisError('FEA_RUNTIME_CHANGED','reviewed per-node RF output source changed')
+            if manifest['loaded_identity']['output']['sha256'] != PATCHED_SHA256:
+                raise AnalysisError('FEA_RUNTIME_CHANGED','per-node RF loaded-code receipt is missing')
+            extra = {'profile':PROFILE,'output_module_sha256':PATCHED_SHA256}
         for name, tool in config["tools"].items():
             tool_path,actual = _read_pinned(_resolve(workspace, tool["path"]))
             if not tool_path.is_relative_to(root):
@@ -75,7 +85,7 @@ def _verify_manifest(config: JsonObject, workspace: Path, *, checkpoint=None) ->
                 actual[relative] = {"sha256": facts.sha256}
         if actual != expected:
             raise AnalysisError("FEA_RUNTIME_CHANGED", "isolated runtime inventory or checksum changed")
-        return {"manifest_path": str(manifest_path), "manifest_sha256": pinned.sha256, "module_sha256": module.sha256, "native_identity": manifest["native_identity"]}
+        return {"manifest_path": str(manifest_path), "manifest_sha256": pinned.sha256, "module_sha256": module.sha256, "native_identity": manifest["native_identity"], **extra}
     except AnalysisError:
         raise
     except (OSError, SecureFilesystemError, ValueError, KeyError, TypeError, UnicodeError) as exc:

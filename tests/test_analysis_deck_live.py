@@ -61,7 +61,8 @@ def test_standard_objects_and_native_input_match_declared_units(native_decks, ki
     inspection = result['inspection']
     assert result['numerical_acceptance'] == 'not_executed'
     assert inspection['element_count'] == bundle['receipt']['element_count']
-    assert inspection['rf_output'] == 'totals_only'  # actual R1 limitation
+    from mechanical_design_agent.analysis_runtime_patch import PROFILE
+    assert inspection['rf_output'] == ('nodal_and_totals' if settings['configuration']['runtime']['profile'] == PROFILE else 'totals_only')
     assert {'Fixed', 'CalculiX', 'Material', 'Mesh', 'AnalysisSolid', 'Analysis'} <= {obj['name'] for obj in result['objects']}
     if kind == 'force':
         assert [float(value) for value in inspection['force_N']] == pytest.approx([0, 0, -40], abs=1e-9)
@@ -74,6 +75,12 @@ def test_standard_objects_and_native_input_match_declared_units(native_decks, ki
         assert densities == ['0.000000001']
     else:
         assert inspection['distributed_loads'] and all(row[0] == 'pressure' and row[2][1] == '1' for row in inspection['distributed_loads'])
+    if settings['configuration']['runtime']['profile']==PROFILE:
+        from fea_product_solve import solve_and_extract,verify_synthetic_balance
+        fields=solve_and_extract(result,bundle,settings,native,directory/('solver output 中文 '+kind))
+        assert fields['fields']['validity']=='passed'
+        assert fields['numerical_acceptance']=='not_executed'  # no convergence/GUI gate yet
+        verify_synthetic_balance(fields,result,spec['validation'])
 
 
 @pytest.mark.live_fea
@@ -114,3 +121,8 @@ def test_one_total_force_across_two_curved_native_references(native_geometry, na
     # Original R1 independent-reference threshold is retained.
     assert evidence['max_nodal_force_error_N'] <= 1e-9
     assert evidence['compared_nodes'] == len(region['node_ids'])
+    from mechanical_design_agent.analysis_runtime_patch import PROFILE
+    if settings['configuration']['runtime']['profile']==PROFILE:
+        from fea_product_solve import solve_and_extract,verify_synthetic_balance
+        fields=solve_and_extract(result,bundle,settings,native_transaction,directory/'curved solver output 中文')
+        verify_synthetic_balance(fields,result,spec['validation'])

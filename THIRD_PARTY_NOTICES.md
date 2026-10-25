@@ -4,6 +4,7 @@ AI Mechanical 3DCAD Design Agent project-owned source is licensed under Apache-2
 Third-party components retain their original ownership and licenses; this index does not relicense them.
 Every listed component is separately installed or external and is not distributed by this project.
 External service and catalog terms apply independently and do not grant rights to downloaded CAD data.
+The distributed LGPL native source-only RF patch, its attribution and license are recorded in `src/mechanical_design_agent/resources/analysis/runtime-patches/nodal-rf-r2/`; no FreeCAD binaries are bundled.
 
 ## Installed runtime dependencies
 

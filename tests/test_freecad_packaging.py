@@ -28,9 +28,11 @@ EXPECTED_FREECAD_SHA256 = os.environ.get(
 ).strip().lower()
 EXPECTED_SCRIPTS = {
     "analysis_build.py": "cead95a8e8b670c314001a2efbadd7c3ecd22e7ee2f6c580ee8aacbba5609502",
+    "analysis_extract_results.py": "6ce667df3e29ad8d0c5c71fcc311a82c627d873b5609ad378c0a8b30d37c71a2",
     "analysis_geometry.py": "816a4bc48cecd1c59b274190baa820f733e5a2e6f1e8411fd666648c887a4d3e",
     "analysis_mesh.py": "76d2cce8e8fc4520786f64dda9158fadc7c8f5b40dbc3e48dfd829c09606c5e8",
     "analysis_mesh_math.py": "4c908aec828d2a15713d4ed69a13cf13ae52648af41463dda3f39856ea3a5ea7",
+    "analysis_runtime_identity.py": "d78934b88369a35fda13ff5d7f43004bc08a5f2390601f6e5740c15fd117dfde",
     "create_empty_model.py": "f0bf474d56ff1652786a0e53c168ba83beadc8369af867322d3a4cdaf892a062",
     "extract_model_manifest.py": "cc63c6d6a9281259bb238c5c8d118115f3fb99c03b6a3ea09863bbe0ecfb267d",
     "normalize_model.py": "295de05c0f86a0fafd69df4911e101e3aaa326be86b999816c8a461f74a39a04",

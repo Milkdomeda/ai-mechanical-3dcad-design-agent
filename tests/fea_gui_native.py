@@ -141,11 +141,14 @@ def run(request_path):
             if not state['case']['result_dialog_closed']:raise ValueError('native result task did not close')
             later(open_solver,400);return
         key,radio,unit,values=state['field_values'][state['field_index']]
-        button=Gui.getMainWindow().findChild(QtGui.QRadioButton,radio)
-        if button is None or not button.isEnabled():raise ValueError('native field unavailable '+radio)
+        from fea_gui_controls import visible_child,named_ancestor
+        button=visible_child(Gui.getMainWindow(),QtGui.QRadioButton,radio)
+        # ResultHints.ui and ResultShow.ui share the root objectName. Bind
+        # this field to its own live ancestor, never a global first match.
+        panel=named_ancestor(button,'ShowDisplacement')
+        state['result_panel']=panel
         button.setChecked(True)
-        displacement=Gui.getMainWindow().findChild(QtGui.QCheckBox,'cb_show_displacement')
-        if displacement is None:raise ValueError('native deformation control absent')
+        displacement=visible_child(panel,QtGui.QCheckBox,'cb_show_displacement')
         displacement.setChecked(False)
         state['capture_attempt']=0
         Gui.activeDocument().activeView().redraw()
@@ -180,7 +183,8 @@ def run(request_path):
         key,radio,unit,values=state['field_values'][state['field_index']]
         record={'radio_button':radio,'unit':unit,'raw_min':min(values),'raw_max':max(values),'nodal_values_sha256':hashlib.sha256(json.dumps(values,allow_nan=False).encode()).hexdigest()}
         for name in ('le_min','le_max'):
-            widget=Gui.getMainWindow().findChild(QtGui.QWidget,name)
+            from fea_gui_controls import visible_child
+            widget=visible_child(state['result_panel'],QtGui.QWidget,name)
             quantity=widget.property('quantity');text=str(widget.property('text'))
             import re
             token=re.match(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?',text)
@@ -208,7 +212,7 @@ def run(request_path):
         annotated=state['folder']/(key+'-figure.png')
         record.update(frame_native_image(path,annotated,case_id=state['case']['case_id'],field=key,unit=unit,minimum=min(values),maximum=max(values)))
         record['annotated_image_path']=str(annotated);record['annotated_image_sha256']=digest(annotated)
-        panel=Gui.getMainWindow().findChild(QtGui.QWidget,'ShowDisplacement')
+        panel=state['result_panel']
         if panel:
             panel_path=state['folder']/(key+'-panel.png');panel.grab().save(str(panel_path));record['panel_path']=str(panel_path);record['panel_sha256']=digest(panel_path)
         state['case']['display_fields'][key]=record

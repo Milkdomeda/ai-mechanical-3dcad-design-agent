@@ -145,6 +145,20 @@ jobs:
           $report = Get-Content -LiteralPath "$env:RUNNER_TEMP/GUI automation 中文/gui-automation.json" -Raw | ConvertFrom-Json
           if ($report.automated_status -ne 'passed' -or @($report.cases.PSObject.Properties).Count -ne 5) { throw 'Incomplete GUI matrix' }
           if ($report.manual_gui_status -ne 'not_executed' -or $report.overall_p0_status -ne 'blocked') { throw 'Automation must preserve accurate evidence scope' }
+      - name: Prepare separately owned reviewed R2 output runtime
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_r2_prepare.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/R2 setup workspace" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --destination "$env:RUNNER_TEMP/freecad-r2-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Separate R2 runtime copy, signature or loaded-code verification failed' }
+      - name: Verify R2 nodal RF native fields and force gravity pressure balance
+        shell: pwsh
+        run: |
+          $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r2-runtime/config.json"
+          $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'R2 native input, per-node RF, original total, full fields or balance failed' }
+          Remove-Item Env:FEA_GUI_LIVE_CONFIG
+          Remove-Item Env:FEA_GUI_LIVE_SCRATCH
       - name: Detach only the virtual disk created by this job
         if: always() && env.FEA_OWNED_TEST_VHD != ''
         shell: pwsh
@@ -173,6 +187,12 @@ jobs:
             ${{ runner.temp }}/freecad-r1-runtime/gui-materialization/
             ${{ runner.temp }}/gui-offline.xml
             ${{ runner.temp }}/gui-cas-*.xml
+            ${{ runner.temp }}/Product R2 native 中文/
+            ${{ runner.temp }}/product-r2-native.xml
+            ${{ runner.temp }}/freecad-r2-runtime/config.json
+            ${{ runner.temp }}/freecad-r2-runtime/runtime-manifest.json
+            ${{ runner.temp }}/freecad-r2-runtime/identity/
+            ${{ runner.temp }}/freecad-r2-runtime/compile/
             ${{ runner.temp }}/Product native 中文/
             ${{ runner.temp }}/product-native.xml
             ${{ runner.temp }}/freecad-r1-runtime/config.json

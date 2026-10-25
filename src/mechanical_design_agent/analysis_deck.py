@@ -231,7 +231,10 @@ def _parse_input_exact(path, *, allowed_root):
         canonical_distributed.append((kind, tuple(sorted(element_keys[element] for element in ids)), value))
         raw_distributed.append((kind, tuple(map(str, ids)), value))
     canonical_output=[]
+    rf_sets=[]
     for keyword,options,data in output:
+        if keyword=='NODE PRINT' and 'RF' in data:
+            rf_sets.append({'set_name':options['NSET'],'node_ids':sorted(resolve('NSET',options['NSET']))})
         values=[]
         for key,value in options.items():
             values.append((key,named(key,value) if key in sets else value))
@@ -252,7 +255,7 @@ def _parse_input_exact(path, *, allowed_root):
             'materials':tuple(sorted(material_keys.values())),'sections':canonical_sections,
             'boundary':fixed,'loads':dict(forces),'output':tuple(sorted(canonical_output)),
             'steps_and_constants':tuple(meta), 'distributed':tuple(sorted(canonical_distributed)), '_distributed_ids':raw_distributed, '_files':inventory,
-            '_nodes':nodes, '_elements':elements, '_material':next(iter(materials.values()))}
+            '_nodes':nodes, '_elements':elements, '_material':next(iter(materials.values())), '_rf_sets':rf_sets}
 
 
 def _json_value(value):
@@ -371,4 +374,4 @@ def _build_with_transaction(contract, geometry, source_mesh, output_dir, setting
     encoded = json.dumps(verified, ensure_ascii=True, allow_nan=False, sort_keys=True).encode('utf-8')
     secure_fs.atomic_publish_new(loads_path, encoded)
     secure_fs.set_managed_file_readonly(Path(output_dir) / result['artifacts']['input']['relative_path'])
-    return {'schema_version': 'AnalysisCaseDeck/v1', 'spec_sha256': contract['spec_sha256'], 'case_id': contract['case']['case_id'], 'directory': str(Path(output_dir)), 'input_ref': result['artifacts']['input'], 'inspection': inspection, 'objects': result['objects'], 'contract': contract, 'applied_loads_ref': {'relative_path': loads_path.name, 'sha256': hashlib.sha256(encoded).hexdigest()}, 'numerical_acceptance': 'not_executed'}
+    return {'schema_version': 'AnalysisCaseDeck/v1', 'spec_sha256': contract['spec_sha256'], 'case_id': contract['case']['case_id'], 'directory': str(Path(output_dir)), 'input_ref': result['artifacts']['input'], 'inspection': inspection, 'objects': result['objects'], 'contract': contract, 'applied_loads_ref': {'relative_path': loads_path.name, 'sha256': hashlib.sha256(encoded).hexdigest()}, 'moment_origin_mm':[value['value'] for value in spec['validation']['moment_origin']], 'budget':spec['budget'], 'numerical_acceptance': 'not_executed'}

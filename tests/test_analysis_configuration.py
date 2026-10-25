@@ -106,3 +106,30 @@ def test_full_inventory_verification_has_cooperative_cancellation(tmp_path, monk
     assert error.value.code == 'ANALYSIS_CANCELLED'
     assert before == {p: p.read_bytes() for p in (tmp_path/'native').iterdir()}
     assert not (tmp_path/'private-cache').exists()
+
+
+def test_r2_requires_the_exact_second_module_even_with_rebuilt_manifest(tmp_path,monkeypatch):
+    from mechanical_design_agent import analysis_runtime_patch
+    from mechanical_design_agent.analysis_configuration import load_analysis_configuration
+    from mechanical_design_agent.analysis_types import AnalysisError
+    selected,path,_ = configured(tmp_path,monkeypatch)
+    manifest=tmp_path/'runtime-manifest.json'
+    data=json.loads(manifest.read_text())
+    root=tmp_path/'native'
+    module=root/'Mod/Fem/femmesh/meshtools.py';module.parent.mkdir(parents=True)
+    (root/'meshtools.py').rename(module)
+    output=root/'Mod/Fem/femsolver/calculix/write_step_output.py';output.parent.mkdir(parents=True)
+    output.write_bytes(b'# synthetic reviewed output\n')
+    sha=hashlib.sha256(output.read_bytes()).hexdigest()
+    monkeypatch.setattr(analysis_runtime_patch,'PATCHED_SHA256',sha)
+    data.update(schema_version='FEAR2Runtime/v1',profile=analysis_runtime_patch.PROFILE,module_path=str(module),output_module_path=str(output),output_module_sha256=sha,loaded_identity={'output':{'sha256':sha}})
+    def publish():
+        data['tree']={p.relative_to(root).as_posix():{'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in root.rglob('*') if p.is_file()}
+        manifest.write_text(json.dumps(data))
+        config=json.loads(path.read_text());config['runtime'].update(profile=analysis_runtime_patch.PROFILE,manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest());path.write_text(json.dumps(config))
+    publish()
+    assert load_analysis_configuration(selected)['runtime']['output_module_sha256']==sha
+    output.write_bytes(b'# unreviewed source, with otherwise self-consistent inventory\n')
+    publish()
+    with pytest.raises(AnalysisError) as error: load_analysis_configuration(selected)
+    assert error.value.code=='FEA_RUNTIME_CHANGED'
