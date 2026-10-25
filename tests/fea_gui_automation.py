@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import uuid
 
 from mechanical_design_agent import secure_fs
@@ -24,7 +25,7 @@ def assess_case(value,reference,exported):
     return {'native':value,'gui_objects':objects,'input_comparison':comparison,'status':'passed' if valid else 'failed'}
 
 
-def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False,gui_environment=None):
+def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=None,software_opengl=False,gui_environment=None,deadline=None):
     if not case_ids or len(case_ids)!=len(set(case_ids)) or any(key not in CASE_IDS for key in case_ids):raise ValueError('fixed GUI cases required')
     if sys.platform not in ('darwin','win32'):raise ValueError('native GUI platform not supported')
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
@@ -79,7 +80,10 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
             raise
         report['runtime_unchanged']=True
     try:
-        outcome=owned_gui_process(target/'logs',scratch_root,build,observe,timeout_seconds=600,finalize=finalize)
+        remaining=600 if deadline is None else deadline-time.monotonic()
+        if not 0<remaining<=600:raise TimeoutError('original 600-second GUI phase budget exhausted')
+        outcome=owned_gui_process(target/'logs',scratch_root,build,observe,timeout_seconds=remaining,finalize=finalize)
+        if deadline is not None and time.monotonic()>=deadline:raise TimeoutError('original 600-second GUI phase budget exhausted')
         report['owner']=outcome
         worker=read_json(target/'native.json');report['native']=pin(target/'native.json')
         identity_ok=startup_verified and worker['request_id']==request_id and worker.get('native_identity')==native['native_identity'] and worker.get('native_before')==worker.get('native_after') and 'error' not in worker and 'cleanup_error' not in worker
@@ -102,12 +106,47 @@ def _run_gui_pass(config,workspace,scratch_root,*,case_ids=CASE_IDS,producer=Non
     return report
 
 
+def _isolated_gui_matrix(config,target,scratch_root,*,case_ids,software_opengl,gui_environment):
+    """Keep native Qt task lifetimes inside one fresh case process.
+
+    FreeCAD 1.1.3 can retain deleted task widgets when five generated documents
+    share a process. Product GUI reconstruction already owns a process per
+    case. Preserve all five checks and each producer/consumer binding here,
+    with the original 600 seconds shared across each entire matrix phase.
+    """
+    report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','passes':{},'cases':{},'runtime_unchanged':False,'case_process_isolation':True}
+    for phase in ('build','roundtrip'):
+        parent=target/phase;parent.mkdir()
+        started=time.monotonic();deadline=started+600;passes={};cases={}
+        for key in case_ids:
+            try:
+                if time.monotonic()>=deadline:raise TimeoutError('original 600-second GUI phase budget exhausted')
+                producer=None if phase=='build' else report['passes']['build']['case_passes'][key]['native']
+                value=_run_gui_pass(config,parent/key,scratch_root,case_ids=(key,),producer=producer,software_opengl=software_opengl,gui_environment=gui_environment,deadline=deadline)
+            except Exception as exc:
+                value={'automated_status':'failed','runtime_unchanged':False,'error':str(exc),'cases':{key:{'status':'failed','error':str(exc)}}}
+            passes[key]=value;cases[key]=value['cases'].get(key,{'status':'failed','error':'native case receipt missing'})
+        elapsed=time.monotonic()-started
+        independent=phase=='build' or all(passes[key].get('startup_pid') is not None and passes[key]['startup_pid']!=report['passes']['build']['case_passes'][key].get('startup_pid') for key in case_ids)
+        passed=elapsed<600 and independent and all(value['automated_status']=='passed' for value in passes.values())
+        report['passes'][phase]={'automated_status':'passed' if passed else 'failed','case_passes':passes,'cases':cases,'independent_producer_consumer_processes':independent,'budget':{'wall_seconds':600,'elapsed_seconds':elapsed,'status':'passed' if elapsed<600 else 'failed'}}
+        report['cases']=cases
+        if not passed:break
+    if len(report['passes'])==2 and all(v['automated_status']=='passed' for v in report['passes'].values()):report['automated_status']='passed'
+    report['runtime_unchanged']=all(value['runtime_unchanged'] for phase in report['passes'].values() for value in phase['case_passes'].values())
+    report['artifacts']={path.relative_to(target).as_posix():digest(path) for path in sorted(target.rglob('*')) if path.is_file() and not path.is_symlink()}
+    write_json(target/'gui-automation.json',report)
+    return report
+
+
 def run_gui_automation(config,workspace,scratch_root,*,case_ids=CASE_IDS,software_opengl=False,gui_environment=None):
     """Build and then verify frozen deliveries in an independent GUI process."""
+    if not case_ids or len(case_ids)!=len(set(case_ids)) or any(key not in CASE_IDS for key in case_ids):raise ValueError('fixed GUI cases required')
     target=secure_fs.validate_managed_path(Path(workspace),allow_missing_leaf=True).path
     if target.exists() or target.is_relative_to(Path(__file__).resolve().parents[1]):raise ValueError('new external GUI workspace required')
     verify_runtime(config)
     target.mkdir(mode=0o700)
+    if len(case_ids)>1:return _isolated_gui_matrix(config,target,scratch_root,case_ids=case_ids,software_opengl=software_opengl,gui_environment=gui_environment)
     first=_run_gui_pass(config,target/'build',scratch_root,case_ids=case_ids,software_opengl=software_opengl,gui_environment=gui_environment)
     report={'schema_version':'P0NativeGuiAutomation/v1','actor':'assistant','automated_status':'failed','visual_review_status':'pending','manual_gui_status':'not_executed','overall_p0_status':'blocked','passes':{'build':first},'cases':first['cases'],'runtime_unchanged':first['runtime_unchanged']}
     if first['automated_status']=='passed':
