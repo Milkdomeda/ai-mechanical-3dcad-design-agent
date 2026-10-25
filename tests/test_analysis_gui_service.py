@@ -48,3 +48,28 @@ def test_queued_run_cannot_issue_a_final_gui_request(tmp_path):
     queued=submit(coordinator,approved)
     with pytest.raises(AnalysisError) as error:AnalysisGuiService(store).issue_request(design_id='fixture-design',analysis_id='static',kind='final_result',run_id=queued['run_id'],spec_sha256=approved['spec_sha256'])
     assert error.value.code=='ANALYSIS_GUI_RUN_UNVALIDATED'
+
+
+@pytest.mark.parametrize('owner',['current','foreign','unsealed'])
+def test_running_gui_request_requires_current_owner_and_sealed_numerical_attempt(tmp_path,monkeypatch,owner):
+    import os
+    from mechanical_design_agent.analysis_gui_service import AnalysisGuiService
+    from mechanical_design_agent.analysis_runs import change_run
+    _,_,store,_,approved,coordinator,_=setup(tmp_path)
+    queued=submit(coordinator,approved)
+    identity={'design_id':'fixture-design','analysis_id':'static','run_id':queued['run_id']}
+    reference={'relative_path':'attempts/unit-attempt.json','sha256':'a'*64}
+    change_run(store,**identity,changes={'status':'validating','worker':{'worker_uuid':'b'*32,'pid':os.getpid() if owner!='foreign' else os.getpid()+100000,'created_ns':1},'attempt_ref':reference},message='Metadata-only GUI handoff fixture.')
+    gui=AnalysisGuiService(store);checks=[]
+    def verify(*args,**kwargs):
+        checks.append(args)
+        if owner=='unsealed':raise AnalysisError('ANALYSIS_GUI_RUN_UNVALIDATED','Synthetic unsealed numerical attempt.')
+    monkeypatch.setattr(gui,'_attempt',verify)
+    values={**identity,'kind':'final_result','spec_sha256':approved['spec_sha256']}
+    if owner=='current':
+        result=gui.issue_request(**values)
+        assert checks and result['request']['attempt_ref']==reference
+    else:
+        with pytest.raises(AnalysisError) as error:gui.issue_request(**values)
+        assert error.value.code=='ANALYSIS_GUI_RUN_UNVALIDATED'
+        assert bool(checks)==(owner=='unsealed')

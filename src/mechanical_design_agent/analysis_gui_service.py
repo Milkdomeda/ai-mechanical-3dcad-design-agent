@@ -1,6 +1,7 @@
 """Register immutable GUI requests and verify only their owned evidence."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import uuid
@@ -47,7 +48,8 @@ class AnalysisGuiService:
         else:
             if run_id is None:raise AnalysisError('ANALYSIS_GUI_RUN_REQUIRED','final result requires a validated run')
             run,execution=read_run(self.store,design_id,analysis_id,run_id)
-            if run['status'] not in ('awaiting_visual_review','completed') or run.get('attempt_ref') is None:raise AnalysisError('ANALYSIS_GUI_RUN_UNVALIDATED','numerical and integrity evidence must exist before final GUI reconstruction')
+            owned_validation=run['status']=='validating' and run['worker'] is not None and run['worker']['pid']==os.getpid()
+            if (not owned_validation and run['status'] not in ('awaiting_visual_review','completed')) or run.get('attempt_ref') is None:raise AnalysisError('ANALYSIS_GUI_RUN_UNVALIDATED','numerical and integrity evidence must exist before final GUI reconstruction')
             revision_ref=execution['revision_ref'];attempt_ref=run['attempt_ref']
         folder,revision=read_frozen_revision(self.store,design_id,analysis_id,revision_ref)
         _authorize(self.store,_load(folder,revision['artifacts']['knowledge_receipt'],'knowledge-receipt')['scope'])
