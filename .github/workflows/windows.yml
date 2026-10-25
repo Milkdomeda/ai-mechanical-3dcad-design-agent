@@ -30,8 +30,31 @@ jobs:
         shell: pwsh
         run: |
           $cache = Join-Path $env:RUNNER_TEMP 'ai-mechanical-3dcad-uv-cache'
-          $secondVolume = Join-Path $env:RUNNER_TEMP 'ai-mechanical-3dcad-second-ntfs'
           New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          $primaryDrive = [IO.Path]::GetPathRoot([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+          $volume = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.FileSystem -eq 'NTFS' -and $_.DeviceID -ne $primaryDrive } | Select-Object -First 1
+          if (-not $volume) {
+            $letter = @('D','R','S','T','U','V','W','X','Y','Z') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
+            if (-not $letter) { throw 'No free test-volume drive letter' }
+            $vhd = Join-Path $env:RUNNER_TEMP 'fea-second-volume.vhdx'
+            if (Test-Path -LiteralPath $vhd) { throw 'Refuse to reuse an existing virtual disk' }
+            $diskScript = Join-Path $env:RUNNER_TEMP 'fea-create-test-volume.txt'
+            @"
+          create vdisk file="$vhd" maximum=512 type=expandable
+          select vdisk file="$vhd"
+          attach vdisk
+          create partition primary
+          format fs=ntfs quick label=FEA_TEST
+          assign letter=$letter
+          exit
+          "@ | Set-Content -Encoding ascii -LiteralPath $diskScript
+            diskpart /s $diskScript | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Ephemeral second NTFS creation failed' }
+            "FEA_OWNED_TEST_VHD=$vhd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $volume = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.DeviceID -eq "${letter}:" -and $_.FileSystem -eq 'NTFS' } | Select-Object -First 1
+          }
+          if (-not $volume -or $volume.DeviceID -eq $primaryDrive) { throw 'A distinct fixed NTFS test volume is required' }
+          $secondVolume = Join-Path ($volume.DeviceID + '\') 'fea-second-ntfs'
           New-Item -ItemType Directory -Force -Path $secondVolume | Out-Null
           "UV_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -49,7 +72,7 @@ jobs:
           uv venv --python 3.12 $venv
           $python = Join-Path $venv 'Scripts/python.exe'
           $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
-          uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
+          uv pip install --link-mode copy --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
       - name: Run the complete non-interactive suite offline
         shell: pwsh
         run: |
@@ -67,9 +90,9 @@ jobs:
             $skipped += [int]$suite.skipped
           }
           # Live database/GUI gates remain opt-in; second-volume tests run.
-          # One additional opt-in native FEA test; its live gate runs separately.
-          # POSIX guardian receipt-I/O regression is platform-specific.
-          $expectedSkipped = 20
+          # Exact current opt-in/platform skips, verified against the successful
+          # native FEA CI offline JUnit; native FEA gates run separately.
+          $expectedSkipped = 74
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Offline suite summary mismatch: failed=$failed skipped=$skipped"
           }
@@ -104,3 +127,18 @@ jobs:
           if ($failed -ne 0 -or $skipped -ne $expectedSkipped) {
             throw "Release-boundary summary mismatch: failed=$failed skipped=$skipped"
           }
+      - name: Detach only the virtual disk created by this job
+        if: always() && env.FEA_OWNED_TEST_VHD != ''
+        shell: pwsh
+        run: |
+          $vhd = $env:FEA_OWNED_TEST_VHD
+          $expected = Join-Path $env:RUNNER_TEMP 'fea-second-volume.vhdx'
+          if ($vhd -ne $expected) { throw 'Owned virtual disk path mismatch' }
+          $script = Join-Path $env:RUNNER_TEMP 'fea-detach-test-volume.txt'
+          @"
+          select vdisk file="$vhd"
+          detach vdisk
+          exit
+          "@ | Set-Content -Encoding ascii -LiteralPath $script
+          diskpart /s $script | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Owned virtual disk detach failed' }

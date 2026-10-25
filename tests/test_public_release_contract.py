@@ -297,12 +297,12 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume",
         "Prewarm the pinned build and runtime dependencies",
         "uv export --frozen --group test",
-        "uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0",
+        "uv pip install --link-mode copy --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0",
         "UV_OFFLINE",
         "pytest -q",
         "--junitxml=windows-public-offline.xml",
         "--junitxml=windows-public-boundary.xml",
-        "$expectedSkipped = 20",
+        "$expectedSkipped = 74",
         "$expectedSkipped = 3",
         "$failed -ne 0 -or $skipped -ne $expectedSkipped",
         "uv build --offline",
@@ -320,6 +320,33 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "tests/test_private_public_release_gate.py",
     ):
         assert forbidden not in workflow
+
+
+def test_public_windows_release_uses_real_second_ntfs_and_owned_cleanup() -> None:
+    import yaml
+
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["public-windows"]["steps"]
+    setup = next(step["run"] for step in steps if step.get("name") == "Prepare isolated Windows runner roots")
+    for required in (
+        "DriveType=3",
+        "$_.FileSystem -eq 'NTFS'",
+        "$_.DeviceID -ne $primaryDrive",
+        "create vdisk",
+        "format fs=ntfs",
+        "$volume.DeviceID -eq $primaryDrive",
+        "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume",
+        "FEA_OWNED_TEST_VHD=$vhd",
+    ):
+        assert required in setup
+    cleanup = next(step for step in steps if step.get("name") == "Detach only the virtual disk created by this job")
+    assert cleanup["if"] == "always() && env.FEA_OWNED_TEST_VHD != ''"
+    assert "if ($vhd -ne $expected)" in cleanup["run"]
+    assert "detach vdisk" in cleanup["run"]
+    assert "Owned virtual disk detach failed" in cleanup["run"]
+    assert not any(step.get("continue-on-error") for step in steps)
 
 
 def test_github_actions_have_exact_build_inventory_entries() -> None:
