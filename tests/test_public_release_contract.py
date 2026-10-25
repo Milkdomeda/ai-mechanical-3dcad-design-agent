@@ -43,6 +43,7 @@ EXPECTED_PUBLIC_SCRIPTS = (
     'scripts/fea_gui_acceptance.py',
     'scripts/fea_gui_automation.py',
     'scripts/fea_gui_environment.py',
+    'scripts/fea_live.json.example',
     'scripts/fea_p0_config.py',
     'scripts/fea_path_matrix.py',
     'scripts/fea_r1_acceptance.py',
@@ -175,6 +176,16 @@ def test_manifest_explicitly_excludes_private_development_content() -> None:
         "tests/test_runtime_hardcode_packaging.py",
     ):
         assert path in excluded
+
+
+def test_git_tracked_tree_matches_the_public_release_allowlist() -> None:
+    manifest = load_public_repository_manifest(PROJECT_ROOT)
+    allowed = {path.as_posix() for path in iter_public_repository_files(PROJECT_ROOT, manifest)}
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=PROJECT_ROOT, check=True,
+        capture_output=True, text=True,
+    )
+    assert set(tracked.stdout.rstrip("\0").split("\0")) == allowed
 
 
 def test_repository_ignores_runtime_design_and_release_artifacts() -> None:

@@ -1,6 +1,7 @@
 schema_version = "PublicRepositoryAllowlist/v1"
 
 root_files = [
+  ".gitattributes",
   ".env.example",
   ".gitignore",
   "AGENTS.md",
@@ -26,6 +27,8 @@ public_docs = [
   "docs/assets/ai-mechanical-design-agent-architecture-v2.png",
   "docs/assets/ai-mechanical-design-showcase.gif",
   "docs/FEA_STATIC_ANALYSIS.md",
+  "docs/FEA_P0.md",
+  "docs/FEA_P0_GUI.md",
 ]
 
 source_trees = [
@@ -39,6 +42,7 @@ source_trees = [
 ]
 
 public_tests = [
+  "tests/test_product_force_reference.py",
   "tests/conftest.py",
   "tests/database_deployment_helpers.py",
   "tests/freecad_gui_mcp_live_helpers.py",
@@ -223,6 +227,7 @@ public_scripts = [
   "scripts/fea_gui_acceptance.py",
   "scripts/fea_gui_automation.py",
   "scripts/fea_gui_environment.py",
+  "scripts/fea_live.json.example",
   "scripts/fea_p0_config.py",
   "scripts/fea_path_matrix.py",
   "scripts/fea_r1_acceptance.py",
