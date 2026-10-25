@@ -63,7 +63,6 @@ class BudgetGuard:
         now=self.clock()
         if now-self.started>=self.budget['wall_seconds']:raise AnalysisError('ANALYSIS_TIMED_OUT','analysis wall-clock budget exhausted')
         if not force and now<self.next_probe:return
-        self.next_probe=now+.5
         self.integrity_checkpoint()
         try:observed=self.memory_observer()
         except Exception as exc:raise AnalysisError('ANALYSIS_MEMORY_UNAVAILABLE','owned memory observation failed; budget cannot be claimed') from exc
@@ -72,6 +71,12 @@ class BudgetGuard:
         if observed['bytes']>self.budget['max_memory_mb']*1024*1024:raise AnalysisError('ANALYSIS_BUDGET_EXCEEDED','observed memory exceeds the declared budget')
         used=disk_bytes([*self.roots(),*self.owned_roots],native_ipc_roots=self.native_ipc_roots);self.peak_disk_bytes=max(self.peak_disk_bytes,used)
         if used>self.budget['max_disk_bytes']:raise AnalysisError('ANALYSIS_BUDGET_EXCEEDED','actual current-run and owned W1 evidence exceeds the declared disk budget')
+        # A slow source scan must not make the following file restart that
+        # entire scan. Its elapsed time still consumes the unchanged deadline.
+        if self.cancelled():raise AnalysisError('ANALYSIS_CANCELLED','owned analysis cancellation was requested')
+        finished=self.clock()
+        if finished-self.started>=self.budget['wall_seconds']:raise AnalysisError('ANALYSIS_TIMED_OUT','analysis wall-clock budget exhausted')
+        self.next_probe=finished+.5
 
     def receipt(self):
         return {'mode':'observed_only','measurement':self.memory_measurement,'peak_observed_memory_bytes':self.peak_memory_bytes,'peak_observed_disk_bytes':self.peak_disk_bytes,'wall_seconds':self.clock()-self.started,'sample_interval_seconds':.5,'hard_os_quota':False}
