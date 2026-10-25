@@ -105,13 +105,14 @@ def _validate_fields(bundle, mesh):
         if name=='rounding_bound' and any(number<0 for number in converted):raise AnalysisError('RESULT_RF_INCOMPLETE','native rounding resolution must be nonnegative')
         rf[name]=converted
     for tensor,vm,principal in zip(value['stress']['values'],value['von_mises']['values'],value['principal_stress']['values']):
-        xx,yy,zz,xy,xz,yz=tensor
-        expected=math.sqrt(max(0.,((xx-yy)**2+(yy-zz)**2+(zz-xx)**2)/2+3*(xy*xy+xz*xz+yz*yz)))
         scale=max(1.,max(map(abs,tensor)),max(map(abs,principal)))
-        tolerance=2e-12*scale
+        xx,yy,zz,xy,xz,yz=[number/scale for number in tensor]
+        normalized_principal=[number/scale for number in principal]
+        expected=math.sqrt(max(0.,((xx-yy)**2+(yy-zz)**2+(zz-xx)**2)/2+3*(xy*xy+xz*xz+yz*yz)))
+        tolerance=2e-12
         # These are field consistency/roundoff checks, not strength tolerances.
         determinant=xx*yy*zz+2*xy*xz*yz-xx*yz*yz-yy*xz*xz-zz*xy*xy
-        if vm<0 or abs(vm-expected)>tolerance or not principal[0]>=principal[1]>=principal[2] or abs(math.fsum(principal)-xx-yy-zz)>tolerance or abs(sum(p*p for p in principal)-(xx*xx+yy*yy+zz*zz+2*(xy*xy+xz*xz+yz*yz)))>tolerance*scale*4 or abs(math.prod(principal)-determinant)>tolerance*scale*scale*8:
+        if vm<0 or abs(vm/scale-expected)>tolerance or not principal[0]>=principal[1]>=principal[2] or abs(math.fsum(normalized_principal)-xx-yy-zz)>tolerance or abs(sum(p*p for p in normalized_principal)-(xx*xx+yy*yy+zz*zz+2*(xy*xy+xz*xz+yz*yz)))>tolerance*4 or abs(math.prod(normalized_principal)-determinant)>tolerance*8:
             raise AnalysisError('RESULT_DERIVED_FIELD_MISMATCH','native principal or von Mises fields disagree with the full stress tensor')
     value['validity']='passed'
     return value
@@ -169,7 +170,7 @@ def _extract_fields(deck, solver_outputs, settings, output_dir, native):
     table=json.loads(applied.content)['integrals']['native']['nodal_forces_N']
     rf=fields['raw_rf']
     reactions=recover_support_reactions(nodes={node:list(map(float,point)) for node,point in parsed['_nodes'].items()},fixed_node_ids=fixed,raw_rf=dict(zip(rf['node_ids'],rf['values'])),applied_nodal_forces={int(node):force for node,force in table.items()},moment_origin=list(map(float,deck['moment_origin_mm'])))
-    data={'schema_version':'AnalysisExtractedFields/v1','source_input_sha256':deck['input_ref']['sha256'],'solver_version':settings['tools']['ccx']['version'],'fields':fields,'reactions':reactions,'numerical_acceptance':'not_executed'}
+    data={'schema_version':'AnalysisExtractedFields/v1','spec_sha256':deck['spec_sha256'],'case_id':deck['case_id'],'source_input_sha256':deck['input_ref']['sha256'],'solver_version':settings['tools']['ccx']['version'],'fields':fields,'reactions':reactions,'solver_nodes':contract['solver_nodes'],'applied_nodal_forces_N':table,'applied_loads_sha256':applied.sha256,'moment_origin_mm':deck['moment_origin_mm'],'numerical_acceptance':'not_executed'}
     encoded=json.dumps(data,sort_keys=True,allow_nan=False).encode()
     path=Path(output_dir)/'fields.json';secure_fs.atomic_publish_new(path,encoded)
     return {**data,'artifact':{'relative_path':path.name,'sha256':hashlib.sha256(encoded).hexdigest()}}

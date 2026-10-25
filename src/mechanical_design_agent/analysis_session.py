@@ -18,6 +18,7 @@ from .analysis_geometry import resolve_regions, validate_geometry_manifest, vali
 from .analysis_knowledge import _json_bytes
 from .analysis_loads import build_load_ledger, validate_materials
 from .analysis_mesh import numerical_policy, plan_mesh_levels
+from .analysis_validation import validate_evaluation_policy
 from .analysis_protocol import canonical_record, parse_record, record_sha256
 from .analysis_revision import new_stage, publish_revision, read_artifact, read_revision
 from .analysis_types import AnalysisError
@@ -42,7 +43,7 @@ def _load(folder, reference, schema=None):
 
 
 def _policy(spec):
-    return _hash({'adapter_version': 'native-solid-static-v1', 'numerical_policy_sha256': numerical_policy()[1], 'mesh': spec['mesh'], 'validation': spec['validation'], 'budget': spec['budget'], 'distribution': 'native_uniform_surface'})
+    return _hash({'adapter_version': 'native-solid-static-v1', 'numerical_policy_sha256': numerical_policy()[1], 'mesh': spec['mesh'], 'validation': spec['validation'], 'budget': spec['budget'], 'evaluation':spec.get('evaluation'), 'criteria':spec['criteria'], 'distribution': 'native_uniform_surface'})
 
 
 def _tools(settings, spec):
@@ -143,6 +144,10 @@ class AnalysisSessionService:
                 issue('ANALYSIS_TOOL_CONSTRAINT_CHANGED', 'draft tool or numerical policy pins differ from the current configured revision')
             spec['tool_constraints'] = constraints
             artifacts['tools'] = _put(stage, 'tools.json', tools)
+        try:
+            validate_evaluation_policy(spec,regions)
+        except AnalysisError as exc:
+            issue(exc.code,str(exc))
         knowledge = self.knowledge_loader({'design_id': design_id, 'analysis_id': analysis_id, 'source_sha256': captured['origin_sha256'], 'query': request['knowledge']['query'], 'features': {'analysis_type': 'linear_static', 'material': None if spec['material'] is None else spec['material']['name'], 'included_objects': spec['source']['object_names']}, 'required_ids': request['knowledge']['required_ids'], 'requested_family_id': request['knowledge']['requested_family_id']})
         receipt = parse_record(canonical_record(knowledge['receipt'], schema_name='knowledge-receipt').decode('utf-8'), schema_name='knowledge-receipt')
         manifest = read_workspace_manifest(self.store.workspace)
@@ -180,13 +185,14 @@ class AnalysisSessionService:
             ledger['spec_sha256'] = spec_sha
             artifacts['load_ledger'] = _put(stage, 'loads.json', ledger, 'load-ledger')
         summary = {'schema_version': 'AnalysisReviewSummary/v1', 'spec_sha256': spec_sha, 'source': spec['source'], 'material': spec['material'], 'frame_mass': None if ledger is None else ledger['frame_mass'], 'load_cases': [] if ledger is None else ledger['cases'], 'regions': [] if regions is None else regions['bindings'], 'mesh': spec['mesh'], 'validation': spec['validation'], 'budget': spec['budget'], 'conclusion_level': spec['conclusion_level'], 'criteria': spec['criteria'], 'assumptions': spec['assumptions'], 'unresolved': spec['unresolved'], 'knowledge_status': receipt['status'], 'issues': issues}
+        summary['evaluation']=spec.get('evaluation')
         artifacts['summary'] = _put(stage, 'summary.json', summary)
         if not issues:
             try:
                 preview = self.gui_previewer({'spec': spec, 'spec_sha256': spec_sha, 'geometry': geometry, 'regions': regions, 'settings': settings, 'output_dir': str(stage / 'preview')})
                 preview = parse_record(canonical_record(preview, schema_name='preview-receipt').decode('utf-8'), schema_name='preview-receipt')
-                expected = {'status': 'completed', 'design_id': design_id, 'analysis_id': analysis_id, 'spec_sha256': spec_sha, 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': spec['tool_constraints']['runtime_manifest_sha256'], 'visible_region_ids': sorted(item['region_id'] for item in regions['bindings'])}
-                if any(preview[key] != value for key, value in expected.items()):
+                expected = {'status': 'completed', 'design_id': design_id, 'analysis_id': analysis_id, 'spec_sha256': spec_sha, 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': spec['tool_constraints']['runtime_manifest_sha256'], 'visible_region_ids': sorted(item['region_id'] for item in regions['bindings']), 'visible_observable_ids':sorted(obs['id'] for obs in spec['evaluation']['observables'])}
+                if any(preview.get(key) != value for key, value in expected.items()):
                     raise AnalysisError('ANALYSIS_PREVIEW_INVALID', 'GUI preview does not cover the exact reviewed specification and regions')
                 for reference in preview['images']: read_artifact(stage / 'preview', reference)
                 artifacts['preview_receipt'] = _put(stage, 'preview.json', preview, 'preview-receipt')
@@ -231,6 +237,7 @@ class AnalysisSessionService:
         frozen_sha = record_sha256(frozen, schema_name='spec')
         geometry = _load(folder, record['artifacts']['geometry'], 'geometry')
         regions = _load(folder, record['artifacts']['regions'], 'region-bindings')
+        validate_evaluation_policy(frozen,regions)
         ledger = build_load_ledger(frozen, {'geometry': geometry, 'regions': regions})
         prior_ledger = _load(folder, record['artifacts']['load_ledger'], 'load-ledger')
         if {**ledger, 'spec_sha256': spec_sha256} != prior_ledger:

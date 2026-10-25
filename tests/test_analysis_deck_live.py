@@ -46,6 +46,10 @@ def declared_spec(bundle, level, kind, settings):
         spec['cases'][0]['loads'] = [{'type': 'gravity', 'id': 'self-weight', 'components': [{'value': str(value), 'unit': 'mm/s^2'} for value in (0, 0, -10000)], 'factor': {'value': '1', 'unit': '1'}}]
     elif kind == 'pressure':
         spec['cases'][0]['loads'] = [{'type': 'pressure', 'id': 'pressure', 'region_id': payload, 'value': {'value': '1', 'unit': 'MPa'}, 'reversed': False, 'factor': {'value': '1', 'unit': '1'}}]
+    if kind!='curved_force':
+        from fea_evaluation_fixture import evaluation_policy
+        spec['evaluation']=evaluation_policy()
+        spec['evaluation']['applicability']['thickness_ray_ids']=[ray['id'] for ray in level['critical_rays']]
     spec.update(status='approved', unresolved=[])
     spec['tool_constraints'] = {'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'policy_sha256': _policy(spec), 'adapter_version': 'native-solid-static-v1'}
     return spec
@@ -81,6 +85,15 @@ def test_standard_objects_and_native_input_match_declared_units(native_decks, ki
         assert fields['fields']['validity']=='passed'
         assert fields['numerical_acceptance']=='not_executed'  # no convergence/GUI gate yet
         verify_synthetic_balance(fields,result,spec['validation'])
+        from mechanical_design_agent.analysis_validation import validate_level
+        from mechanical_design_agent.analysis_loads import build_load_ledger
+        from pathlib import Path
+        loaded={name:json.loads((Path(bundle['directory'])/bundle['receipt']['artifacts'][name]['relative_path']).read_text(encoding='utf-8')) for name in ('data','mapping')}
+        ledger=build_load_ledger(spec,{'geometry':bundle['geometry_manifest'],'regions':bundle['region_bindings']})
+        validation=validate_level(spec,ledger,{'receipt':bundle['receipt'],'level':level,**loaded},fields)
+        (directory/('level validation '+kind+'.json')).write_text(json.dumps(validation,indent=2),encoding='utf-8')
+        assert validation['numerical_status']=='passed'
+        assert validation['applicability_status']==('outside_scope' if kind=='force' else 'limited_screening')
 
 
 @pytest.mark.live_fea

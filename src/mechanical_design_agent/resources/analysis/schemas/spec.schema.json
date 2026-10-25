@@ -2732,6 +2732,16 @@
           "type": "null"
         }
       ]
+    },
+    "evaluation": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:evaluation-policy:v1"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

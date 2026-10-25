@@ -103,3 +103,17 @@ def test_failed_solver_or_stale_input_never_starts_native_extraction(tmp_path,re
     with pytest.raises(AnalysisError) as error:extract_fields(deck,outputs,settings,tmp_path/'fields',transaction=native)
     assert error.value.code=='RESULT_SOLVER_NOT_SUCCESSFUL'
     assert list(tmp_path.iterdir())==[]
+
+
+def test_large_finite_tensors_cannot_hide_wrong_principals_through_overflow():
+    import math
+    from mechanical_design_agent.analysis_results import validate_fields
+    value=bundle();scale=1e120
+    value['stress']['values'][1]=[scale,2*scale,3*scale,0.,0.,0.]
+    value['von_mises']['values'][1]=math.sqrt(3)*scale
+    # Same trace and squared norm; a different determinant must still reject.
+    value['principal_stress']['values'][1]=[(2+2/math.sqrt(3))*scale,(2-1/math.sqrt(3))*scale,(2-1/math.sqrt(3))*scale]
+    with pytest.raises(AnalysisError):validate_fields(value,mesh())
+    value['stress']['values'][1]=[scale,scale,scale,0.,0.,0.]
+    value['principal_stress']['values'][1]=[scale]*3;value['von_mises']['values'][1]=0.
+    assert validate_fields(value,mesh())['validity']=='passed'

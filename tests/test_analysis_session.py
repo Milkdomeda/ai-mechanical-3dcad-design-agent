@@ -25,6 +25,8 @@ def session(tmp_path, *, unavailable=False):
     root, source, source_sha = design(tmp_path)
     runtime = BootstrapRuntime.from_process(cwd=tmp_path, environ={}, workspace=tmp_path)
     spec, bundle = load_fixture()
+    from fea_evaluation_fixture import evaluation_policy
+    spec['evaluation']=evaluation_policy()
     spec.update(design_id='fixture-design', analysis_id='static', source=None, unresolved=[], status='draft')
     spec['mesh'] = {'element_type': 'C3D10', 'initial_size': {'value': '4', 'unit': 'mm'}, 'refinement_ratio': {'value': '.7', 'unit': '1'}, 'levels': 3, 'minimum_scaled_jacobian': {'value': '.1', 'unit': '1'}, 'minimum_thickness_elements': 2}
     spec['mesh']['critical_rays'] = [{'id': 'ray-' + str(index), 'start': [{'value': str(v), 'unit': 'mm'} for v in [x, y, 0]], 'end': [{'value': str(v), 'unit': 'mm'} for v in [x, y, 10]], 'coverage_atol': {'value': '0.000001', 'unit': 'mm'}, 'evidence': 'Synthetic full-thickness ray declared before execution.'} for index, (x, y) in enumerate([(37, 4.3), (51, 5.7), (73, 3.7)])]
@@ -54,7 +56,7 @@ def session(tmp_path, *, unavailable=False):
         image = b'\x89PNG\r\n\x1a\nsynthetic unit-test producer image'
         (folder / 'regions.png').write_bytes(image)
         spec = context['spec']
-        return {'schema_version': 'AnalysisPreviewReceipt/v1', 'status': 'completed', 'operator': 'assistant', 'design_id': spec['design_id'], 'analysis_id': spec['analysis_id'], 'spec_sha256': context['spec_sha256'], 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'visible_region_ids': sorted(entry['region_id'] for entry in context['regions']['bindings']), 'images': [{'relative_path': 'regions.png', 'sha256': sha(image)}]}
+        return {'schema_version': 'AnalysisPreviewReceipt/v1', 'status': 'completed', 'operator': 'assistant', 'design_id': spec['design_id'], 'analysis_id': spec['analysis_id'], 'spec_sha256': context['spec_sha256'], 'source_sha256': spec['source']['sha256'], 'geometry_sha256': spec['source']['geometry_sha256'], 'regions_sha256': spec['source']['regions_sha256'], 'runtime_manifest_sha256': settings['runtime']['manifest_sha256'], 'visible_region_ids': sorted(entry['region_id'] for entry in context['regions']['bindings']), 'visible_observable_ids':sorted(obs['id'] for obs in spec['evaluation']['observables']), 'images': [{'relative_path': 'regions.png', 'sha256': sha(image)}]}
     store = AnalysisStore(tmp_path)
     service = AnalysisSessionService(store, configuration_loader=lambda: deepcopy(settings), geometry_inspector=inspect, knowledge_loader=lambda context: knowledge.retrieve(**context), gui_previewer=preview)
     request = {'schema_version': 'AnalysisPrepareRequest/v1', 'source_path': str(source), 'expected_source_sha256': source_sha, 'draft_spec': spec,
@@ -83,6 +85,31 @@ def test_approval_covers_regions_material_policy_and_toolpins(tmp_path):
     for key in ('regions_sha256', 'geometry_sha256', 'material_sha256', 'policy_sha256', 'tool_bindings_sha256', 'summary_sha256', 'preview_receipt_sha256'):
         assert len(approved['approval'][key]) == 64
     assert (root / 'design.json').read_bytes() == cad_before
+
+
+def test_missing_or_changed_observation_policy_requires_its_own_review(tmp_path):
+    root,service,store,request,settings=session(tmp_path)
+    request['draft_spec'].pop('evaluation')
+    first=service.prepare(design_id='fixture-design',analysis_id='static',request=request,expected_revision=None)
+    assert first['spec_status']=='needs_input'
+    assert 'ANALYSIS_EVALUATION_UNRESOLVED' in {item['code'] for item in first['issues']}
+    from fea_evaluation_fixture import evaluation_policy
+    request['draft_spec']['evaluation']=evaluation_policy()
+    ready=service.prepare(design_id='fixture-design',analysis_id='static',request=request,expected_revision=first['state_revision'])
+    assert ready['spec_status']=='ready_for_review'
+    from mechanical_design_agent.analysis_protocol import canonical_record
+    assert canonical_record(ready['summary']['evaluation'],schema_name='evaluation-policy')==canonical_record(request['draft_spec']['evaluation'],schema_name='evaluation-policy')
+
+
+def test_preview_must_include_the_reviewed_observation_regions(tmp_path):
+    root,service,store,request,settings=session(tmp_path)
+    original=service.gui_previewer
+    def incomplete(context):
+        preview=original(context);preview.pop('visible_observable_ids');return preview
+    service.gui_previewer=incomplete
+    result=service.prepare(design_id='fixture-design',analysis_id='static',request=request,expected_revision=None)
+    assert result['spec_status']=='needs_input'
+    assert 'ANALYSIS_PREVIEW_INVALID' in {item['code'] for item in result['issues']}
 
 
 @pytest.mark.parametrize('decision,state', [('如果材料改好就同意', 'UNCLEAR'), ('不同意', 'REJECT')])
