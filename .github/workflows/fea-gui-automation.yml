@@ -113,6 +113,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
           uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
           if ($LASTEXITCODE -ne 0) { throw 'Pinned tool discovery failed' }
+      - name: Install isolated runtime and qualify through installed wheel
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
+          $workspace = Join-Path $env:RUNNER_TEMP 'Installed FEA workspace 中文'
+          $base = Get-Content -LiteralPath "$env:RUNNER_TEMP/fea-config.json" -Raw | ConvertFrom-Json
+          $source = Split-Path (Split-Path $base.tools.freecadcmd.path -Parent) -Parent
+          & $python -I -B -m mechanical_design_agent.cli init --workspace $workspace --actor fixture-engineer --organization synthetic-org --design-group synthetic-group
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable installed workspace initialization failed' }
+          & $python -I -B -m mechanical_design_agent.cli analysis setup --workspace $workspace --source-root $source --destination "$env:RUNNER_TEMP/freecad-r2-runtime" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --software-opengl
+          if ($LASTEXITCODE -ne 0) { throw 'Installed isolated R1/R2 setup failed' }
+          & $python -I -B -m mechanical_design_agent.cli analysis doctor --workspace $workspace --qualify
+          if ($LASTEXITCODE -ne 0) { throw 'Installed native qualification failed; preserve original thresholds' }
+          & $python -I -B -m mechanical_design_agent.cli analysis capabilities --workspace $workspace
+          if ($LASTEXITCODE -ne 0) { throw 'Installed qualification activation failed' }
+      - name: Verify installed default detached executor without checkout imports
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
+          $harness = Join-Path $env:RUNNER_TEMP 'fea_installed_e2e.py'
+          Copy-Item -LiteralPath tests/fea_installed_e2e.py -Destination $harness
+          Set-Location $env:RUNNER_TEMP
+          & $python -I -B $harness --workspace "$env:RUNNER_TEMP/Installed FEA workspace 中文"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed default executor failed; visual review remains separately pending' }
       - name: Prepare isolated reviewed R1 runtime
         shell: pwsh
         run: |
@@ -145,21 +169,6 @@ jobs:
           $report = Get-Content -LiteralPath "$env:RUNNER_TEMP/GUI automation 中文/gui-automation.json" -Raw | ConvertFrom-Json
           if ($report.automated_status -ne 'passed' -or @($report.cases.PSObject.Properties).Count -ne 5) { throw 'Incomplete GUI matrix' }
           if ($report.manual_gui_status -ne 'not_executed' -or $report.overall_p0_status -ne 'blocked') { throw 'Automation must preserve accurate evidence scope' }
-      - name: Install isolated runtime and qualify through installed wheel
-        shell: pwsh
-        run: |
-          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
-          $workspace = Join-Path $env:RUNNER_TEMP 'Installed FEA workspace 中文'
-          $base = Get-Content -LiteralPath "$env:RUNNER_TEMP/fea-config.json" -Raw | ConvertFrom-Json
-          $source = Split-Path (Split-Path $base.tools.freecadcmd.path -Parent) -Parent
-          & $python -I -B -m mechanical_design_agent.cli init --workspace $workspace --actor fixture-engineer --organization synthetic-org --design-group synthetic-group
-          if ($LASTEXITCODE -ne 0) { throw 'Disposable installed workspace initialization failed' }
-          & $python -I -B -m mechanical_design_agent.cli analysis setup --workspace $workspace --source-root $source --destination "$env:RUNNER_TEMP/freecad-r2-runtime" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --software-opengl
-          if ($LASTEXITCODE -ne 0) { throw 'Installed isolated R1/R2 setup failed' }
-          & $python -I -B -m mechanical_design_agent.cli analysis doctor --workspace $workspace --qualify
-          if ($LASTEXITCODE -ne 0) { throw 'Installed native qualification failed; preserve original thresholds' }
-          & $python -I -B -m mechanical_design_agent.cli analysis capabilities --workspace $workspace
-          if ($LASTEXITCODE -ne 0) { throw 'Installed qualification activation failed' }
       - name: Verify R2 fields balance and two-case three-level convergence
         shell: pwsh
         run: |
@@ -171,15 +180,6 @@ jobs:
           Remove-Item Env:FEA_GUI_LIVE_CONFIG
           Remove-Item Env:FEA_GUI_LIVE_SCRATCH
           Remove-Item Env:FEA_PRODUCT_GUI_LIVE
-      - name: Verify installed default detached executor without checkout imports
-        shell: pwsh
-        run: |
-          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
-          $harness = Join-Path $env:RUNNER_TEMP 'fea_installed_e2e.py'
-          Copy-Item -LiteralPath tests/fea_installed_e2e.py -Destination $harness
-          Set-Location $env:RUNNER_TEMP
-          & $python -I -B $harness --workspace "$env:RUNNER_TEMP/Installed FEA workspace 中文"
-          if ($LASTEXITCODE -ne 0) { throw 'Installed default executor failed; visual review remains separately pending' }
       - name: Detach only the virtual disk created by this job
         if: always() && env.FEA_OWNED_TEST_VHD != ''
         shell: pwsh
