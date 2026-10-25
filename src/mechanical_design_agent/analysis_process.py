@@ -37,6 +37,14 @@ class ProcessOutcome:
     identity: ProcessIdentity
 
 
+def require_process_exit(outcome,*,failure_code,message):
+    """Preserve authenticated owned termination through every native adapter."""
+    if outcome.reason=='exited' and outcome.returncode==0:return
+    from .analysis_types import AnalysisError
+    code={'timed_out':'ANALYSIS_TIMED_OUT','cancelled':'ANALYSIS_CANCELLED','interrupted':'ANALYSIS_INTERRUPTED','budget_exceeded':'ANALYSIS_BUDGET_EXCEEDED'}.get(outcome.reason,failure_code)
+    raise AnalysisError(code,message)
+
+
 class ProcessController:
     """Only this living owner may terminate its children; no PID-only attach.
 

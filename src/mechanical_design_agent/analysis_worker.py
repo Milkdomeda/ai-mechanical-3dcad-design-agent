@@ -25,14 +25,16 @@ from .models import require_safe_id
 
 
 def _execute(context):
-    from .analysis_execution import execution_settings,execute_run
+    from .analysis_execution import execution_settings,execute_run,execution_guard
     from .analysis_qualification import require_qualification
+    guard=execution_guard(context);guard.checkpoint(force=True)
     try:
-        settings=execution_settings(context)
-        require_qualification(settings)
+        settings=execution_settings(context,checkpoint=guard.checkpoint)
+        require_qualification(settings,checkpoint=guard.checkpoint)
     except AnalysisError as exc:
+        if exc.code in ('ANALYSIS_CANCELLED','ANALYSIS_TIMED_OUT','ANALYSIS_BUDGET_EXCEEDED','ANALYSIS_MEMORY_UNAVAILABLE','ANALYSIS_STORAGE_UNSAFE'):raise
         raise AnalysisError('FEA_EXECUTOR_UNAVAILABLE','Run analysis doctor --qualify for the exact installed package and approved runtime before submitting FEA.',details={'cause':exc.code}) from exc
-    return execute_run(context,settings=settings)
+    return execute_run(context,settings=settings,guard=guard)
 
 
 class RunContext:
@@ -66,7 +68,7 @@ class RunContext:
             return change_run_unlocked(self.root,run,{'attempt_ref':reference,'numerical_status':numerical['numerical_status'],'criteria_status':attempt['criteria']['criteria_status'],'applicability_status':numerical['applicability_status']},message='Bound sealed numerical evidence; GUI and visual completion gates remain.')
 
     def phase(self, stage, message, *, attempt=None):
-        if stage not in {'preparing', 'meshing', 'solving', 'validating', 'awaiting_visual_review'}:
+        if stage not in {'preparing', 'meshing', 'solving', 'validating'}:
             raise AnalysisError('ANALYSIS_PHASE_INVALID', 'only declared nonterminal execution stages may be published')
         changes = {'status': stage}
         if attempt is not None: changes['attempt'] = attempt
@@ -187,7 +189,8 @@ class AnalysisSupervisor:
                         code = exc.code if isinstance(exc, AnalysisError) else 'ANALYSIS_EXECUTOR_FAILED'
                         # Exception text may contain private paths/credentials;
                         # only bounded reviewed diagnostics enter public state.
-                        outcome = {'status': 'failed', 'diagnostic': {'code': code, 'message': 'Execution stopped (' + type(exc).__name__ + '); preserve evidence and inspect the declared diagnostic.'}}
+                        status={'ANALYSIS_TIMED_OUT':'timed_out','ANALYSIS_CANCELLED':'cancelled','ANALYSIS_INTERRUPTED':'interrupted'}.get(code,'failed')
+                        outcome = {'status': status, 'diagnostic': {'code': code, 'message': 'Execution stopped (' + type(exc).__name__ + '); preserve evidence and inspect the declared diagnostic.'}}
                     self._finish(context, outcome)
 
 

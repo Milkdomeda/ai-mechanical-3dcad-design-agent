@@ -95,3 +95,66 @@ def test_completed_without_verified_completion_is_rejected(tmp_path):
     result = coordinator.status(design_id='fixture-design', analysis_id='static')
     assert result['run_status'] == 'failed'
     assert result['diagnostic']['code'] == 'ANALYSIS_COMPLETION_UNVERIFIED'
+
+
+@pytest.mark.parametrize('code,status',[('ANALYSIS_TIMED_OUT','timed_out'),('ANALYSIS_INTERRUPTED','interrupted'),('ANALYSIS_CANCELLED','cancelled')])
+def test_owned_termination_error_preserves_terminal_reason(tmp_path,code,status):
+    from mechanical_design_agent.analysis_worker import AnalysisSupervisor
+    from mechanical_design_agent.analysis_types import AnalysisError
+    _,_,store,_,approved,coordinator,launcher=setup(tmp_path)
+    submit(coordinator,approved)
+    def stop(context):raise AnalysisError(code,'Synthetic owned lifecycle stop.')
+    assert AnalysisSupervisor(store,launcher.calls[0][1],execute=stop).run()==0
+    result=coordinator.status(design_id='fixture-design',analysis_id='static')
+    assert result['run_status']==status and result['diagnostic']['code']==code
+
+
+def test_default_startup_observes_cancellation_before_runtime_inventory(tmp_path,monkeypatch):
+    from mechanical_design_agent import analysis_execution,analysis_qualification
+    from mechanical_design_agent.analysis_worker import AnalysisSupervisor,_execute
+    _,_,store,_,approved,coordinator,launcher=setup(tmp_path)
+    submit(coordinator,approved);calls=[]
+    monkeypatch.setattr(analysis_execution,'execution_settings',lambda *args,**kwargs:calls.append('settings'))
+    monkeypatch.setattr(analysis_qualification,'require_qualification',lambda *args,**kwargs:calls.append('qualification'))
+    monkeypatch.setattr(analysis_execution,'execute_run',lambda *args,**kwargs:calls.append('execution'))
+    def cancelled(context):context.owner._cancel.set();return _execute(context)
+    assert AnalysisSupervisor(store,launcher.calls[0][1],execute=cancelled).run()==0
+    assert calls==[]
+
+
+def test_default_startup_passes_the_same_guard_through_qualification_and_execution(tmp_path,monkeypatch):
+    from mechanical_design_agent import analysis_execution,analysis_qualification
+    from mechanical_design_agent.analysis_worker import AnalysisSupervisor
+    _,_,store,_,approved,coordinator,launcher=setup(tmp_path)
+    submit(coordinator,approved);callbacks=[]
+    def settings(context,*,checkpoint=None):callbacks.append(checkpoint);return {'qualified':'unit fixture'}
+    def qualification(settings,*,checkpoint=None):callbacks.append(checkpoint)
+    def execute(context,*,settings=None,guard=None):
+        assert guard is not None and all(cb==guard.checkpoint for cb in callbacks)
+        assert guard.receipt()['wall_seconds']>0
+        return {'status':'failed','diagnostic':{'code':'SYNTHETIC_STOP','message':'No native producer.'}}
+    monkeypatch.setattr(analysis_execution,'execution_settings',settings)
+    monkeypatch.setattr(analysis_qualification,'require_qualification',qualification)
+    monkeypatch.setattr(analysis_execution,'execute_run',execute)
+    assert AnalysisSupervisor(store,launcher.calls[0][1]).run()==0
+    result=coordinator.status(design_id='fixture-design',analysis_id='static')
+    assert result['diagnostic']['code']=='SYNTHETIC_STOP'
+
+
+def test_startup_deadline_exhaustion_never_reaches_execution_with_a_fresh_clock(tmp_path,monkeypatch):
+    from mechanical_design_agent import analysis_execution,analysis_qualification
+    from mechanical_design_agent.analysis_worker import AnalysisSupervisor
+    _,_,store,_,approved,coordinator,launcher=setup(tmp_path)
+    submit(coordinator,approved);ticks=[0.];factory=analysis_execution.execution_guard
+    def guard(context):
+        value=factory(context);value.clock=lambda:ticks[0];value.started=0.;value.next_probe=0.
+        return value
+    def qualification(settings,*,checkpoint):
+        ticks[0]=1000000.;checkpoint()
+    monkeypatch.setattr(analysis_execution,'execution_guard',guard)
+    monkeypatch.setattr(analysis_execution,'execution_settings',lambda *args,**kwargs:{})
+    monkeypatch.setattr(analysis_qualification,'require_qualification',qualification)
+    monkeypatch.setattr(analysis_execution,'execute_run',lambda *args,**kwargs:pytest.fail('startup exhausted its existing deadline'))
+    assert AnalysisSupervisor(store,launcher.calls[0][1]).run()==0
+    result=coordinator.status(design_id='fixture-design',analysis_id='static')
+    assert result['run_status']=='timed_out' and result['diagnostic']['code']=='ANALYSIS_TIMED_OUT'

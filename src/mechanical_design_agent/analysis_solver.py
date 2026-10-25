@@ -57,9 +57,8 @@ def solve_native(deck,mesh,settings,output_dir,*,native):
         secure_fs.atomic_publish_new(output/'process.json',json.dumps(record,sort_keys=True).encode())
     native.checkpoint();verify_tool_identity(settings,'ccx');verify_native_modules(settings)
     if _read(inp).sha256!=original.sha256 or _read(work/'Mesh.inp').sha256!=original.sha256:raise AnalysisError('DECK_INPUT_CHANGED','native solver input changed during execution')
-    if outcome.reason!='exited' or outcome.returncode!=0:
-        code={'timed_out':'ANALYSIS_TIMED_OUT','budget_exceeded':'ANALYSIS_BUDGET_EXCEEDED','cancelled':'ANALYSIS_CANCELLED'}.get(outcome.reason,'SOLVER_PROCESS_FAILED')
-        raise AnalysisError(code,'owned native solver failed; preserve raw logs and outputs')
+    from .analysis_process import require_process_exit
+    require_process_exit(outcome,failure_code='SOLVER_PROCESS_FAILED',message='owned native solver failed; preserve raw logs and outputs')
     required=('stdout.log','stderr.log','Mesh.frd','Mesh.dat','Mesh.sta')
     if any(name not in files for name in required):raise AnalysisError('SOLVER_OUTPUT_INCOMPLETE','successful exit without all required fresh files is not a result')
     diagnostics=inspect_solver_completion(_read(output/'stdout.log').content.decode('utf-8'),_read(output/'stderr.log').content.decode('utf-8'),_read(output/'Mesh.sta').content.decode('ascii'),version=settings['tools']['ccx']['version'])

@@ -63,6 +63,15 @@ project-owned [mechanical-fea skill](../.agents/skills/mechanical-fea/SKILL.md).
 return the closed installed JSON contracts. The agent writes requests and
 reference-list files; users do not paste Python into FreeCAD or author receipts.
 
+The CLI accepts `--request-file` (also `--request`) and UTF-8
+`--decision-file` for approval/acceptance text; `--decision` remains available.
+Analysis exit codes are 0 for a successful command, 2 for missing inputs or
+approval, 3 for environment/capability blocking, 4 for a failed numerical/run
+outcome, 5 for a revision conflict, and 6 for cancelled/timed-out/interrupted
+outcomes. A valid completed report with failed engineering criteria still
+returns 0; its JSON states the criteria result. Existing CAD CLI exits are
+unchanged.
+
 ## Physical review and execution
 
 Reuse the existing Design Job and a selected FCStd output. Prepare captures an
@@ -158,3 +167,10 @@ Windows 11 ARM hosting x64 Python/FreeCAD through emulation. The latter does not
 establish Windows 11 x64 desktop/hardware-GPU acceptance. Unsupported or failed
 native graphics combinations remain blocked rather than falling back to a
 headless pass. Qualification is local to the actual installed environment.
+
+On macOS, a system request for **FreeCAD** to access Documents may appear when
+the workspace or isolated distribution is there. Allow that request for the
+selected local workspace, or select another accessible workspace. An unanswered
+system prompt can suspend native file access; a timeout is preserved as a failed
+check and does not qualify the environment. The agent does not change macOS
+privacy permissions or bypass system consent.

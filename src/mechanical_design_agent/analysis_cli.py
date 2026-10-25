@@ -24,13 +24,15 @@ def add_analysis_parser(commands):
         if name=='open':
             command.add_argument('--run-id',required=True);command.add_argument('--case-id',required=True);continue
         if name=='prepare':
-            command.add_argument('--request',type=Path,required=True)
+            command.add_argument('--request','--request-file',dest='request',type=Path,required=True)
             command.add_argument('--expected-revision',type=int,default=-1)
         elif name in ('approve','run'):
             command.add_argument('--spec-sha256',required=True)
         if name in ('approve','run','cancel','confirm'):
             command.add_argument('--expected-revision',type=int,required=True)
-        if name in ('approve','confirm'):command.add_argument('--decision',required=True)
+        if name in ('approve','confirm'):
+            decision=command.add_mutually_exclusive_group(required=True)
+            decision.add_argument('--decision');decision.add_argument('--decision-file',type=Path)
         if name=='run':
             command.add_argument('--idempotency-key',required=True);command.add_argument('--retry-run-id')
         if name in ('cancel','report','confirm'):command.add_argument('--run-id',required=True)
@@ -61,13 +63,16 @@ def dispatch(arguments,service):
     if name=='doctor':return service.doctor(qualify=arguments.qualify)
     if name=='setup':return service.setup(source_root=arguments.source_root,destination=arguments.destination,native_scratch_root=arguments.native_scratch_root,tools={role:getattr(arguments,role) for role in ('freecadcmd','freecadgui','gmsh','ccx') if getattr(arguments,role) is not None},software_opengl=arguments.software_opengl)
     values={'design_id':arguments.design_id,'analysis_id':arguments.analysis_id}
+    if name in ('approve','confirm'):
+        decision=arguments.decision if arguments.decision_file is None else _text(arguments.decision_file)
+        if not decision.strip() or len(decision)>4096:raise AnalysisError('ANALYSIS_INPUT_INVALID','a bounded nonempty UTF-8 decision is required')
     if name in ('open-status','close'):return getattr(service,name.replace('-','_'))(**values,session_id=arguments.session_id)
     if name=='open':return service.open(**values,run_id=arguments.run_id,case_id=arguments.case_id)
     if name=='prepare':
         values.update(request=parse_record(_text(arguments.request),schema_name='prepare-request'),expected_revision=None if arguments.expected_revision==-1 else arguments.expected_revision)
     elif name in ('approve','run'):
         values.update(spec_sha256=arguments.spec_sha256,expected_revision=arguments.expected_revision)
-        if name=='approve':values['decision_text']=arguments.decision
+        if name=='approve':values['decision_text']=decision
         else:values.update(idempotency_key=arguments.idempotency_key,retry_run_id=arguments.retry_run_id)
     elif name=='status':values.update(run_id=arguments.run_id,cursor=arguments.cursor)
     elif name=='cancel':values.update(run_id=arguments.run_id,reason=arguments.reason,expected_revision=arguments.expected_revision)
@@ -75,5 +80,19 @@ def dispatch(arguments,service):
         refs=[] if arguments.evidence_refs is None else parse_json_value(_text(arguments.evidence_refs),expected=list)
         if any(type(ref) is not str for ref in refs):raise AnalysisError('ANALYSIS_VISUAL_UNVERIFIED','evidence references must be registered relative path strings')
         values.update(run_id=arguments.run_id,action=arguments.action,evidence_refs=refs,expected_revision=None if arguments.expected_revision==-1 else arguments.expected_revision)
-    elif name=='confirm':values.update(run_id=arguments.run_id,manifest_sha256=arguments.manifest_sha256,decision_text=arguments.decision,expected_revision=arguments.expected_revision)
+    elif name=='confirm':values.update(run_id=arguments.run_id,manifest_sha256=arguments.manifest_sha256,decision_text=decision,expected_revision=arguments.expected_revision)
     return getattr(service,name)(**values)
+
+
+def analysis_exit_code(value):
+    """Analysis-only automation contract; engineering criteria stay in JSON."""
+    if type(value) is not dict:return 0
+    state=value.get('run_status',value.get('status',value.get('spec_status')))
+    code=value.get('code','')
+    if state in ('cancelled','timed_out','interrupted') or code in ('ANALYSIS_CANCELLED','ANALYSIS_TIMED_OUT','ANALYSIS_INTERRUPTED'):return 6
+    if code.endswith('_CONFLICT') or code in ('ANALYSIS_SOURCE_CHANGED','ANALYSIS_SPEC_CHANGED','ANALYSIS_REVIEW_CHANGED','ANALYSIS_BUSY'):return 5
+    if any(key in value and value[key]!='APPROVE' for key in ('approval_state','acceptance_state')):return 2
+    if state=='needs_input' or value.get('spec_status')=='needs_input' or code in ('ANALYSIS_SPEC_NOT_APPROVED','ANALYSIS_REVIEW_NOT_READY','ANALYSIS_INPUT_UNREADABLE','ANALYSIS_INPUT_INVALID') or code.startswith(('ANALYSIS_JSON_','ANALYSIS_SCHEMA_')):return 2
+    if state=='failed' or code.startswith(('SOLVER_','RESULT_','MESH_')):return 4
+    if state in ('blocked','setup_required','unavailable'):return 3
+    return 0

@@ -56,28 +56,34 @@ def _case(root,state,case_id):
     return deck,mesh,fields,solver
 
 
-def _verify_receipt(root,receipt):
+def _verify_receipt(root,receipt,*,checkpoint=None):
+    checkpoint=checkpoint or (lambda:None);checkpoint()
     if receipt.get('schema_version')!='AnalysisQualification/v1' or receipt.get('status')!='passed' or receipt.get('native_integrity_sealed') is not True or receipt.get('visual_review')!='not_claimed' or receipt.get('engineering_approval')!='not_claimed':raise AnalysisError('FEA_QUALIFICATION_INVALID','a caller-provided pass flag is not native qualification evidence')
-    actual=[ref for ref in inventory(root) if ref['relative_path']!='qualification.json']
+    actual=[ref for ref in inventory(root,checkpoint=checkpoint) if ref['relative_path']!='qualification.json']
     if actual!=receipt['files']:raise AnalysisError('FEA_QUALIFICATION_CHANGED','sealed native qualification artifacts changed')
     spec=_json(root,receipt['spec_ref']);state=_json(root,receipt['axial_ref']);_assess(spec,state['levels'],state['numerical'])
+    checkpoint()
     if [item['case_id'] for item in receipt['gui']]!=['static','reverse']:raise AnalysisError('FEA_QUALIFICATION_INVALID','both native result cases must be exercised')
     axial_root=root/'axial'
     for item in receipt['gui']:
+        checkpoint()
         directory=root/'gui'/item['case_id'];deck,mesh,fields,solver=_case(axial_root,state,item['case_id'])
         request=json.loads(_read(directory/'request.json').content);report=json.loads(_read(directory/'response.json').content)
         checked=verify_native_receipt(report,request=request,root=directory,deck=deck,fields=fields)
         evidence=_json(root,item['evidence_ref'])
         if evidence!={**checked,'native_integrity_sealed':True}:raise AnalysisError('FEA_QUALIFICATION_CHANGED','native GUI fields, task, output or producer identity changed')
+        checkpoint()
     curve=_json(root,receipt['curved_ref']);deck=curve['deck']
     objects=deck['contract']['case']['native_objects']
     if len(objects)!=1 or len(objects[0]['face_indices'])!=2 or any(abs(float(v)-expected)>1e-9 for v,expected in zip(deck['inspection']['force_N'],[0,0,-40])):raise AnalysisError('FEA_QUALIFICATION_FAILED','curved multi-reference load must retain one exact global total')
+    checkpoint()
 
 
 def marker_path(settings):return Path(settings['configuration_path']).with_suffix('.qualification.json')
 
 
-def require_qualification(settings):
+def require_qualification(settings,*,checkpoint=None):
+    checkpoint=checkpoint or (lambda:None);checkpoint()
     path=marker_path(settings)
     if not path.exists():raise AnalysisError('FEA_QUALIFICATION_REQUIRED','run analysis doctor --qualify for this exact installed package and isolated runtime')
     try:
@@ -85,13 +91,14 @@ def require_qualification(settings):
         if set(marker)!={'schema_version','configuration_sha256','runtime_manifest_sha256','executor_sha256','receipt_path','receipt_sha256'} or marker['schema_version']!='AnalysisQualificationBinding/v1':raise AnalysisError('FEA_QUALIFICATION_INVALID','qualification binding is incomplete')
         if marker['configuration_sha256']!=settings['configuration_sha256'] or marker['runtime_manifest_sha256']!=settings['runtime']['manifest_sha256']:raise AnalysisError('FEA_QUALIFICATION_STALE','runtime or configuration changed; run explicit qualification again')
         verify_executor_identity(marker['executor_sha256'])
+        checkpoint()
         located=secure_fs.validate_managed_path(Path(marker['receipt_path']),allow_missing_leaf=False).path
         if located.name!='qualification.json':raise AnalysisError('FEA_QUALIFICATION_INVALID','select only the immutable fixed qualification receipt')
         record=_read(located)
         if record.sha256!=marker['receipt_sha256']:raise AnalysisError('FEA_QUALIFICATION_CHANGED','selected qualification receipt changed')
         receipt=parse_json_value(record.content.decode('utf-8'),expected=dict)
         if any(receipt.get(key)!=marker[key] for key in ('configuration_sha256','runtime_manifest_sha256','executor_sha256')):raise AnalysisError('FEA_QUALIFICATION_STALE','selected receipt belongs to a different installed executor or native runtime')
-        _verify_receipt(located.parent,receipt)
+        _verify_receipt(located.parent,receipt,checkpoint=checkpoint)
         return {'status':'ready','code':'FEA_QUALIFIED','qualification_ref':{'path':str(located),'sha256':record.sha256},'executor_sha256':marker['executor_sha256'],'visual_review':'not_claimed','engineering_certification':False}
     except AnalysisError:raise
     except (OSError,secure_fs.SecureFilesystemError,ValueError,KeyError,TypeError,UnicodeError) as exc:raise AnalysisError('FEA_QUALIFICATION_INVALID','qualification receipt cannot be verified; preserve evidence and run explicit qualification again') from exc
@@ -147,7 +154,7 @@ def qualify_runtime(settings,output_dir):
         for case_id,evidence in gui:
             evidence['native_integrity_sealed']=True;ref=_put(root,'gui/'+case_id+'/evidence.json',evidence);gui_refs.append({'case_id':case_id,'evidence_ref':ref})
         receipt={'schema_version':'AnalysisQualification/v1','status':'passed','configuration_sha256':settings['configuration_sha256'],'runtime_manifest_sha256':settings['runtime']['manifest_sha256'],'executor_sha256':code['sha256'],'native_integrity_sealed':True,'spec_ref':spec_ref,'axial_ref':axial_ref,'curved_ref':curved_ref,'gui':gui_refs,'files':inventory(root),'budget':guard.receipt(),'visual_review':'not_claimed','engineering_approval':'not_claimed','engineering_certification':False}
-        reference=_put(root,'qualification.json',receipt);_verify_receipt(root,receipt);guard.checkpoint(force=True)
+        reference=_put(root,'qualification.json',receipt);_verify_receipt(root,receipt,checkpoint=guard.checkpoint);guard.checkpoint(force=True)
         marker={'schema_version':'AnalysisQualificationBinding/v1','configuration_sha256':settings['configuration_sha256'],'runtime_manifest_sha256':settings['runtime']['manifest_sha256'],'executor_sha256':code['sha256'],'receipt_path':str(root/'qualification.json'),'receipt_sha256':reference['sha256']}
         path=marker_path(settings);content=json.dumps(marker,sort_keys=True).encode()
         with secure_fs.exclusive_file_lock(path.with_suffix('.lock')):

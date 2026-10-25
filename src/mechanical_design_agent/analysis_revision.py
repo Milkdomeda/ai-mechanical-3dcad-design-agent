@@ -24,10 +24,11 @@ def read_artifact(root, reference):
     return data
 
 
-def inventory(root):
+def inventory(root,*,checkpoint=None):
     root=secure_fs.validate_managed_path(Path(root),allow_missing_leaf=False).path
     result = []
     for path in sorted(root.rglob('*')):
+        if checkpoint is not None:checkpoint()
         located = secure_fs.validate_managed_path(path, allow_missing_leaf=False).path
         if located.is_dir(): continue
         relative = located.relative_to(root).as_posix()
@@ -36,6 +37,7 @@ def inventory(root):
         if data.link_count != 1:
             raise AnalysisError('ANALYSIS_ARTIFACT_INTEGRITY', 'review artifacts cannot be multiply linked')
         result.append({'relative_path': relative, 'sha256': data.sha256})
+    if checkpoint is not None:checkpoint()
     return result
 
 

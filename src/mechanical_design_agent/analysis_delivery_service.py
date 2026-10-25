@@ -169,7 +169,7 @@ class AnalysisDeliveryService:
         return self.get_report(design_id,analysis_id,run_id)
 
     def revise_delivery(self,*,design_id,analysis_id,run_id,evidence_refs,expected_revision):
-        previous=self.get_report(design_id,analysis_id,run_id)
+        previous=self._recover_published(design_id,analysis_id,run_id,expected_revision)
         if previous['status']!='completed':raise AnalysisError('ANALYSIS_DELIVERY_NOT_READY','a presentation revision requires an existing verified completion')
         run,request=read_run(self.store,design_id,analysis_id,run_id)
         if type(evidence_refs) is not list or not evidence_refs or any(type(ref) is not str for ref in evidence_refs):raise AnalysisError('ANALYSIS_VISUAL_UNVERIFIED','new presentation evidence must name one registered native GUI request')

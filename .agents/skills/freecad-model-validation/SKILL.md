@@ -9,6 +9,15 @@ Use FreeCAD and its bundled Part/OCCT geometry kernel as the only validation eng
 
 ## Required workflow
 
+For a generated FEM analysis document, use the
+[mechanical-fea workflow](../mechanical-fea/SKILL.md) and its registered native
+GUI/field/archive checks. Do not reopen a persistent FEM FCStd through this
+generic geometry validator: FEM Python proxies require the separate safe
+BREP/UNV/validated-field reconstruction boundary. Continue to validate the
+controlled CAD source with this skill independently. Geometry validation does
+not establish numerical convergence, equilibrium, material suitability or
+engineering acceptance.
+
 1. Call `list_documents` to confirm the FreeCAD MCP bridge. Keep `remote_enabled` false.
 2. Read [references/validation-spec.md](references/validation-spec.md), then create an explicit specification. Every numeric requirement must include a tolerance; never invent manufacturing tolerances. Add the mandatory installation contract to every fastener object and controlled-overlap metadata to every compressible component.
 3. Load [scripts/freecad_model_validation.py](scripts/freecad_model_validation.py) inside FreeCAD with `execute_code` and call one or both interfaces:

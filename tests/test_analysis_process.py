@@ -178,3 +178,12 @@ def test_receipt_write_error_still_cleans_descendants(tmp_path):
         controller.terminate(identity, reason='cancelled')
         if pid and alive(pid):
             os.kill(pid, 9)
+
+
+@pytest.mark.parametrize('reason,code',[('timed_out','ANALYSIS_TIMED_OUT'),('cancelled','ANALYSIS_CANCELLED'),('interrupted','ANALYSIS_INTERRUPTED'),('budget_exceeded','ANALYSIS_BUDGET_EXCEEDED')])
+def test_native_outcome_preserves_owned_stop_reason(reason,code):
+    from mechanical_design_agent.analysis_process import require_process_exit,ProcessIdentity,ProcessOutcome
+    from mechanical_design_agent.analysis_types import AnalysisError
+    value=ProcessOutcome(None,reason,ProcessIdentity(1,'a'*32,1))
+    with pytest.raises(AnalysisError) as error:require_process_exit(value,failure_code='NATIVE_FAILED',message='Synthetic native stop.')
+    assert error.value.code==code

@@ -134,3 +134,11 @@ Every check contains `id`, `validator`, `status`, `message`, `mandatory`, and op
 Every FCStd result contains the exact `working_sha256` and a `fastener_inventory` entry for every automatically detected fastener. Each entry names its set, role, connection type, nominal diameter, axis, hosts, contacts, clearance/threaded hosts, and mandatory contract check. `summary.fasteners_detected` equals the number of entries in this authoritative inventory.
 
 Assembly-validation consumers must compare this inventory with assembly occurrence coverage. They must not reconstruct a smaller inventory from a hand-authored assembly manifest, accept a stale model hash, or treat an omitted fastener as outside the validation scope.
+
+## FEM evidence boundary
+
+Use the analysis protocol's immutable specification and registered native
+reconstruction for FEM results. A geometry validation report cannot approve
+physical inputs, reopen an arbitrary serialized FEM document, replace force
+and moment balance or mesh convergence, or accept an engineering report.
+Keep CAD and analysis evidence bound to their respective exact source hashes.

@@ -165,7 +165,7 @@ def execute_attempt(request,*,settings,control,cancelled=None,phase=None,guard=N
         result['files']=inventory(root)
         reference=_put(root,'attempt.json',result)
         guard.checkpoint(force=True)
-        if result['status']=='awaiting_visual_review':phase('awaiting_visual_review','Numerical evidence sealed; native GUI and publication gates remain.',attempt=1)
+        if result['status']=='awaiting_visual_review':phase('validating','Numerical evidence sealed; validating native GUI before opening visual review.',attempt=1)
         return {'status':result['status'],'numerical_status':numerical['numerical_status'],'criteria_status':criteria['criteria_status'],'applicability_status':numerical['applicability_status'],'attempt_ref':{'relative_path':(root/reference['relative_path']).relative_to(inputs['root']).as_posix(),'sha256':reference['sha256']}}
     except BaseException as exc:
         # Partial native files stay diagnostic. An exception does not create a

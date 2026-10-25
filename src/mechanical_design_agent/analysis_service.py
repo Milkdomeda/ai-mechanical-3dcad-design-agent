@@ -125,7 +125,7 @@ class AnalysisService:
         if action!='finalize_visual':raise AnalysisError('ANALYSIS_REPORT_ACTION_INVALID','report action must be get or finalize_visual')
         from .analysis_runs import read_run
         run,_=read_run(delivery.store,**identity)
-        operation=delivery.revise_delivery if run['status']=='completed' else delivery.finalize_visual
+        operation=delivery.revise_delivery if run['status']=='completed' and evidence_refs else delivery.finalize_visual
         return operation(**identity,evidence_refs=evidence_refs or [],expected_revision=expected_revision)
 
     def confirm(self,**kwargs):return self._delivery().confirm(**kwargs)

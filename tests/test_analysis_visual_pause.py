@@ -1,7 +1,25 @@
 """Worker metadata tests with a stub verifier; not numerical/vision proof."""
 import hashlib
+import pytest
 
 from test_analysis_coordinator import setup,submit
+
+
+def test_ordinary_phase_cannot_publish_visual_pause_before_gui_seal(tmp_path):
+    from mechanical_design_agent.analysis_worker import AnalysisSupervisor
+    from mechanical_design_agent.analysis_queue import scheduler_guard
+    from mechanical_design_agent.analysis_types import AnalysisError
+    from mechanical_design_agent.analysis_runs import read_run
+    _,_,store,_,approved,coordinator,_=setup(tmp_path)
+    queued=submit(coordinator,approved)
+    with scheduler_guard(store.workspace) as scheduler:claim=scheduler.claim()['worker_uuid']
+    def execute(context):
+        before=read_run(store,**context._identity())[0]
+        with pytest.raises(AnalysisError) as error:context.phase('awaiting_visual_review','Numerical-only evidence is not ready for image inspection.')
+        assert error.value.code=='ANALYSIS_PHASE_INVALID'
+        assert read_run(store,**context._identity())[0]==before
+        return {'status':'failed','diagnostic':{'code':'SYNTHETIC_STOP','message':'Metadata-only fixture.'}}
+    assert AnalysisSupervisor(store,claim,execute=execute).run()==0
 
 
 def test_verified_pause_releases_queue_and_can_be_cancelled_without_another_worker(tmp_path,monkeypatch):

@@ -163,7 +163,8 @@ def _launch_gui(native,work,home,settings,budget,module,request,inputs,sources,o
             if (work/name).exists():secure_fs.atomic_publish_new(output/name,_read(work/name).content)
         secure_fs.atomic_publish_new(output/'process.json',_bytes({'outcome':asdict(outcome),'request_sha256':hashlib.sha256(_bytes(request)).hexdigest(),'fixed_script_hashes':sources,'input_hashes':inputs}))
     verify_tool_identity(settings,'freecadgui');verify_native_modules(settings)
-    if outcome.reason!='exited' or outcome.returncode!=0:raise AnalysisError('ANALYSIS_GUI_PROCESS_FAILED','owned native GUI failed; inspect retained process evidence')
+    from .analysis_process import require_process_exit
+    require_process_exit(outcome,failure_code='ANALYSIS_GUI_PROCESS_FAILED',message='owned native GUI failed; inspect retained process evidence')
     if _read(work/'request.json').content!=_bytes(request) or _read(work/'AnalysisGui.FCMacro').content!=statement.encode('ascii') or any(_read(work/name).sha256!=sha for name,sha in {**inputs,**sources}.items()):raise AnalysisError('ANALYSIS_GUI_INPUT_CHANGED','native GUI input or fixed source changed during execution')
     return json.loads(_read(output/'response.json').content)
 

@@ -13,6 +13,13 @@ def test_missing_qualification_does_not_enable_the_default_worker(tmp_path):
     assert list(tmp_path.iterdir())==[]
 
 
+def test_qualification_honors_checkpoint_before_reading_any_receipt(tmp_path):
+    from mechanical_design_agent.analysis_qualification import require_qualification
+    def cancelled():raise AnalysisError('ANALYSIS_CANCELLED','Synthetic preflight cancellation.')
+    with pytest.raises(AnalysisError) as error:require_qualification({'configuration_path':str(tmp_path/'config.json')},checkpoint=cancelled)
+    assert error.value.code=='ANALYSIS_CANCELLED'
+
+
 def test_caller_pass_boolean_is_not_a_qualification_receipt(tmp_path):
     from mechanical_design_agent.analysis_qualification import require_qualification
     (tmp_path/'config.qualification.json').write_text(json.dumps({'status':'passed','gui':True,'numerical_status':'passed'}))

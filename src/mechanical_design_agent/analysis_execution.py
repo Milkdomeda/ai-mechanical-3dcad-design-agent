@@ -44,11 +44,16 @@ def execution_settings(context,*,checkpoint=None):
     return settings
 
 
-def execute_run(context,*,settings=None):
-    """Fixed owner collaborator; default deployment activation is separate."""
+def execution_guard(context):
     identity=context._identity();analysis=context.store._root(identity['design_id'],identity['analysis_id'])
     spec=json.loads(read_artifact(analysis,context.request['spec_ref']).content)
-    guard=BudgetGuard(spec['budget'],roots=lambda:[context.root],cancelled=context.cancelled,memory_observer=context.controller.observed_memory_bytes,integrity_checkpoint=lambda:verify_executor_identity(context.request['executor_sha256']))
+    return BudgetGuard(spec['budget'],roots=lambda:[context.root],cancelled=context.cancelled,memory_observer=context.controller.observed_memory_bytes,integrity_checkpoint=lambda:verify_executor_identity(context.request['executor_sha256']))
+
+
+def execute_run(context,*,settings=None,guard=None):
+    """Keep one owner deadline across verification, native solve and GUI."""
+    identity=context._identity()
+    guard=guard or execution_guard(context)
     guard.checkpoint(force=True)
     settings=settings or execution_settings(context,checkpoint=guard.checkpoint)
     attempt=execute_attempt(context.request,settings=settings,control=context.controller,cancelled=context.cancelled,phase=context.phase,guard=guard)

@@ -16,7 +16,7 @@ import sys
 
 from . import secure_fs
 from .analysis_native import _environment, _native_path, _read, verify_settings,verify_tool_identity,verify_native_modules
-from .analysis_process import ProcessController, ProcessRequest
+from .analysis_process import ProcessController, ProcessRequest,require_process_exit
 from .analysis_scratch import native_scratch, verify_native_temp
 from .analysis_types import AnalysisError
 from .package_resources import freecad_scripts_directory
@@ -145,8 +145,7 @@ class NativeTransaction:
         verify_native_modules(self.settings)
         if any(_read(work / name).sha256 != sha for name, sha in {**assets, **copied}.items()) or _read(work / 'request.json').content != encoded:
             raise AnalysisError('ANALYSIS_NATIVE_INPUT_CHANGED', 'fixed phase source, request or copied input changed during execution')
-        if outcome.reason != 'exited' or outcome.returncode != 0:
-            raise AnalysisError('ANALYSIS_NATIVE_FAILED', 'native phase did not exit normally; inspect retained process logs')
+        require_process_exit(outcome,failure_code='ANALYSIS_NATIVE_FAILED',message='native phase did not exit normally; inspect retained process logs')
         result = json.loads(_read(work / 'response.json').content.decode('utf-8'))
         expected = {'schema_version': 'AnalysisNativePhase/v1', 'phase': phase, 'request_id': request_id, 'request_sha256': _read(work / 'request.json').sha256, 'script_sha256': assets[script], 'app_version': ['1', '1', '3'], 'status': 'passed'}
         if any(result.get(key) != value for key, value in expected.items()):

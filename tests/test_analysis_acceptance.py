@@ -66,6 +66,18 @@ def test_completion_recovery_repairs_only_selected_metadata_and_authorizes_first
     assert (folder/'run.json').read_bytes()==run
 
 
+def test_public_report_finalization_recovers_terminal_publication_crash(tmp_path,monkeypatch):
+    from mechanical_design_agent.analysis_service import AnalysisService
+    _,store,identity,folder,delivery,state=completed(tmp_path,monkeypatch)
+    analysis=store._root('fixture-design','static')
+    state.update(status='running',active_run_id=identity['run_id'],latest_delivery=None)
+    secure_fs.atomic_replace(analysis/'analysis.json',canonical_record(state,schema_name='session'))
+    service=AnalysisService(object());monkeypatch.setattr(service,'_delivery',lambda:delivery)
+    response=service.report(**identity,action='finalize_visual',evidence_refs=[],expected_revision=state['state_revision'])
+    assert response['status']=='completed'
+    assert store.read_state('fixture-design','static')['active_run_id'] is None
+
+
 def test_missing_presentation_head_never_silently_selects_an_older_completion(tmp_path,monkeypatch):
     _,store,identity,folder,delivery,state=completed(tmp_path,monkeypatch)
     for name in ('v000001-first','v000002-later'):

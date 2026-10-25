@@ -422,6 +422,9 @@ def main() -> None:
             manifest = read_workspace_manifest(arguments.workspace)
             result = disable_standard_part_catalog(manifest=manifest)
         _print(result)
+        if arguments.command=='analysis':
+            from .analysis_cli import analysis_exit_code
+            raise SystemExit(analysis_exit_code(result))
         raise SystemExit(_exit_code(result))
     except BootstrapFailure as exc:
         _print(exc.as_dict())
@@ -430,7 +433,8 @@ def main() -> None:
         from .analysis_types import AnalysisError
         if isinstance(exc, AnalysisError):
             _print(exc.as_dict())
-            raise SystemExit(3) from None
+            from .analysis_cli import analysis_exit_code
+            raise SystemExit(analysis_exit_code(exc.as_dict())) from None
         value = {
             "schema_version": "MechanicalDesignCommandError/v1",
             "status": "blocked",

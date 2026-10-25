@@ -61,7 +61,8 @@ def main():
     while time.monotonic()<deadline:
         status=service.status(**identity,cursor=cursor);cursor=status['cursor'];run,_=read_run(store,**identity)
         if run['worker'] is not None:owner=run['worker']
-        if status['run_status'] in ('awaiting_visual_review','completed','failed','cancelled','timed_out','interrupted'):break
+        if status['run_status'] in ('completed','failed','cancelled','timed_out','interrupted'):break
+        if status['run_status']=='awaiting_visual_review' and run['worker'] is None and run.get('execution_ref') is not None:break
         time.sleep(1)
     else:raise RuntimeError('installed owner did not reach a bounded outcome')
     (workspace/'installed-e2e-status.json').write_text(json.dumps(status,indent=2),encoding='utf-8')

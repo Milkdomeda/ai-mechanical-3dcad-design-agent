@@ -33,3 +33,38 @@ def test_cli_rejects_unknown_report_actions_and_passes_exact_reference_list(tmp_
     assert dispatch(args,Service())['status']=='completed'
     assert calls[0]['evidence_refs']==['gui/g-fixture/outputs/u.png'] and calls[0]['expected_revision']==8
     with pytest.raises(SystemExit):_parser().parse_args(prefix+['--action','upload_results'])
+
+
+@pytest.mark.parametrize('value,expected',[
+    ({'status':'queued'},0),({'status':'needs_input'},2),
+    ({'status':'setup_required'},3),({'run_status':'failed'},4),
+    ({'run_status':'cancelled'},6),({'run_status':'timed_out'},6),
+    ({'run_status':'interrupted'},6),
+    ({'status':'completed','criteria_status':'failed'},0),
+    ({'approval_state':'CONDITIONAL','spec_status':'ready_for_review'},2),
+    (AnalysisError('ANALYSIS_REVISION_CONFLICT','fixture conflict'),5),
+    (AnalysisError('ANALYSIS_SPEC_NOT_APPROVED','fixture missing approval'),2),
+])
+def test_analysis_main_exit_codes_do_not_change_legacy_commands(monkeypatch,value,expected):
+    from mechanical_design_agent import cli
+    from mechanical_design_agent.analysis_service import AnalysisService
+    monkeypatch.setattr('sys.argv',['mechanical-design','analysis','capabilities'])
+    monkeypatch.setattr(cli,'_runtime',lambda workspace:object())
+    def respond(*args,**kwargs):
+        if isinstance(value,Exception):raise value
+        return value
+    monkeypatch.setattr(AnalysisService,'capabilities',respond)
+    with pytest.raises(SystemExit) as error:cli.main()
+    assert error.value.code==expected
+    assert cli._exit_code({'status':'setup_required'})==2
+    assert cli._exit_code({'status':'warning'})==1
+
+
+def test_decision_file_passes_exact_utf8_text_without_shell_interpolation(tmp_path):
+    path=tmp_path/'decision 中文.txt';text='确认\n固定原载荷；保留 "逐节点" 结果。';path.write_text(text,encoding='utf-8')
+    calls=[]
+    class Service:
+        def approve(self,**kwargs):calls.append(kwargs);return {'status':'approved'}
+    args=_parser().parse_args(['analysis','approve','--design-id','fixture','--analysis-id','static','--spec-sha256','a'*64,'--expected-revision','4','--decision-file',str(path)])
+    dispatch(args,Service())
+    assert calls[0]['decision_text']==text
