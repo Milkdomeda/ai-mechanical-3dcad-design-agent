@@ -54,7 +54,7 @@ def initial_run(request, request_sha):
 
 
 def change_run_unlocked(root, state, changes, *, code=None, message):
-    permitted = {'status', 'worker', 'cancel_requested', 'cancel_reason', 'attempt', 'numerical_status', 'criteria_status', 'applicability_status', 'completion_ref', 'diagnostic'}
+    permitted = {'status', 'worker', 'cancel_requested', 'cancel_reason', 'attempt', 'numerical_status', 'criteria_status', 'applicability_status', 'completion_ref', 'attempt_ref', 'diagnostic'}
     if set(changes) - permitted:
         raise AnalysisError('ANALYSIS_RUN_IMMUTABLE', 'run input identity and history cannot be changed')
     if state['status'] in TERMINAL:

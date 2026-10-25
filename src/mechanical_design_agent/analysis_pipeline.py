@@ -46,7 +46,7 @@ def _load_inputs(request,settings):
     store=AnalysisStore(Path(settings['workspace']))
     identity={key:request[key] for key in ('design_id','analysis_id','run_id')}
     run,stored=read_run(store,**identity)
-    if stored!=request or run['worker'] is None or run['worker']['pid']!=os.getpid() or run['status'] not in ('preparing','meshing','solving','validating'):
+    if stored!=request or run['worker'] is None or run['worker']['pid']!=os.getpid() or run['status'] not in ('preparing','meshing','solving','validating','awaiting_visual_review'):
         raise AnalysisError('ANALYSIS_EXECUTION_OWNER_UNPROVEN','only the authenticated living supervisor may execute its claimed request')
     workspace=read_workspace_manifest(store.workspace)
     if any(request['scope'][key]!=workspace.raw['identity'][key] for key in ('organization_id','design_group_id')):raise AnalysisError('ANALYSIS_AUTHORITY_CHANGED','workspace authority changed after queueing')
@@ -120,7 +120,7 @@ def run_case_level(state,*,case_id,level_id):
     loaded={name:json.loads(read_artifact(Path(mesh['directory']),mesh['receipt']['artifacts'][name]).content) for name in ('data','mapping')}
     validation=validate_level(spec,state.inputs['ledger'],{'receipt':mesh['receipt'],'level':level,**loaded},fields)
     if record_sha256(spec,schema_name='spec')!=state.request['spec_sha256']:raise AnalysisError('ANALYSIS_SPEC_CHANGED','execution cannot mutate approved material, load or constraint data')
-    validation['artifacts']={'deck':{'relative_path':(root/'deck.json').relative_to(state.root).as_posix(),'sha256':_read(root/'deck.json').sha256},'fields':{'relative_path':(root/'fields'/fields['artifact']['relative_path']).relative_to(state.root).as_posix(),'sha256':fields['artifact']['sha256']}}
+    validation['artifacts']={'deck':{'relative_path':(root/'deck.json').relative_to(state.root).as_posix(),'sha256':_read(root/'deck.json').sha256},'solver':{'relative_path':(root/'solver.json').relative_to(state.root).as_posix(),'sha256':_read(root/'solver.json').sha256},'fields':{'relative_path':(root/'fields'/fields['artifact']['relative_path']).relative_to(state.root).as_posix(),'sha256':fields['artifact']['sha256']}}
     _put(root,'validation.json',validation)
     state.levels.append(validation)
     state.guard.checkpoint(force=True)

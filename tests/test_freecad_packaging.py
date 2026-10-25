@@ -27,9 +27,15 @@ EXPECTED_FREECAD_SHA256 = os.environ.get(
     "MECH_DESIGN_FREECADCMD_SHA256", ""
 ).strip().lower()
 EXPECTED_SCRIPTS = {
-    "analysis_build.py": "cead95a8e8b670c314001a2efbadd7c3ecd22e7ee2f6c580ee8aacbba5609502",
+    "analysis_build.py": "a82d956e495aecd4cd88dff1b1a429e91f3e48349f7e12ddf7497a6cddf34647",
     "analysis_extract_results.py": "6ce667df3e29ad8d0c5c71fcc311a82c627d873b5609ad378c0a8b30d37c71a2",
     "analysis_geometry.py": "816a4bc48cecd1c59b274190baa820f733e5a2e6f1e8411fd666648c887a4d3e",
+    "analysis_gui_checks.py": "5e61746eb4a220c56702340fb70afa5cf2e2d7cf2e381f4b7823250f1573d03a",
+    "analysis_gui_controls.py": "58f871038c01f38914f64e3377a2e2a32933782721ed1fd307d12901727d98e8",
+    "analysis_gui_pixels.py": "8b31a20c04547b587d6d82940b99ffd2373bf6ba0ff94aebb916f6c24bd6862d",
+    "analysis_gui_plot.py": "1b4a79b32cf76151f7c95d72b4c0df9916223f19fa78f60497a1fc5b31c64997",
+    "analysis_gui_preview.py": "0dcbacee6fb5956dfafb258bdeb475c106b6c5ef586ec6fec95d017fdd2f0e9a",
+    "analysis_gui_rebuild.py": "83376cf53aebfe3fe9e562494ccebe2a5021ff3df223d8747c62aaa1889e8316",
     "analysis_mesh.py": "76d2cce8e8fc4520786f64dda9158fadc7c8f5b40dbc3e48dfd829c09606c5e8",
     "analysis_mesh_math.py": "4c908aec828d2a15713d4ed69a13cf13ae52648af41463dda3f39856ea3a5ea7",
     "analysis_runtime_identity.py": "d78934b88369a35fda13ff5d7f43004bc08a5f2390601f6e5740c15fd117dfde",

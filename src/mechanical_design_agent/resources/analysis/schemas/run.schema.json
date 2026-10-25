@@ -259,6 +259,16 @@
     "updated_at": {
       "type": "string",
       "format": "date-time"
+    },
+    "attempt_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

@@ -25,7 +25,7 @@ def native_density(density):
     return format(number, 'f')+' kg/m^3'
 
 
-def build_objects(contract, paths):
+def build_objects(contract, paths, *, document_name='AnalysisModel'):
     import FreeCAD as App
     import Fem
     import ObjectsFem
@@ -34,7 +34,7 @@ def build_objects(contract, paths):
         raise ValueError('DECK_CONTRACT_INVALID')
     if digest(paths['geometry.brep']) != contract['geometry_sha256'] or digest(paths['mesh.unv']) != contract['mesh_sha256']:
         raise ValueError('DECK_INPUT_HASH_CHANGED')
-    doc = App.newDocument('AnalysisModel')
+    doc = App.newDocument(document_name)
     try:
         solid = doc.addObject('Part::Feature', 'AnalysisSolid')
         shape = Part.Shape()

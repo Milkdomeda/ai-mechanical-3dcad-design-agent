@@ -155,10 +155,12 @@ jobs:
         run: |
           $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r2-runtime/config.json"
           $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
-          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py tests/test_analysis_pipeline_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
+          $env:FEA_PRODUCT_GUI_LIVE = '1'
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py tests/test_analysis_pipeline_live.py tests/test_analysis_gui_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
           if ($LASTEXITCODE -ne 0) { throw 'R2 native input, per-node RF, original total, full fields or balance failed' }
           Remove-Item Env:FEA_GUI_LIVE_CONFIG
           Remove-Item Env:FEA_GUI_LIVE_SCRATCH
+          Remove-Item Env:FEA_PRODUCT_GUI_LIVE
       - name: Detach only the virtual disk created by this job
         if: always() && env.FEA_OWNED_TEST_VHD != ''
         shell: pwsh

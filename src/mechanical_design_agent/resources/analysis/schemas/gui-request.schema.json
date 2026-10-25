@@ -7,34 +7,67 @@
       "const": "AnalysisGuiRequest/v1"
     },
     "design_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
     },
     "analysis_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
-    },
-    "status": {
-      "enum": [
-        "prepared"
-      ]
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
     },
     "run_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "spec_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "request_id": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "kind": {
+      "enum": [
+        "preview",
+        "final_result"
+      ]
+    },
+    "status": {
+      "const": "prepared"
+    },
+    "revision_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "attempt_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "required": [
     "schema_version",
     "design_id",
     "analysis_id",
-    "status",
     "run_id",
-    "spec_sha256"
+    "spec_sha256",
+    "request_id",
+    "kind",
+    "status",
+    "revision_ref",
+    "attempt_ref",
+    "created_at"
   ],
   "additionalProperties": false
 }

@@ -6,6 +6,7 @@ The native executor is a fixed package collaborator, separate from this owner.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -48,6 +49,16 @@ class RunContext:
 
     def _identity(self):
         return {key: self.entry[key] for key in ('design_id', 'analysis_id', 'run_id')}
+
+    def publish_attempt(self,reference):
+        from .analysis_revision import read_artifact
+        attempt=json.loads(read_artifact(self.root,reference).content)
+        with secure_fs.exclusive_file_lock(self.root/'.run.lock'):
+            run,request=read_run_unlocked(self.root,**self._identity())
+            if run['worker']!=self.owner._identity or attempt.get('request_sha256')!=run['request_ref']['sha256'] or any(attempt.get(key)!=request[key] for key in ('spec_sha256','executor_sha256','runtime_manifest_sha256')) or attempt.get('native_integrity_sealed') is not True:raise AnalysisError('ANALYSIS_ATTEMPT_UNVERIFIED','only the living owner may bind its sealed attempt to this exact immutable request')
+            if run['cancel_requested'] or self.owner._cancel.is_set():raise AnalysisError('ANALYSIS_CANCELLED','cancellation preceded numerical evidence publication')
+            numerical=attempt['numerical']
+            return change_run_unlocked(self.root,run,{'attempt_ref':reference,'numerical_status':numerical['numerical_status'],'criteria_status':attempt['criteria']['criteria_status'],'applicability_status':numerical['applicability_status']},message='Bound sealed numerical evidence; GUI and visual completion gates remain.')
 
     def phase(self, stage, message, *, attempt=None):
         if stage not in {'preparing', 'meshing', 'solving', 'validating', 'awaiting_visual_review'}:
