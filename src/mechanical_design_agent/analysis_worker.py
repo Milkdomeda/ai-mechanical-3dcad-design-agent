@@ -29,8 +29,9 @@ def _execute(context):
     from .analysis_qualification import require_qualification
     guard=execution_guard(context);guard.checkpoint(force=True)
     try:
-        settings=execution_settings(context,checkpoint=guard.checkpoint)
-        require_qualification(settings,checkpoint=guard.checkpoint)
+        with guard.verification_batch():
+            settings=execution_settings(context,checkpoint=guard.checkpoint)
+            require_qualification(settings,checkpoint=guard.checkpoint)
     except AnalysisError as exc:
         if exc.code in ('ANALYSIS_CANCELLED','ANALYSIS_TIMED_OUT','ANALYSIS_BUDGET_EXCEEDED','ANALYSIS_MEMORY_UNAVAILABLE','ANALYSIS_STORAGE_UNSAFE'):raise
         raise AnalysisError('FEA_EXECUTOR_UNAVAILABLE','Run analysis doctor --qualify for the exact installed package and approved runtime before submitting FEA.',details={'cause':exc.code}) from exc

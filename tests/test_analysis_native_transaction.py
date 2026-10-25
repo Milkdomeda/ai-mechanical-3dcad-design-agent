@@ -66,3 +66,32 @@ def test_viewer_keeps_saved_work_without_holding_the_solve_root_lock(tmp_path,mo
         with secure_fs.try_exclusive_file_lock(root/'.native-root.lock') as owned:
             assert owned,'viewer must not occupy the solve root lifetime lock'
     assert saved.read_bytes()==b'isolated viewer working-copy retention fixture'
+
+
+@pytest.mark.parametrize('changed',[False,True])
+def test_complete_runtime_scan_cannot_start_native_work_with_changed_executor(tmp_path,monkeypatch,changed):
+    from mechanical_design_agent.analysis_budget import BudgetGuard
+    from mechanical_design_agent.analysis_configuration import load_analysis_configuration
+    from mechanical_design_agent import analysis_native_transaction as module
+    selected,_,_=configured(tmp_path,monkeypatch);settings=load_analysis_configuration(selected)
+    ticks=[0.];mutated=[False];probes=[];scans=[];original=module.verify_settings
+    def integrity():
+        probes.append(ticks[0])
+        if mutated[0]:raise AnalysisError('ANALYSIS_EXECUTOR_CHANGED','synthetic executor mutation')
+    def scan(settings,*,checkpoint):
+        original(settings,checkpoint=checkpoint);scans.append('complete inventory checked')
+        for _ in range(1000):ticks[0]+=.001;checkpoint()
+        mutated[0]=changed
+    monkeypatch.setattr(module,'verify_settings',scan)
+    guard=BudgetGuard({'wall_seconds':10,'max_disk_bytes':1000000,'max_memory_mb':128,'memory_mode':'observed_only'},roots=lambda:[],cancelled=lambda:False,memory_observer=lambda:{'bytes':10,'measurement':'synthetic'},clock=lambda:ticks[0],integrity_checkpoint=integrity)
+    native=module.NativeTransaction(settings,checkpoint=guard.checkpoint,budget_guard=guard)
+    if changed:
+        with pytest.raises(AnalysisError) as error:native.__enter__()
+        assert error.value.code=='ANALYSIS_EXECUTOR_CHANGED'
+        assert native.owned is None and not native._sealed
+        assert len(scans)==1 and len(probes)==3
+    else:
+        with native:
+            assert len(scans)==1 and len(probes)==3
+            native.seal()
+            assert len(scans)==2 and len(probes)==5

@@ -73,6 +73,61 @@ def test_interrupt_during_slow_probe_is_reported_before_return(tmp_path,interrup
     assert error.value.code==('ANALYSIS_CANCELLED' if interrupt=='cancel' else 'ANALYSIS_TIMED_OUT')
 
 
+def test_bounded_verification_scans_hash_executor_at_both_boundaries(tmp_path):
+    from mechanical_design_agent.analysis_budget import BudgetGuard
+    ticks=[0.];probes=[];samples=[]
+    def integrity():probes.append(ticks[0]);ticks[0]+=.6
+    guard=BudgetGuard(policy(),roots=lambda:[tmp_path],cancelled=lambda:False,memory_observer=lambda:(samples.append(ticks[0]) or {'bytes':10,'measurement':'synthetic'}),clock=lambda:ticks[0],integrity_checkpoint=integrity)
+    with guard.verification_batch():
+        for _ in range(1000):
+            ticks[0]+=.001;guard.checkpoint()
+    assert len(probes)==2
+    assert len(samples)>=3,'memory/disk observation must continue inside the scan'
+    assert 2.<guard.receipt()['wall_seconds']<3.
+    ticks[0]+=.5;guard.checkpoint()
+    assert len(probes)==3,'ordinary process checkpoints retain full integrity checks'
+
+
+def test_source_changed_during_verification_cannot_cross_success_boundary(tmp_path):
+    from mechanical_design_agent.analysis_budget import BudgetGuard
+    source=tmp_path/'source';source.write_bytes(b'original');published=[]
+    def integrity():
+        if source.read_bytes()!=b'original':raise AnalysisError('ANALYSIS_EXECUTOR_CHANGED','synthetic source mutation')
+    guard=BudgetGuard(policy(),roots=lambda:[tmp_path],cancelled=lambda:False,memory_observer=lambda:{'bytes':10,'measurement':'synthetic'},integrity_checkpoint=integrity)
+    with pytest.raises(AnalysisError) as error:
+        with guard.verification_batch():source.write_bytes(b'mutated');guard.checkpoint()
+        published.append('native start or publication')
+    assert error.value.code=='ANALYSIS_EXECUTOR_CHANGED' and published==[]
+
+
+@pytest.mark.parametrize('interrupt',['deadline','cancel','memory','disk'])
+def test_verification_batch_keeps_all_resource_and_interrupt_checks(tmp_path,interrupt):
+    from mechanical_design_agent.analysis_budget import BudgetGuard
+    ticks=[0.];cancel=[False];memory=[10]
+    guard=BudgetGuard(policy(),roots=lambda:[tmp_path],cancelled=lambda:cancel[0],memory_observer=lambda:{'bytes':memory[0],'measurement':'synthetic'},clock=lambda:ticks[0])
+    with pytest.raises(AnalysisError) as error:
+        with guard.verification_batch():
+            ticks[0]=11. if interrupt=='deadline' else 1.
+            cancel[0]=interrupt=='cancel'
+            if interrupt=='memory':memory[0]=129*1024*1024
+            if interrupt=='disk':(tmp_path/'large').write_bytes(b'x'*1025)
+            guard.checkpoint()
+    assert error.value.code=={'deadline':'ANALYSIS_TIMED_OUT','cancel':'ANALYSIS_CANCELLED','memory':'ANALYSIS_BUDGET_EXCEEDED','disk':'ANALYSIS_BUDGET_EXCEEDED'}[interrupt]
+
+
+def test_verification_batch_nesting_forced_checks_and_exception_reset(tmp_path):
+    from mechanical_design_agent.analysis_budget import BudgetGuard
+    probes=[]
+    guard=BudgetGuard(policy(),roots=lambda:[tmp_path],cancelled=lambda:False,memory_observer=lambda:{'bytes':10,'measurement':'synthetic'},integrity_checkpoint=lambda:probes.append(1))
+    with pytest.raises(ValueError,match='original failure'):
+        with guard.verification_batch():
+            with guard.verification_batch():guard.checkpoint(force=True)
+            assert len(probes)==4
+            raise ValueError('original failure')
+    guard.checkpoint(force=True)
+    assert len(probes)==5
+
+
 @pytest.mark.skipif(os.name!='posix',reason='FreeCAD Unix local IPC exists only on POSIX')
 def test_only_the_owned_native_root_can_contain_freecads_transient_socket(tmp_path,monkeypatch):
     import socket

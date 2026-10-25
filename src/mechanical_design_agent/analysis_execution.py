@@ -55,7 +55,9 @@ def execute_run(context,*,settings=None,guard=None):
     identity=context._identity()
     guard=guard or execution_guard(context)
     guard.checkpoint(force=True)
-    settings=settings or execution_settings(context,checkpoint=guard.checkpoint)
+    if settings is None:
+        with guard.verification_batch():
+            settings=execution_settings(context,checkpoint=guard.checkpoint)
     attempt=execute_attempt(context.request,settings=settings,control=context.controller,cancelled=context.cancelled,phase=context.phase,guard=guard)
     context.publish_attempt(attempt['attempt_ref'])
     if attempt['status']!='awaiting_visual_review':

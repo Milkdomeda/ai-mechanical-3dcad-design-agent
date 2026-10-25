@@ -1,4 +1,5 @@
 """Cooperative wall/disk and observed-memory budgets, never an OS quota."""
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import stat
@@ -47,6 +48,23 @@ class BudgetGuard:
         self.peak_memory_bytes=0;self.peak_disk_bytes=0;self.memory_measurement=None
         self.owned_roots=set()
         self.native_ipc_roots={}
+        self._verification_depth=0
+
+    @contextmanager
+    def verification_batch(self):
+        """Bound one full identity scan by complete executor checks.
+
+        Only host-side verification belongs here, never native execution or
+        publication. Per-file checkpoints keep their deadline, cancellation,
+        memory and disk checks without recursively rehashing the package.
+        An unsuccessful scan preserves its failure and cannot cross the
+        success boundary. No digest is cached between batches or phases.
+        """
+        self.checkpoint(force=True)
+        self._verification_depth+=1
+        try:yield
+        finally:self._verification_depth-=1
+        self.checkpoint(force=True)
 
     def track_root(self,path,*,native_ipc=False):
         path=Path(path);self.owned_roots.add(path)
@@ -63,7 +81,7 @@ class BudgetGuard:
         now=self.clock()
         if now-self.started>=self.budget['wall_seconds']:raise AnalysisError('ANALYSIS_TIMED_OUT','analysis wall-clock budget exhausted')
         if not force and now<self.next_probe:return
-        self.integrity_checkpoint()
+        if force or not self._verification_depth:self.integrity_checkpoint()
         try:observed=self.memory_observer()
         except Exception as exc:raise AnalysisError('ANALYSIS_MEMORY_UNAVAILABLE','owned memory observation failed; budget cannot be claimed') from exc
         if type(observed) is not dict or type(observed.get('bytes')) is not int or observed['bytes']<=0 or type(observed.get('measurement')) is not str:raise AnalysisError('ANALYSIS_MEMORY_UNAVAILABLE','owned memory observation is unavailable')

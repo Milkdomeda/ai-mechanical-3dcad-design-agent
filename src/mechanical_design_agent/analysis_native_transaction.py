@@ -6,7 +6,7 @@ cancelled/failed verification never becomes a completed integrity receipt.
 """
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -42,7 +42,7 @@ class NativeTransaction:
         if self.owned is not None:
             raise AnalysisError('ANALYSIS_NATIVE_TRANSACTION_ACTIVE', 'a native transaction cannot be entered twice concurrently')
         self.checkpoint()
-        verify_settings(self.settings, checkpoint=self.checkpoint)
+        self._verify_settings()
         self._failed, self._sealed = None, False
         try:
             self.resources = self._stack.enter_context(freecad_scripts_directory())
@@ -75,8 +75,15 @@ class NativeTransaction:
         if self.owned is None:
             raise AnalysisError('ANALYSIS_NATIVE_PHASE_INVALID', 'only a living owned transaction may be sealed')
         if not self._sealed:
-            verify_settings(self.settings, checkpoint=self.checkpoint)
+            self._verify_settings()
             self._sealed = True
+
+    def _verify_settings(self):
+        # Keep the complete runtime inventory and the caller's checkpoints.
+        # Only repeated executor hashes within this scan are coalesced; both
+        # boundaries force a full check before execution/publication proceeds.
+        with (self.budget_guard.verification_batch() if self.budget_guard is not None else nullcontext()):
+            verify_settings(self.settings, checkpoint=self.checkpoint)
 
     def run(self, phase, contract, inputs, output_dir, *, timeout_seconds, max_log_bytes):
         try:
