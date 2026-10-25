@@ -16,8 +16,16 @@ jobs:
         include:
           - runner: windows-2025
             python_arch: x64
+            scope: installed
+          - runner: windows-2025
+            python_arch: x64
+            scope: native
           - runner: windows-11-arm
             python_arch: x64
+            scope: installed
+          - runner: windows-11-arm
+            python_arch: x64
+            scope: native
     runs-on: ${{ matrix.runner }}
     # Additional independent product mesh/deck checks verify complete runtime
     # inventories. Keep every native phase timeout and numerical gate intact.
@@ -114,6 +122,7 @@ jobs:
           uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
           if ($LASTEXITCODE -ne 0) { throw 'Pinned tool discovery failed' }
       - name: Install isolated runtime and qualify through installed wheel
+        if: matrix.scope == 'installed'
         shell: pwsh
         run: |
           $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
@@ -129,6 +138,7 @@ jobs:
           & $python -I -B -m mechanical_design_agent.cli analysis capabilities --workspace $workspace
           if ($LASTEXITCODE -ne 0) { throw 'Installed qualification activation failed' }
       - name: Verify installed default detached executor without checkout imports
+        if: matrix.scope == 'installed'
         shell: pwsh
         run: |
           $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
@@ -138,21 +148,25 @@ jobs:
           & $python -I -B $harness --workspace "$env:RUNNER_TEMP/Installed FEA workspace 中文"
           if ($LASTEXITCODE -ne 0) { throw 'Installed default executor failed; visual review remains separately pending' }
       - name: Prepare isolated reviewed R1 runtime
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           uv run --offline --group test python scripts/fea_r1_prepare.py --source-root "$env:RUNNER_TEMP/freecad-tools" --destination "$env:RUNNER_TEMP/freecad-r1-runtime" --base-config "$env:RUNNER_TEMP/fea-config.json" --source-archive-sha256 9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4
           if ($LASTEXITCODE -ne 0) { throw 'R1 runtime preparation failed' }
       - name: Run unchanged numerical P0 checks
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --workspace "$env:RUNNER_TEMP/GUI numerical P0 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --phase p0 --automated-only
           if ($LASTEXITCODE -ne 0) { throw 'Unchanged numerical P0 gates failed' }
       - name: Materialize separate official bundled OpenGL GUI test environment
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           uv run --offline --group test python scripts/fea_gui_environment.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --output "$env:RUNNER_TEMP/gui-environment.json"
           if ($LASTEXITCODE -ne 0) { throw 'Explicit native GUI environment preparation failed' }
       - name: Verify product geometry mesh and FEM writer in one pinned transaction
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json"
@@ -162,6 +176,7 @@ jobs:
           Remove-Item Env:FEA_GUI_LIVE_CONFIG
           Remove-Item Env:FEA_GUI_LIVE_SCRATCH
       - name: Run five native GUI cases and independent-process round trip
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           uv run --offline --group test python scripts/fea_gui_automation.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/GUI automation 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --gui-environment "$env:RUNNER_TEMP/gui-environment.json"
@@ -169,7 +184,14 @@ jobs:
           $report = Get-Content -LiteralPath "$env:RUNNER_TEMP/GUI automation 中文/gui-automation.json" -Raw | ConvertFrom-Json
           if ($report.automated_status -ne 'passed' -or @($report.cases.PSObject.Properties).Count -ne 5) { throw 'Incomplete GUI matrix' }
           if ($report.manual_gui_status -ne 'not_executed' -or $report.overall_p0_status -ne 'blocked') { throw 'Automation must preserve accurate evidence scope' }
+      - name: Prepare separately owned reviewed R2 output runtime
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_r2_prepare.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/R2 setup workspace" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --destination "$env:RUNNER_TEMP/freecad-r2-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Separate R2 runtime copy, signature or loaded-code verification failed' }
       - name: Verify R2 fields balance and two-case three-level convergence
+        if: matrix.scope == 'native'
         shell: pwsh
         run: |
           $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r2-runtime/config.json"
@@ -199,7 +221,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: fea-native-gui-${{ matrix.runner }}
+          name: fea-native-gui-${{ matrix.runner }}-${{ matrix.scope }}
           path: |
             ${{ runner.temp }}/GUI automation 中文/
             ${{ runner.temp }}/GUI numerical P0 中文/
