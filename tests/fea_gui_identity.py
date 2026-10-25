@@ -5,6 +5,7 @@ import json
 import hashlib
 from pathlib import Path
 import sys
+import tempfile
 import traceback
 
 
@@ -30,9 +31,18 @@ def read_json(path):
 
 
 def write_json(path,value):
-    with Path(path).open('x',encoding='utf-8') as stream:
-        json.dump(value,stream,ensure_ascii=False,indent=2,allow_nan=False)
-        stream.write('\n')
+    path=Path(path)
+    # Polling starts as soon as startup.json exists. Publish a closed complete
+    # file atomically, retaining create-only semantics on macOS and Windows.
+    staged=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',newline='\n',prefix='.p0-receipt-',suffix='.tmp',dir=path.parent,delete=False) as stream:
+            staged=Path(stream.name)
+            json.dump(value,stream,ensure_ascii=False,indent=2,allow_nan=False)
+            stream.write('\n');stream.flush();os.fsync(stream.fileno())
+        os.link(staged,path)
+    finally:
+        if staged is not None:staged.unlink(missing_ok=True)
 
 
 def collect(request):

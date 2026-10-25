@@ -4,6 +4,13 @@ on:
   push:
     branches: [codex/fea-deployable-static]
   workflow_dispatch:
+    inputs:
+      acceptance_scope:
+        description: Explicit acceptance group to repeat; pushes always run all groups
+        type: choice
+        required: true
+        default: all
+        options: [all, native, installed]
 
 permissions:
   contents: read
@@ -13,19 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: windows-2025
-            python_arch: x64
-            scope: installed
-          - runner: windows-2025
-            python_arch: x64
-            scope: native
-          - runner: windows-11-arm
-            python_arch: x64
-            scope: installed
-          - runner: windows-11-arm
-            python_arch: x64
-            scope: native
+        runner: [windows-2025, windows-11-arm]
+        python_arch: [x64]
+        scope: ${{ fromJSON(inputs.acceptance_scope == 'native' && '["native"]' || inputs.acceptance_scope == 'installed' && '["installed"]' || '["installed","native"]') }}
     runs-on: ${{ matrix.runner }}
     # Additional independent product mesh/deck checks verify complete runtime
     # inventories. Keep every native phase timeout and numerical gate intact.

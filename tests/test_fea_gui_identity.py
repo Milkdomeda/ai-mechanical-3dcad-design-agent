@@ -4,6 +4,40 @@ import sys
 import pytest
 
 
+def test_startup_receipt_is_invisible_until_complete_and_never_overwrites(tmp_path,monkeypatch):
+    import json
+    import threading
+    import fea_gui_identity as identity
+    target=tmp_path/'startup 中文.json';writing=threading.Event();resume=threading.Event();errors=[]
+    def paused_dump(value,stream,**kwargs):
+        stream.write('{"request_id":');stream.flush();writing.set()
+        assert resume.wait(5)
+        stream.write('"ours"}')
+    monkeypatch.setattr(identity.json,'dump',paused_dump)
+    def produce():
+        try:identity.write_json(target,{'request_id':'ours'})
+        except BaseException as exc:errors.append(exc)
+    worker=threading.Thread(target=produce);worker.start()
+    try:
+        assert writing.wait(5)
+        assert not target.exists(),'Polling readers can observe an incomplete native startup receipt'
+    finally:
+        resume.set();worker.join(5)
+    assert not worker.is_alive() and errors==[]
+    assert json.loads(target.read_text(encoding='utf-8'))=={'request_id':'ours'}
+    original=target.read_bytes()
+    with pytest.raises(FileExistsError):identity.write_json(target,{'request_id':'changed'})
+    assert target.read_bytes()==original
+    assert sorted(p.name for p in tmp_path.iterdir())==[target.name]
+
+
+def test_failed_native_receipt_serialization_publishes_nothing(tmp_path):
+    from fea_gui_identity import write_json
+    target=tmp_path/'startup.json'
+    with pytest.raises(ValueError):write_json(target,{'invalid':float('nan')})
+    assert list(tmp_path.iterdir())==[]
+
+
 @pytest.mark.parametrize('wrong_temp',[False,True])
 def test_identity_collects_only_current_context_and_requires_actual_private_temp(tmp_path,monkeypatch,wrong_temp):
     import fea_r1_runtime
