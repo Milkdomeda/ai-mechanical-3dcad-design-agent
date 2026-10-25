@@ -60,8 +60,10 @@ def test_analysis_main_exit_codes_do_not_change_legacy_commands(monkeypatch,valu
     assert cli._exit_code({'status':'warning'})==1
 
 
-def test_decision_file_passes_exact_utf8_text_without_shell_interpolation(tmp_path):
-    path=tmp_path/'decision 中文.txt';text='确认\n固定原载荷；保留 "逐节点" 结果。';path.write_text(text,encoding='utf-8')
+@pytest.mark.parametrize('newline',['\n','\r\n'])
+def test_decision_file_passes_exact_utf8_text_without_shell_interpolation(tmp_path,newline):
+    path=tmp_path/'decision 中文.txt';text='确认'+newline+'固定原载荷；保留 "逐节点" 结果。'
+    path.write_bytes(text.encode('utf-8'))
     calls=[]
     class Service:
         def approve(self,**kwargs):calls.append(kwargs);return {'status':'approved'}
