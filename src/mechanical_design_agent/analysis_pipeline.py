@@ -22,7 +22,7 @@ from .analysis_native import _read
 from .analysis_native_transaction import NativeTransaction
 from .analysis_protocol import canonical_record,parse_record,record_sha256
 from .analysis_results import extract_fields
-from .analysis_revision import read_artifact,read_frozen_revision
+from .analysis_revision import read_artifact,read_frozen_revision,inventory
 from .analysis_runs import read_run,run_root
 from .analysis_runtime_patch import PROFILE
 from .analysis_session import _tools
@@ -80,6 +80,9 @@ class ExecutionState:
     meshes:dict=field(default_factory=dict)
     mesh_bindings:dict=field(default_factory=dict)
     levels:list=field(default_factory=list)
+
+    def __post_init__(self):
+        self.root=secure_fs.validate_managed_path(Path(self.root),allow_missing_leaf=False).path
 
 
 def _mesh(state,level):
@@ -159,6 +162,7 @@ def execute_attempt(request,*,settings,control,cancelled=None,phase=None,guard=N
             native.seal()
             guard.checkpoint(force=True)
         result={'schema_version':'AnalysisAttemptEvidence/v1','request_sha256':_read(inputs['root']/'request.json').sha256,'spec_sha256':request['spec_sha256'],'executor_sha256':request['executor_sha256'],'runtime_manifest_sha256':settings['runtime']['manifest_sha256'],'native_integrity_sealed':True,'levels':state.levels,'numerical':numerical,'criteria':criteria,'budget':guard.receipt(),'meshes':state.meshes,'status':'awaiting_visual_review' if numerical['numerical_status']=='passed' and numerical['applicability_status']!='outside_scope' else 'failed','completion':'not_published'}
+        result['files']=inventory(root)
         reference=_put(root,'attempt.json',result)
         guard.checkpoint(force=True)
         if result['status']=='awaiting_visual_review':phase('awaiting_visual_review','Numerical evidence sealed; native GUI and publication gates remain.',attempt=1)

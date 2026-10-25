@@ -14,6 +14,7 @@ from .analysis_types import AnalysisError
 
 
 def read_artifact(root, reference):
+    root=secure_fs.validate_managed_path(Path(root),allow_missing_leaf=False).path
     value = reference.get('relative_path') if type(reference) is dict else None
     if type(value) is not str or not value or len(value) > 1024 or any(part in ('', '.', '..') for part in value.split('/')) or any(char in value for char in '\\:\x00') or PurePosixPath(value).is_absolute():
         raise AnalysisError('ANALYSIS_ARTIFACT_INTEGRITY', 'artifact reference must be a contained portable relative path')
@@ -24,6 +25,7 @@ def read_artifact(root, reference):
 
 
 def inventory(root):
+    root=secure_fs.validate_managed_path(Path(root),allow_missing_leaf=False).path
     result = []
     for path in sorted(root.rglob('*')):
         located = secure_fs.validate_managed_path(path, allow_missing_leaf=False).path
