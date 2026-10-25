@@ -80,6 +80,7 @@ def test_lost_claim_interrupts_and_explicit_retry_has_new_identity(tmp_path):
     root, service, store, request, approved, coordinator, launcher = setup(tmp_path)
     queued = submit(coordinator, approved)
     stale_claim(store, claimed=True)
+    coordinator.reconcile()  # explicit recovery mutation; status is read-only
     observed = coordinator.status(design_id='fixture-design', analysis_id='static')
     assert observed['run_status'] == 'interrupted'
     assert observed['diagnostic']['code'] == 'ANALYSIS_WORKER_LOST'
@@ -90,3 +91,17 @@ def test_lost_claim_interrupts_and_explicit_retry_has_new_identity(tmp_path):
     assert len(launcher.calls) == 2
     previous = coordinator.status(design_id='fixture-design', analysis_id='static', run_id=queued['run_id'])
     assert previous['run_status'] == 'interrupted'
+
+
+def test_status_observes_a_lost_claim_without_mutating_or_restarting_it(tmp_path):
+    from mechanical_design_agent.analysis_queue import scheduler_guard
+    root,service,store,request,approved,coordinator,launcher=setup(tmp_path)
+    queued=submit(coordinator,approved);stale_claim(store,claimed=True)
+    with scheduler_guard(store.workspace) as scheduler:queue_path=scheduler.root/'queue.json'
+    files=[queue_path,root/'analyses/static/analysis.json',root/'analyses/static/runs'/queued['run_id']/'run.json']
+    before={path:path.read_bytes() for path in files}
+    observed=coordinator.status(design_id='fixture-design',analysis_id='static')
+    assert observed['worker_state']=='needs_attention'
+    assert observed['run_status']=='queued'
+    assert {path:path.read_bytes() for path in files}==before
+    assert len(launcher.calls)==1

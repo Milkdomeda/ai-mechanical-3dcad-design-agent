@@ -25,6 +25,7 @@ def loaded(module, pin, names):
     if not os.path.samefile(path, pin['path']) or hashlib.sha256(source).hexdigest() != pin['sha256']:
         raise ValueError('R2_LOADED_MODULE_PATH_OR_SOURCE')
     expected = {code.co_name: code for code in compile(source, str(path), 'exec', dont_inherit=True, optimize=sys.flags.optimize).co_consts if isinstance(code, types.CodeType)}
+    if 't6_weights' in names:names=[*names,*sorted(name for name in expected if name.startswith('_r1_'))]
     result = {}
     for name in names:
         function = getattr(module,name)

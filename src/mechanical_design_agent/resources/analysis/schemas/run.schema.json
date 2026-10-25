@@ -269,6 +269,16 @@
           "type": "null"
         }
       ]
+    },
+    "execution_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

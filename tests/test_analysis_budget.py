@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import pytest
 
@@ -40,3 +41,18 @@ def test_fast_checkpoints_are_throttled_but_cancellation_is_immediate(tmp_path):
     assert len(counter)==1
     cancel[0]=True
     with pytest.raises(AnalysisError):guard.checkpoint()
+@pytest.mark.skipif(os.name!='posix',reason='FreeCAD Unix local IPC exists only on POSIX')
+def test_only_the_owned_native_root_can_contain_freecads_transient_socket(tmp_path,monkeypatch):
+    import socket
+    from mechanical_design_agent.analysis_budget import BudgetGuard,disk_bytes
+    from fea_evaluation_fixture import evaluation_spec
+    root=tmp_path/'native';root.mkdir(mode=0o700)
+    monkeypatch.chdir(root)
+    with socket.socket(socket.AF_UNIX) as ipc:
+        ipc.bind('FreeCAD')
+        with pytest.raises(AnalysisError):disk_bytes([root])
+        guard=BudgetGuard(evaluation_spec()['budget'],roots=lambda:[],cancelled=lambda:False,memory_observer=lambda:{'bytes':1,'measurement':'fixture'})
+        guard.track_root(root,native_ipc=True);guard.checkpoint(force=True)
+        with socket.socket(socket.AF_UNIX) as foreign:
+            foreign.bind('unexpected')
+            with pytest.raises(AnalysisError):guard.checkpoint(force=True)

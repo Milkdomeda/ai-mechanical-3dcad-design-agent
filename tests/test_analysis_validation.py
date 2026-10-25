@@ -60,6 +60,10 @@ def test_fixed_spatial_stress_roi_keeps_raw_global_peak(monkeypatch):
     assert result['raw_global_peaks']['maximum_von_mises_MPa']==1000.
     stress=next(obs for obs in result['observables'] if obs['field']=='von_mises')
     assert stress['value']==10. and stress['node_count']==3
+    assert stress['location']['node_id']==5
+    assert stress['location']['coordinates_mm']==[50.,2.5,2.5]
+    assert result['raw_global_peak_locations']['maximum_von_mises_MPa']['node_id']==1
+    assert result['raw_global_peak_locations']['maximum_displacement_mm']['coordinates_mm']==[100.,5.,5.]
     assert result['applicability_status']=='limited_screening'
 
 

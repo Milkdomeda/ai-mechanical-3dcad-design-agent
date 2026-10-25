@@ -7,7 +7,8 @@ import time
 from .analysis_types import AnalysisError
 
 
-def disk_bytes(roots):
+def disk_bytes(roots,*,native_ipc_roots=None):
+    native_ipc_roots=native_ipc_roots or {}
     total=0;seen=set()
     for root in roots:
         if root is None:continue
@@ -25,6 +26,13 @@ def disk_bytes(roots):
             if stat.S_ISDIR(facts.st_mode):
                 with os.scandir(path) as entries:pending.extend(Path(entry.path) for entry in entries)
             elif stat.S_ISREG(facts.st_mode):total+=facts.st_size
+            elif stat.S_ISSOCK(facts.st_mode) and os.name=='posix' and path.name=='FreeCAD' and path.parent in native_ipc_roots:
+                # FreeCAD's local GUI IPC socket is transient process state,
+                # never an exported evidence artifact. Permit only this exact
+                # slot in an identity-pinned private native working root.
+                parent=path.parent.lstat();expected=native_ipc_roots[path.parent]
+                if (parent.st_dev,parent.st_ino,parent.st_uid)!=expected or not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=os.geteuid() or parent.st_mode&0o077 or facts.st_uid!=parent.st_uid:raise AnalysisError('ANALYSIS_STORAGE_UNSAFE','native IPC root identity or owner changed')
+                total+=facts.st_size
             else:raise AnalysisError('ANALYSIS_STORAGE_UNSAFE','analysis evidence must use regular files and directories')
     return total
 
@@ -38,10 +46,17 @@ class BudgetGuard:
         self.integrity_checkpoint=integrity_checkpoint or (lambda:None)
         self.peak_memory_bytes=0;self.peak_disk_bytes=0;self.memory_measurement=None
         self.owned_roots=set()
+        self.native_ipc_roots={}
 
-    def track_root(self,path):self.owned_roots.add(Path(path))
+    def track_root(self,path,*,native_ipc=False):
+        path=Path(path);self.owned_roots.add(path)
+        if native_ipc and os.name=='posix':
+            facts=path.lstat()
+            if not stat.S_ISDIR(facts.st_mode) or facts.st_uid!=os.geteuid() or facts.st_mode&0o077:raise AnalysisError('ANALYSIS_STORAGE_UNSAFE','native IPC requires an owned private working root')
+            self.native_ipc_roots[path]=(facts.st_dev,facts.st_ino,facts.st_uid)
 
-    def release_root(self,path):self.owned_roots.discard(Path(path))
+    def release_root(self,path):
+        self.owned_roots.discard(Path(path));self.native_ipc_roots.pop(Path(path),None)
 
     def checkpoint(self,*,force=False):
         if self.cancelled():raise AnalysisError('ANALYSIS_CANCELLED','owned analysis cancellation was requested')
@@ -55,7 +70,7 @@ class BudgetGuard:
         if type(observed) is not dict or type(observed.get('bytes')) is not int or observed['bytes']<=0 or type(observed.get('measurement')) is not str:raise AnalysisError('ANALYSIS_MEMORY_UNAVAILABLE','owned memory observation is unavailable')
         self.memory_measurement=observed['measurement'];self.peak_memory_bytes=max(self.peak_memory_bytes,observed['bytes'])
         if observed['bytes']>self.budget['max_memory_mb']*1024*1024:raise AnalysisError('ANALYSIS_BUDGET_EXCEEDED','observed memory exceeds the declared budget')
-        used=disk_bytes([*self.roots(),*self.owned_roots]);self.peak_disk_bytes=max(self.peak_disk_bytes,used)
+        used=disk_bytes([*self.roots(),*self.owned_roots],native_ipc_roots=self.native_ipc_roots);self.peak_disk_bytes=max(self.peak_disk_bytes,used)
         if used>self.budget['max_disk_bytes']:raise AnalysisError('ANALYSIS_BUDGET_EXCEEDED','actual current-run and owned W1 evidence exceeds the declared disk budget')
 
     def receipt(self):

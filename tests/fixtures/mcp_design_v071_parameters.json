@@ -1,0 +1,239 @@
+{
+  "design_confirm": {
+    "properties": {
+      "confirmation_text": {
+        "title": "Confirmation Text",
+        "type": "string"
+      },
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      },
+      "lesson_candidates_json": {
+        "default": "[]",
+        "title": "Lesson Candidates Json",
+        "type": "string"
+      },
+      "review_revision_text": {
+        "default": "",
+        "title": "Review Revision Text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id",
+      "confirmation_text"
+    ],
+    "title": "design_confirmArguments",
+    "type": "object"
+  },
+  "design_knowledge_retrieve": {
+    "properties": {
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      },
+      "features_json": {
+        "default": "{}",
+        "title": "Features Json",
+        "type": "string"
+      },
+      "query": {
+        "title": "Query",
+        "type": "string"
+      },
+      "required": {
+        "default": false,
+        "title": "Required",
+        "type": "boolean"
+      },
+      "used_knowledge_ids_json": {
+        "default": "[]",
+        "title": "Used Knowledge Ids Json",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id",
+      "query"
+    ],
+    "title": "design_knowledge_retrieveArguments",
+    "type": "object"
+  },
+  "design_lesson_decide": {
+    "properties": {
+      "decision_text": {
+        "title": "Decision Text",
+        "type": "string"
+      },
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      },
+      "selected_lesson_numbers_json": {
+        "default": "[]",
+        "title": "Selected Lesson Numbers Json",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id",
+      "decision_text"
+    ],
+    "title": "design_lesson_decideArguments",
+    "type": "object"
+  },
+  "design_record_result": {
+    "properties": {
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      },
+      "evidence_paths_json": {
+        "title": "Evidence Paths Json",
+        "type": "string"
+      },
+      "model_path": {
+        "title": "Model Path",
+        "type": "string"
+      },
+      "validation_report_path": {
+        "title": "Validation Report Path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id",
+      "model_path",
+      "validation_report_path",
+      "evidence_paths_json"
+    ],
+    "title": "design_record_resultArguments",
+    "type": "object"
+  },
+  "design_start": {
+    "properties": {
+      "approval_text": {
+        "title": "Approval Text",
+        "type": "string"
+      },
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      },
+      "model_classification": {
+        "title": "Model Classification",
+        "type": "string"
+      },
+      "proposal_summary": {
+        "title": "Proposal Summary",
+        "type": "string"
+      },
+      "requirements_json": {
+        "title": "Requirements Json",
+        "type": "string"
+      },
+      "source_path": {
+        "default": "",
+        "title": "Source Path",
+        "type": "string"
+      },
+      "title": {
+        "title": "Title",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id",
+      "title",
+      "model_classification",
+      "requirements_json",
+      "proposal_summary",
+      "approval_text"
+    ],
+    "title": "design_startArguments",
+    "type": "object"
+  },
+  "design_status": {
+    "properties": {
+      "design_id": {
+        "title": "Design Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "design_id"
+    ],
+    "title": "design_statusArguments",
+    "type": "object"
+  },
+  "design_system_status": {
+    "properties": {},
+    "title": "design_system_statusArguments",
+    "type": "object"
+  },
+  "standard_part_download_register": {
+    "properties": {
+      "file_path": {
+        "title": "File Path",
+        "type": "string"
+      },
+      "metadata_json": {
+        "default": "{}",
+        "title": "Metadata Json",
+        "type": "string"
+      },
+      "nominal_size": {
+        "title": "Nominal Size",
+        "type": "string"
+      },
+      "part_number": {
+        "title": "Part Number",
+        "type": "string"
+      },
+      "provider_id": {
+        "title": "Provider Id",
+        "type": "string"
+      },
+      "source_url": {
+        "title": "Source Url",
+        "type": "string"
+      },
+      "standard": {
+        "title": "Standard",
+        "type": "string"
+      },
+      "validation_report_path": {
+        "default": "",
+        "title": "Validation Report Path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "provider_id",
+      "file_path",
+      "part_number",
+      "standard",
+      "nominal_size",
+      "source_url"
+    ],
+    "title": "standard_part_download_registerArguments",
+    "type": "object"
+  },
+  "standard_part_providers_get": {
+    "properties": {
+      "category": {
+        "default": "",
+        "title": "Category",
+        "type": "string"
+      }
+    },
+    "title": "standard_part_providers_getArguments",
+    "type": "object"
+  },
+  "standard_part_sources_status": {
+    "properties": {},
+    "title": "standard_part_sources_statusArguments",
+    "type": "object"
+  }
+}

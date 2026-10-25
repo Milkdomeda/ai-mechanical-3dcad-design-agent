@@ -47,6 +47,10 @@ class Child:
         total=sum(int(row[1])*1024 for row in (line.split() for line in rows.splitlines()) if len(row)==2 and int(row[0])==self.pid)
         return total if self.process.poll() is None else 0
 
+    def owns_pid(self,pid):
+        try:return self.process.poll() is None and os.getpgid(pid)==self.pid
+        except ProcessLookupError:return False
+
 
 def _ps(arguments):
     executable=shutil.which('ps',path=os.defpath)

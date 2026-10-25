@@ -26,3 +26,16 @@ def test_offline_ci_uses_prewarmed_cache_in_same_step_and_real_second_volume():
     assert commands.index('$env:UV_CACHE_DIR = $cache')<commands.index('uv build --wheel')
     assert 'create vdisk' in commands and 'format fs=ntfs' in commands
     assert 'DriveType=3' in commands
+
+
+def test_installed_native_acceptance_uses_wheel_and_excludes_claim_secrets():
+    config=yaml.safe_load((Path(__file__).resolve().parents[1]/'.github/workflows/fea-gui-automation.yml').read_text(encoding='utf-8'))
+    steps=config['jobs']['windows-gui']['steps']
+    setup=next(step['run'] for step in steps if step.get('name')=='Install isolated runtime and qualify through installed wheel')
+    assert '-I -B -m mechanical_design_agent.cli analysis setup' in setup
+    assert 'analysis doctor --workspace $workspace --qualify' in setup
+    assert 'fea_r2_prepare.py' not in setup
+    run=next(step['run'] for step in steps if step.get('name')=='Verify installed default detached executor without checkout imports')
+    assert 'Set-Location $env:RUNNER_TEMP' in run and '& $python -I -B $harness' in run
+    upload=next(step['with']['path'] for step in steps if step.get('uses','').startswith('actions/upload-artifact@'))
+    assert '!${{ runner.temp }}/Installed FEA workspace 中文/data/analysis-scheduler/claims/**' in upload

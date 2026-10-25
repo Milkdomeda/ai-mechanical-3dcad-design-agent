@@ -26,11 +26,13 @@ _INPUTS = {'geometry': {'source.FCStd'}, 'mesh': {'geometry.brep'}, 'build': {'g
 
 
 class NativeTransaction:
-    def __init__(self, settings, *, controller=None, checkpoint=None, budget_guard=None):
+    def __init__(self, settings, *, controller=None, checkpoint=None, budget_guard=None, viewer=False):
+        if type(viewer) is not bool:raise AnalysisError('ANALYSIS_NATIVE_PHASE_INVALID','viewer role must be explicit')
         self.settings = settings
         self.controller = controller or ProcessController()
         self.checkpoint = checkpoint or (lambda: None)
         self.budget_guard=budget_guard
+        self.viewer=viewer
         self._stack = ExitStack()
         self.owned = None
         self._failed = None
@@ -44,8 +46,10 @@ class NativeTransaction:
         self._failed, self._sealed = None, False
         try:
             self.resources = self._stack.enter_context(freecad_scripts_directory())
-            self.owned = self._stack.enter_context(native_scratch(Path(self.settings['native_scratch_root']),checkpoint=self.checkpoint))
-            if self.budget_guard is not None:self.budget_guard.track_root(self.owned.path)
+            scratch=Path(self.settings['native_scratch_root'])
+            if self.viewer:scratch=scratch/('viewer-'+uuid.uuid4().hex)
+            self.owned = self._stack.enter_context(native_scratch(scratch,checkpoint=self.checkpoint,retain=self.viewer))
+            if self.budget_guard is not None:self.budget_guard.track_root(self.owned.path,native_ipc=True)
         except BaseException:
             self._stack.close()
             raise

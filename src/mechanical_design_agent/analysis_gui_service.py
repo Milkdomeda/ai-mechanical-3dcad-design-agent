@@ -8,11 +8,12 @@ import uuid
 from . import secure_fs
 from .analysis_gui import _bytes,preview_native,rebuild_native,verify_native_receipt
 from .analysis_protocol import canonical_record,parse_record,record_sha256
-from .analysis_revision import read_artifact,read_frozen_revision
+from .analysis_revision import read_artifact,read_frozen_revision,inventory
 from .analysis_runs import read_run,run_root
 from .analysis_session import _tools
 from .analysis_store import _timestamp
 from .analysis_types import AnalysisError
+from .analysis_native_transaction import NativeTransaction
 from .workspace_bootstrap import read_workspace_manifest
 
 
@@ -71,16 +72,18 @@ class AnalysisGuiService:
         if record_sha256(spec,schema_name='spec')!=request['spec_sha256']:raise AnalysisError('ANALYSIS_GUI_SPEC_CHANGED','registered GUI request belongs to another exact specification')
         return request,root,root/Path(expected).parent,folder,revision,spec
 
-    def _attempt(self,design_id,analysis_id,run_id,reference,execution=None):
+    def _attempt(self,design_id,analysis_id,run_id,reference,execution=None,*,complete=True):
         run,stored=read_run(self.store,design_id,analysis_id,run_id);execution=stored if execution is None else execution
         _authorize(self.store,execution['scope'])
         root=run_root(self.store,design_id,analysis_id,run_id)
         attempt=_load(root,reference)
         if run.get('attempt_ref')!=reference or stored!=execution or attempt.get('schema_version')!='AnalysisAttemptEvidence/v1' or attempt.get('native_integrity_sealed') is not True or attempt.get('request_sha256')!=run['request_ref']['sha256'] or any(attempt.get(key)!=execution[key] for key in ('spec_sha256','executor_sha256','runtime_manifest_sha256')) or attempt.get('numerical',{}).get('numerical_status')!='passed' or attempt['numerical']['applicability_status']=='outside_scope':raise AnalysisError('ANALYSIS_GUI_RUN_UNVALIDATED','GUI cannot replace missing, failed or unsealed numerical evidence')
-        return root/Path(reference['relative_path']).parent,attempt
+        attempt_root=root/Path(reference['relative_path']).parent
+        if complete and [ref for ref in inventory(attempt_root) if ref['relative_path']!='attempt.json']!=attempt.get('files'):raise AnalysisError('ANALYSIS_ATTEMPT_CHANGED','complete sealed attempt file inventory changed')
+        return attempt_root,attempt
 
     def _case_inputs(self,request,case_id,folder,revision):
-        root,attempt=self._attempt(request['design_id'],request['analysis_id'],request['run_id'],request['attempt_ref'])
+        root,attempt=self._attempt(request['design_id'],request['analysis_id'],request['run_id'],request['attempt_ref'],complete=False)
         rows=[item for item in attempt['numerical']['finest'] if item['case_id']==case_id]
         if len(rows)!=1:raise AnalysisError('ANALYSIS_GUI_CASE_CHANGED','each declared case needs one validated finest mesh')
         row=rows[0];level=row['level']
@@ -96,6 +99,7 @@ class AnalysisGuiService:
 
     def execute_request(self,envelope):
         request,root,target,folder,revision,spec=self._registered(envelope)
+        if self.guard is not None:self.guard.track_root(target)
         if (target/'receipt.json').exists():
             reference={'relative_path':(target/'receipt.json').relative_to(root).as_posix(),'sha256':secure_fs.read_managed_file(target/'receipt.json').sha256}
             return self.verify_receipt(envelope,reference)
@@ -109,13 +113,19 @@ class AnalysisGuiService:
             preview_native({'spec':spec,'spec_sha256':request['spec_sha256'],'geometry':geometry,'regions':regions,'settings':settings,'output_dir':str(output/'preview')},guard=self.guard,geometry_directory=folder/'geometry')
             preview_ref={'relative_path':(output/'preview/preview.json').relative_to(root).as_posix(),'sha256':secure_fs.read_managed_file(output/'preview/preview.json').sha256}
         else:
-            for case in spec['cases']:
-                inputs=self._case_inputs(request,case['case_id'],folder,revision)
-                binding={'request_id':request['request_id'],'request_sha256':envelope['request_ref']['sha256'],'run_id':request['run_id'],'design_id':request['design_id'],'analysis_id':request['analysis_id']}
-                evidence=rebuild_native(*inputs[:4],inputs[4],settings,output/case['case_id'],controller=self.controller,guard=self.guard,binding=binding)
-                if evidence['native_integrity_sealed'] is not True:raise AnalysisError('ANALYSIS_GUI_UNSEALED','GUI producer cannot publish before its full native integrity seal')
-                reference={**evidence['evidence_ref'],'relative_path':(output/case['case_id']/evidence['evidence_ref']['relative_path']).relative_to(root).as_posix()}
-                cases.append({'case_id':case['case_id'],'evidence_ref':reference})
+            pending=[];checkpoint=self.guard.checkpoint if self.guard is not None else lambda:None
+            with NativeTransaction(settings,controller=self.controller,checkpoint=checkpoint,budget_guard=self.guard) as native:
+                for case in spec['cases']:
+                    inputs=self._case_inputs(request,case['case_id'],folder,revision)
+                    binding={'request_id':request['request_id'],'request_sha256':envelope['request_ref']['sha256'],'run_id':request['run_id'],'design_id':request['design_id'],'analysis_id':request['analysis_id']}
+                    evidence=rebuild_native(*inputs[:4],inputs[4],settings,output/case['case_id'],transaction=native,guard=self.guard,binding=binding)
+                    pending.append((case['case_id'],{key:value for key,value in evidence.items() if key!='evidence_ref'}))
+                native.seal();checkpoint()
+            for case_id,evidence in pending:
+                evidence['native_integrity_sealed']=True
+                reference=_put(output/case_id,'evidence.json',evidence)
+                reference['relative_path']=(output/case_id/'evidence.json').relative_to(root).as_posix()
+                cases.append({'case_id':case_id,'evidence_ref':reference})
         receipt={key:request[key] for key in ('design_id','analysis_id','run_id','spec_sha256','request_id','kind')}
         receipt.update(schema_version='AnalysisGuiReceipt/v1',status='completed',request_ref=envelope['request_ref'],cases=cases,preview_ref=preview_ref)
         reference=_put(target,'receipt.json',receipt,'gui-receipt');reference['relative_path']=(target/'receipt.json').relative_to(root).as_posix()
@@ -135,6 +145,7 @@ class AnalysisGuiService:
             image_root=root/Path(receipt['preview_ref']['relative_path']).parent
             for reference in preview['images']:read_artifact(image_root,reference)
         else:
+            self._attempt(request['design_id'],request['analysis_id'],request['run_id'],request['attempt_ref'])
             if receipt['preview_ref'] is not None or [item['case_id'] for item in receipt['cases']]!=[case['case_id'] for case in spec['cases']]:raise AnalysisError('ANALYSIS_GUI_RECEIPT_INVALID','result GUI must cover all and only declared cases')
             for case in receipt['cases']:
                 expected=target/'outputs'/case['case_id']/'evidence.json'

@@ -59,9 +59,13 @@ def test_cancel_kills_owned_child_and_grandchild(tmp_path):
         wait_for(lambda: (tmp_path / "grandchild.pid").exists())
         pids = [int((tmp_path / (role + ".pid")).read_text()) for role in ("tree", "leaf", "grandchild")]
         assert all(alive(pid) for pid in pids)
+        assert all(controller.owns_pid(identity,pid) for pid in pids)
+        assert not controller.owns_pid(identity,os.getpid())
+        assert not controller.owns_pid(replace(identity,worker_uuid='unowned'),pids[0])
         outcome = controller.terminate(identity, reason="cancelled")
         assert outcome.reason == "cancelled"
         wait_for(lambda: all(not alive(pid) for pid in pids))
+        assert not controller.owns_pid(identity,pids[0])
         assert controller.terminate(identity, reason="cancelled") == outcome
     finally:
         controller.terminate(identity, reason="cancelled")

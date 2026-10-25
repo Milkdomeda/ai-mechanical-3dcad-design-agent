@@ -7,35 +7,95 @@
       "const": "AnalysisResult/v1"
     },
     "design_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
     },
     "analysis_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "run_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "spec_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
     },
     "status": {
       "enum": [
-        "invalid",
-        "validated"
+        "validated",
+        "invalid"
       ]
     },
-    "run_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    "numerical_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
     },
-    "spec_sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+    "criteria_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive",
+        "not_evaluated"
+      ]
+    },
+    "applicability_status": {
+      "enum": [
+        "within_declared_scope",
+        "limited_screening",
+        "outside_scope"
+      ]
+    },
+    "currentness": {
+      "enum": [
+        "current",
+        "source_changed",
+        "spec_changed"
+      ]
+    },
+    "snapshot_integrity": {
+      "const": "passed"
+    },
+    "spec_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "attempt_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "gui_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "visual_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "conclusion_level": {
+      "enum": [
+        "screening_only",
+        "criteria_evaluated"
+      ]
+    },
+    "engineering_certification": {
+      "const": false
     }
   },
   "required": [
     "schema_version",
     "design_id",
     "analysis_id",
-    "status",
     "run_id",
-    "spec_sha256"
+    "spec_sha256",
+    "status",
+    "numerical_status",
+    "criteria_status",
+    "applicability_status",
+    "currentness",
+    "snapshot_integrity",
+    "spec_ref",
+    "attempt_ref",
+    "gui_ref",
+    "visual_ref",
+    "conclusion_level",
+    "engineering_certification"
   ],
   "additionalProperties": false
 }

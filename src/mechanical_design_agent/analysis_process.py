@@ -63,6 +63,13 @@ class ProcessController:
             identities=[record[0] for record in self._children.values()]
         return [self.terminate(identity,reason=reason) for identity in identities]
 
+    def owns_pid(self,identity,pid):
+        """Read-only membership proof for a living registered process tree."""
+        if type(pid) is not int or pid<=0:return False
+        with self._lock:
+            record=self._owned(identity)
+            return record is not None and record[1].poll() is None and record[1].owns_pid(pid)
+
     def start(self, request: ProcessRequest) -> ProcessIdentity:
         if not request.argv or not all(isinstance(value, str) and value and "\0" not in value for value in request.argv):
             raise ValueError("nonempty explicit argv required")

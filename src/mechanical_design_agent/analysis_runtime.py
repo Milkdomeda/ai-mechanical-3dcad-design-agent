@@ -50,7 +50,7 @@ def _readonly(root):
             if not path.is_symlink(): path.chmod(path.stat().st_mode & ~0o222)
 
 
-def _process(argv, directory, home, scratch, *, timeout=90):
+def _process(argv, directory, home, scratch, *, timeout=90, informational=False):
     controller = ProcessController()
     identity = controller.start(ProcessRequest(argv=tuple(map(_native_path,argv)),cwd=directory,env=_environment(home,scratch),stdout_path=directory/'stdout.log',stderr_path=directory/'stderr.log',timeout_seconds=timeout,max_log_bytes=16*1024*1024))
     outcome = None
@@ -58,7 +58,9 @@ def _process(argv, directory, home, scratch, *, timeout=90):
         while (outcome := controller.poll(identity)) is None: time.sleep(.05)
     finally: controller.terminate(identity,reason='interrupted')
     secure_fs.atomic_publish_new(directory/'process.json',json.dumps(asdict(outcome)).encode())
-    if outcome.reason != 'exited' or outcome.returncode != 0:
+    # CalculiX's version-only inquiry can exit nonzero even after printing its
+    # exact version. This option is never used for a solve or a Python probe.
+    if outcome.reason != 'exited' or (outcome.returncode != 0 and not informational):
         raise AnalysisError('FEA_RUNTIME_PROBE_FAILED','fixed isolated preparation process failed; inspect retained logs')
 
 

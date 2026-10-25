@@ -24,7 +24,8 @@
         "needs_attention",
         "completed",
         "cancelled",
-        "ready_for_review"
+        "ready_for_review",
+        "awaiting_visual_review"
       ]
     },
     "state_revision": {
@@ -207,6 +208,16 @@
         {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "acceptance_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
         },
         {
           "type": "null"

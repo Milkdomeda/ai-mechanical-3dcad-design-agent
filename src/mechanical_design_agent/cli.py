@@ -81,6 +81,8 @@ def _parser() -> argparse.ArgumentParser:
     enable.add_argument("--workspace", type=Path, required=True)
     disable = catalog_commands.add_parser("disable")
     disable.add_argument("--workspace", type=Path, required=True)
+    from .analysis_cli import add_analysis_parser
+    add_analysis_parser(commands)
     return parser
 
 
@@ -403,6 +405,10 @@ def main() -> None:
             )
         elif arguments.command == "knowledge-migrate":
             result = _knowledge_migrate(arguments)
+        elif arguments.command == "analysis":
+            from .analysis_cli import dispatch
+            from .analysis_service import AnalysisService
+            result = dispatch(arguments, AnalysisService(_runtime(arguments.workspace)))
         elif arguments.standard_command == "providers":
             result = load_standard_part_provider_catalog().as_dict(arguments.category)
         elif arguments.standard_command == "status":
@@ -421,6 +427,10 @@ def main() -> None:
         _print(exc.as_dict())
         raise SystemExit(_exit_code(exc.as_dict())) from None
     except Exception as exc:
+        from .analysis_types import AnalysisError
+        if isinstance(exc, AnalysisError):
+            _print(exc.as_dict())
+            raise SystemExit(3) from None
         value = {
             "schema_version": "MechanicalDesignCommandError/v1",
             "status": "blocked",

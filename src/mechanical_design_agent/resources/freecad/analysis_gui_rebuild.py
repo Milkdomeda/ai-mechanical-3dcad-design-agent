@@ -21,7 +21,7 @@ def field_values(result):
             'principal_stress':list(map(list,zip(*(values(result,name,'MPa') for name in ('PrincipalMax','PrincipalMed','PrincipalMin')))))}
 
 
-def run(request_path):
+def run(request_path,*,interactive=False):
     import FreeCAD as App
     import FreeCADGui as Gui
     import FemGui
@@ -43,6 +43,8 @@ def run(request_path):
         (root/'response.json').write_text(json.dumps(report,allow_nan=False,indent=2),encoding='utf-8')
 
     def finish(error=None):
+        if interactive and error is None:
+            later(open_interactive);return
         if error:report['error']=error
         try:
             if Gui.Control.activeDialog():Gui.Control.closeDialog()
@@ -50,6 +52,28 @@ def run(request_path):
             report['modules_after']=modules()
         except Exception:report['cleanup_error']=traceback.format_exc();report['status']='failed'
         put();QtCore.QTimer.singleShot(0,QtCore.QCoreApplication.quit)
+
+    def open_interactive():
+        state['doc'].Label='FEA interactive '+request['identity']['case_id']+' '+request['request_id'][:8]
+        Gui.activeDocument().setEdit(state['result'].Name)
+        later(select_interactive,500)
+
+    def select_interactive():
+        if not Gui.Control.activeDialog() or not state['result'].Mesh.ViewObject.Visibility:raise ValueError('GUI_INTERACTIVE_RESULT_TASK_MISSING')
+        visible_child(Gui.getMainWindow(),QtGui.QRadioButton,'rb_vm_stress').setChecked(True)
+        state['result'].ViewObject.Visibility=True;state['result'].Mesh.ViewObject.Visibility=True
+        Gui.activeDocument().activeView().viewAxonometric();Gui.activeDocument().activeView().fitAll();Gui.activeDocument().activeView().redraw();Gui.updateGui()
+        later(interactive_ready,500)
+
+    def interactive_ready():
+        native=root/'interactive-native.png'
+        Gui.activeDocument().activeView().saveImage(str(native),1200,800,'Black')
+        if inspect_native_png(native)['status']!='passed':raise ValueError('GUI_INTERACTIVE_NATIVE_VIEWPORT_BLANK_OR_CLIPPED')
+        raw=report['display_fields']['von_mises'];frame_native_image(native,root/'interactive-figure.png',case_id=request['identity']['case_id'],field='von_mises',unit='MPa',minimum=raw['raw_min'],maximum=raw['raw_max'])
+        name='interactive-window.png'
+        if not Gui.getMainWindow().grab().save(str(root/name),'PNG'):raise ValueError('GUI_INTERACTIVE_CAPTURE_FAILED')
+        report.update(interactive_ready=True,modules_after=modules(),interactive_document_path=str(root/'analysis.FCStd'),interactive_window={'relative_path':name,'sha256':digest(root/name)},interactive_images=[{'relative_path':name,'sha256':digest(root/name)} for name in ('interactive-native.png','interactive-figure.png')])
+        put()
 
     def later(operation,delay=300):
         def guarded():

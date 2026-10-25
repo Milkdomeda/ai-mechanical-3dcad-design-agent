@@ -85,10 +85,11 @@ def verify_native_receipt(report,*,request,root,deck,fields):
     audit=inspect_native_archive(root/'analysis.FCStd',[{'name':item['name'],'type_id':item['type_id']} for item in objects])
     comparison=compare_deck_semantics(deck['inspection'],inspect_native_deck(root/'native-export.inp',allowed_root=root))
     if not comparison['equivalent']:reject()
-    return {'schema_version':'AnalysisGuiEvidence/v1','status':'awaiting_visual_review','native_automation_status':'passed','actor':'assistant','identity':request['identity'],'artifacts':report['artifacts'],'display_fields':display,'archive_audit':audit,'native_input_comparison':comparison,'source_fcstd_open_count':0,'human_actions':'not_claimed'}
+    producer={name:{'relative_path':name,'sha256':_read(root/name).sha256} for name in ('request.json','response.json','process.json','stdout.log','stderr.log')}
+    return {'schema_version':'AnalysisGuiEvidence/v1','status':'awaiting_visual_review','native_automation_status':'passed','actor':'assistant','identity':request['identity'],'producer':producer,'artifacts':report['artifacts'],'display_fields':display,'archive_audit':audit,'native_input_comparison':comparison,'source_fcstd_open_count':0,'human_actions':'not_claimed'}
 
 
-def rebuild_native(deck,mesh,fields,solver_outputs,geometry,settings,output_dir,*,controller=None,checkpoint=None,transaction=None,guard=None,binding=None):
+def rebuild_native(deck,mesh,fields,solver_outputs,geometry,settings,output_dir,*,controller=None,checkpoint=None,transaction=None,guard=None,binding=None,interactive=False,on_ready=None):
     """One fresh owned GUI process; returns evidence, never delivery acceptance."""
     output=secure_fs.ensure_managed_directory(Path(output_dir),parents=False,exist_ok=False).path
     checkpoint=checkpoint or (guard.checkpoint if guard is not None else lambda:None)
@@ -112,7 +113,7 @@ def rebuild_native(deck,mesh,fields,solver_outputs,geometry,settings,output_dir,
         request={'schema_version':'AnalysisNativeGuiRequest/v1','request_id':uuid.uuid4().hex,'expected_temp':_native_path(native.owned.path),'home':_native_path(home),'inputs':inputs,'modules':modules,'identity':{'spec_sha256':deck['spec_sha256'],'case_id':deck['case_id'],'mesh_sha256':deck['contract']['mesh_sha256'],'input_sha256':deck['input_ref']['sha256']}}
         if binding is not None:request['identity']['registration']=binding
         secure_fs.atomic_publish_new(work/'request.json',_bytes(request))
-        report=_launch_gui(native,work,home,settings,deck['budget'],'analysis_gui_rebuild',request,inputs,sources,output,checkpoint)
+        report=_launch_gui(native,work,home,settings,deck['budget'],'analysis_gui_rebuild',request,inputs,sources,output,checkpoint,interactive=interactive,on_ready=on_ready)
         # Native filenames are checked before crossing out of W1.
         for name,ref in report.get('artifacts',{}).items():
             if type(name) is not str or Path(name).name!=name or name in ('.','..') or '\\' in name or ':' in name:raise AnalysisError('ANALYSIS_GUI_RECEIPT_INVALID','GUI artifacts must be fixed local files')
@@ -121,13 +122,16 @@ def rebuild_native(deck,mesh,fields,solver_outputs,geometry,settings,output_dir,
         if transaction is None:native.seal()
         checkpoint()
         evidence['native_integrity_sealed']=native._sealed
-        secure_fs.atomic_publish_new(output/'evidence.json',_bytes(evidence))
-        return {**evidence,'evidence_ref':{'relative_path':'evidence.json','sha256':_read(output/'evidence.json').sha256}}
+        name='evidence.json' if native._sealed else 'provisional-evidence.json'
+        secure_fs.atomic_publish_new(output/name,_bytes(evidence))
+        return {**evidence,'evidence_ref':{'relative_path':name,'sha256':_read(output/name).sha256}}
 
 
-def _launch_gui(native,work,home,settings,budget,module,request,inputs,sources,output,checkpoint):
+def _launch_gui(native,work,home,settings,budget,module,request,inputs,sources,output,checkpoint,*,interactive=False,on_ready=None):
     if module not in ('analysis_gui_rebuild','analysis_gui_preview'):raise AnalysisError('ANALYSIS_GUI_PHASE_INVALID','only fixed package GUI phases are allowed')
-    statement='import sys;sys.dont_write_bytecode=True;sys.path.insert(0,'+ascii(_native_path(work))+');import '+module+';'+module+'.run('+ascii(_native_path(work/'request.json'))+')\n'
+    if interactive and (module!='analysis_gui_rebuild' or native.viewer is not True):raise AnalysisError('ANALYSIS_GUI_PHASE_INVALID','interactive reconstruction needs its separately owned viewer role')
+    suffix=',interactive=True' if interactive else ''
+    statement='import sys;sys.dont_write_bytecode=True;sys.path.insert(0,'+ascii(_native_path(work))+');import '+module+';'+module+'.run('+ascii(_native_path(work/'request.json'))+suffix+')\n'
     secure_fs.atomic_publish_new(work/'AnalysisGui.FCMacro',statement.encode('ascii'))
     secure_fs.atomic_publish_new(output/'request.json',_bytes(request))
     env=_environment(home,native.owned.path);env.pop('QT_QPA_PLATFORM',None)
@@ -136,10 +140,22 @@ def _launch_gui(native,work,home,settings,budget,module,request,inputs,sources,o
     env['QT_OPENGL']='software' if settings['configuration']['software_opengl'] else 'desktop'
     verify_tool_identity(settings,'freecadgui');verify_native_modules(settings);checkpoint()
     argv=(_native_path(settings['tools']['freecadgui']['path']),'-u',_native_path(home/'user.cfg'),'-s',_native_path(home/'system.cfg'),_native_path(work/'AnalysisGui.FCMacro'))
-    identity=native.controller.start(ProcessRequest(argv=argv,cwd=work,stdout_path=work/'stdout.log',stderr_path=work/'stderr.log',env=env,timeout_seconds=budget['stage_seconds'],max_log_bytes=budget['max_disk_bytes']))
-    outcome=None
+    identity=native.controller.start(ProcessRequest(argv=argv,cwd=work,stdout_path=work/'stdout.log',stderr_path=work/'stderr.log',env=env,timeout_seconds=14400 if interactive else budget['stage_seconds'],max_log_bytes=budget['max_disk_bytes']))
+    outcome=None;notified=False
     try:
-        while (outcome:=native.controller.poll(identity)) is None:checkpoint();time.sleep(.1)
+        while (outcome:=native.controller.poll(identity)) is None:
+            checkpoint()
+            if interactive and not notified and (work/'response.json').is_file():
+                ready=json.loads(_read(work/'response.json').content)
+                if ready.get('interactive_ready') is True:
+                    if ready.get('status')!='passed' or ready.get('request_sha256')!=hashlib.sha256(_bytes(request)).hexdigest() or ready.get('identity')!=request['identity'] or not native.controller.owns_pid(identity,ready.get('pid')):raise AnalysisError('ANALYSIS_GUI_RECEIPT_INVALID','interactive readiness belongs to another owned native process tree')
+                    if ready.get('interactive_document_path')!=_native_path(work/'analysis.FCStd') or ready.get('interactive_window',{}).get('relative_path')!='interactive-window.png':raise AnalysisError('ANALYSIS_GUI_RECEIPT_INVALID','interactive working copy must remain in its separately owned W1 directory')
+                    read_artifact(work,ready['interactive_window'])
+                    if [item.get('relative_path') for item in ready.get('interactive_images',[])]!=['interactive-native.png','interactive-figure.png']:raise AnalysisError('ANALYSIS_GUI_RECEIPT_INVALID','interactive result requires a separately captured native cloud')
+                    for reference in ready['interactive_images']:read_artifact(work,reference)
+                    if on_ready is not None:on_ready(ready,identity,work)
+                    notified=True
+            time.sleep(.1)
     finally:
         stopped=native.controller.terminate(identity,reason='interrupted')
         if outcome is None:outcome=stopped

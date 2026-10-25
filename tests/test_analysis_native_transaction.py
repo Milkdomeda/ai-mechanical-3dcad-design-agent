@@ -52,3 +52,17 @@ def test_seal_rechecks_runtime_before_publication_and_prevents_later_phases(tmp_
         with pytest.raises(AnalysisError):
             native.run('build', {}, {'geometry.brep': tmp_path/'absent', 'mesh.unv': tmp_path/'absent'}, tmp_path/'output', timeout_seconds=2, max_log_bytes=1024)
         assert not (tmp_path/'output').exists()
+
+
+def test_viewer_keeps_saved_work_without_holding_the_solve_root_lock(tmp_path,monkeypatch):
+    from mechanical_design_agent import secure_fs
+    from mechanical_design_agent.analysis_configuration import load_analysis_configuration
+    from mechanical_design_agent.analysis_native_transaction import NativeTransaction
+    selected,_,_=configured(tmp_path,monkeypatch);settings=load_analysis_configuration(selected)
+    root=Path(settings['native_scratch_root']);root.mkdir(mode=0o700)
+    with NativeTransaction(settings,viewer=True) as native:
+        saved=native.owned.path/'working.FCStd';saved.write_bytes(b'isolated viewer working-copy retention fixture')
+        assert saved.is_relative_to(root)
+        with secure_fs.try_exclusive_file_lock(root/'.native-root.lock') as owned:
+            assert owned,'viewer must not occupy the solve root lifetime lock'
+    assert saved.read_bytes()==b'isolated viewer working-copy retention fixture'

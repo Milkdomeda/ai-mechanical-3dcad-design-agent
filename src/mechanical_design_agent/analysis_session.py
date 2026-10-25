@@ -58,6 +58,10 @@ class AnalysisSessionService:
         self.knowledge_loader = knowledge_loader
         self.gui_previewer = gui_previewer
 
+    def confirm(self,*,design_id,analysis_id,run_id,manifest_sha256,decision_text,expected_revision):
+        from .analysis_delivery_service import AnalysisDeliveryService
+        return AnalysisDeliveryService(self.store).confirm(design_id=design_id,analysis_id=analysis_id,run_id=run_id,manifest_sha256=manifest_sha256,decision_text=decision_text,expected_revision=expected_revision)
+
     def prepare(self, *, design_id, analysis_id, request, expected_revision):
         request = parse_record(canonical_record(request, schema_name='prepare-request').decode('utf-8'), schema_name='prepare-request')
         spec = deepcopy(request['draft_spec'])
@@ -101,7 +105,7 @@ class AnalysisSessionService:
         if self.store.currentness_for_source(design_id, analysis_id, source_reference)['currentness'] != 'current':
             issue('ANALYSIS_SOURCE_CHANGED', 'selected output and current CAD model do not represent the same captured geometry revision')
         settings = None
-        geometry = regions = ledger = None
+        geometry = regions = ledger = preview = None
         try:
             settings = self.configuration_loader()
         except AnalysisError as exc:
@@ -213,7 +217,11 @@ class AnalysisSessionService:
         artifacts['spec'] = _put(stage, 'spec.json', spec, 'spec')
         record = {'schema_version': 'AnalysisRevision/v1', 'design_id': design_id, 'analysis_id': analysis_id, 'spec_revision': spec['revision'], 'spec_status': spec['status'], 'source_binding_ref': source_reference, 'artifacts': artifacts, 'files': [], 'issues': issues}
         committed, record = publish_revision(self.store, design_id, analysis_id, stage, record, state['state_revision'])
-        return {'spec_status': spec['status'], 'spec_revision': spec['revision'], 'spec_sha256': spec_sha, 'state_revision': committed['state_revision'], 'issues': issues, 'summary': summary, 'current_revision': committed['current_revision']}
+        images=[]
+        if preview is not None and artifacts['preview_receipt'] is not None:
+            folder=self.store._root(design_id,analysis_id)/Path(committed['current_revision']['relative_path']).parent
+            images=[{**reference,'path':str(folder/'preview'/reference['relative_path'])} for reference in preview['images']]
+        return {'spec_status': spec['status'], 'spec_revision': spec['revision'], 'spec_sha256': spec_sha, 'state_revision': committed['state_revision'], 'issues': issues, 'summary': summary, 'current_revision': committed['current_revision'],'geometry_manifest':geometry,'preview_images':images}
 
     def approve(self, *, design_id, analysis_id, spec_sha256, decision_text, expected_revision):
         state = self.store.read_state(design_id, analysis_id)

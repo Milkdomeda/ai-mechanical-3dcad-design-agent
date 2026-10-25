@@ -25,9 +25,14 @@ from .models import require_safe_id
 
 
 def _execute(context):
-    # This explicit gate remains until the qualified deterministic executor is
-    # installed. Queue/control acceptance alone must never imply a solve passed.
-    raise AnalysisError('FEA_EXECUTOR_UNAVAILABLE', 'The qualified native execution adapter is not available in this build.')
+    from .analysis_execution import execution_settings,execute_run
+    from .analysis_qualification import require_qualification
+    try:
+        settings=execution_settings(context)
+        require_qualification(settings)
+    except AnalysisError as exc:
+        raise AnalysisError('FEA_EXECUTOR_UNAVAILABLE','Run analysis doctor --qualify for the exact installed package and approved runtime before submitting FEA.',details={'cause':exc.code}) from exc
+    return execute_run(context,settings=settings)
 
 
 class RunContext:
@@ -126,12 +131,19 @@ class AnalysisSupervisor:
         return None
 
     def _finish(self, context, outcome):
+        if outcome.get('status')=='awaiting_visual_review':
+            try:
+                from .analysis_execution import verify_execution
+                verify_execution(self.store,**context._identity(),reference=outcome['execution_ref'],allow_unpublished=True)
+            except Exception:
+                outcome={'status':'failed','diagnostic':{'code':'ANALYSIS_EXECUTION_UNVERIFIED','message':'Unverified numerical or native GUI evidence cannot pause as reviewable output.'}}
         with scheduler_guard(self.store.workspace, create=True) as scheduler:
             analysis = self.store._root(context.entry['design_id'], context.entry['analysis_id'])
             with secure_fs.exclusive_file_lock(analysis / '.analysis.lock'):
                 with secure_fs.exclusive_file_lock(context.root / '.run.lock'):
                     run, _ = read_run_unlocked(context.root, **context._identity())
                     if run['status'] not in TERMINAL:
+                        if run['worker']!=self._identity:raise AnalysisError('ANALYSIS_WORKER_IDENTITY_UNPROVEN','only the selected authenticated supervisor may publish this outcome')
                         # Cancellation and completion linearize at this lock.
                         if run['cancel_requested'] or self._cancel.is_set():
                             outcome = {'status': 'cancelled', 'diagnostic': {'code': 'ANALYSIS_CANCELLED', 'message': 'Owned execution stopped after cancellation.'}}
@@ -139,7 +151,7 @@ class AnalysisSupervisor:
                             # Completion verification is owned by the manifest
                             # publisher, added with the numerical executor.
                             outcome = {'status': 'failed', 'diagnostic': {'code': 'ANALYSIS_COMPLETION_UNVERIFIED', 'message': 'No verified atomic completion record was provided.'}}
-                        if outcome.get('status') not in TERMINAL:
+                        if outcome.get('status') not in TERMINAL|{'awaiting_visual_review'}:
                             raise AnalysisError('ANALYSIS_OUTCOME_INVALID', 'executor must return a terminal result')
                         run = change_run_unlocked(context.root, run, outcome, code=(outcome.get('diagnostic') or {}).get('code'), message='Owned execution reached a terminal result.')
                     synchronize_analysis(self.store, context.entry['design_id'], context.entry['analysis_id'], run)

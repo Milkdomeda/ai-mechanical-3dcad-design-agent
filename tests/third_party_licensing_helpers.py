@@ -13,7 +13,7 @@ from packaging.utils import canonicalize_name
 
 SCHEMA_VERSION = "ThirdPartyComponents/v1"
 PROJECT_DISTRIBUTION = "ai-mechanical-3dcad-design-agent"
-PROJECT_VERSION = "0.7.1"
+PROJECT_VERSION = "0.8.0"
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "project_distribution",
@@ -360,7 +360,7 @@ def render_third_party_notices(inventory: ThirdPartyInventory) -> str:
         "Third-party components retain their original ownership and licenses; this index does not relicense them.",
         "Every listed component is separately installed or external and is not distributed by this project.",
         "External service and catalog terms apply independently and do not grant rights to downloaded CAD data.",
-        "The distributed LGPL native source-only RF patch, its attribution and license are recorded in `src/mechanical_design_agent/resources/analysis/runtime-patches/nodal-rf-r2/`; no FreeCAD binaries are bundled.",
+        "The distributed LGPL native source-only R1 face-force and R2 RF patches, their attribution and licenses are recorded in `src/mechanical_design_agent/resources/analysis/runtime-patches/faceforce-r1/` and `src/mechanical_design_agent/resources/analysis/runtime-patches/nodal-rf-r2/`; no FreeCAD binaries are bundled.",
         "",
     ]
     groups = [

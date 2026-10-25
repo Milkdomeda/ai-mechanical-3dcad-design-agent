@@ -38,6 +38,19 @@ class Child:
         # explicitly recorded as a different observation from POSIX RSS.
         return int(win32job.QueryInformationJobObject(self.job,win32job.JobObjectExtendedLimitInformation)['PeakJobMemoryUsed'])
 
+    def owns_pid(self,pid):
+        import pywintypes
+        import win32api
+        import win32job
+        # Query membership in this exact living Job, never attach by PID.
+        # https://learn.microsoft.com/windows/win32/api/jobapi/nf-jobapi-isprocessinjob
+        try:handle=win32api.OpenProcess(0x1000,False,pid)
+        except pywintypes.error as exc:
+            if exc.winerror in (5,87,1168):return False
+            raise
+        try:return self.poll() is None and bool(win32job.IsProcessInJob(handle,self.job))
+        finally:handle.Close()
+
 
 def current_memory_bytes():
     import win32api

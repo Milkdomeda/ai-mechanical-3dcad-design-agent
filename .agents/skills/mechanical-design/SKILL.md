@@ -34,3 +34,7 @@ model.
 Treat existing source CAD as read-only. Preserve its snapshot and edit only the
 session `model.FCStd`. Use `freecad-standard-parts` for catalog components and
 `freecad-model-validation` after every visible model change.
+
+For a static finite-element analysis request, use the project-owned
+`mechanical-fea` skill. Analysis has its own physical review and exact-manifest
+acceptance; CAD confirmation does not supply those decisions.

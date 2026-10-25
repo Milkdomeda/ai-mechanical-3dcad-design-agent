@@ -82,6 +82,13 @@ def _inside(point,box):
     return all(float(lo['value'])-tolerance<=value<=float(hi['value'])+tolerance for value,lo,hi in zip(point,box['minimum'],box['maximum']))
 
 
+def _location(ids,values,points,aggregation):
+    # Equal extrema use the smallest native ID, never an arbitrary mesh order.
+    measure=(lambda value:abs(value)) if aggregation=='max_abs' else lambda value:value
+    node,value=min(zip(ids,values),key=lambda item:((measure(item[1]) if aggregation=='min' else -measure(item[1])),item[0]))
+    return {'node_id':node,'coordinates_mm':list(points[node]),'native_scalar':value,'tie_policy':'smallest_native_node_id'}
+
+
 def _scope(spec,fields,policy):
     raw=fields['fields'];app=policy['applicability']
     maximum=max(_norm(vector) for vector in raw['displacement']['values'])
@@ -173,10 +180,12 @@ def validate_level(spec,ledger,mesh,fields):
             else:value=raw['principal_stress']['values'][index][0 if field=='principal_max' else 2]
             values.append(value)
         aggregation=observation['aggregation'];value=max(values) if aggregation=='max' else min(values) if aggregation=='min' else max(map(abs,values))
-        observables.append({'id':observation['id'],'field':field,'region_id':observation['region_id'],'value':value,'unit':'mm' if field in _DISPLACEMENT else 'MPa','mandatory':observation['mandatory'],'node_count':len(ids),'roi':roi,'displacement_reference_mm':reference,'recovery':'native_extrapolated_averaged_nodal'})
+        observables.append({'id':observation['id'],'field':field,'region_id':observation['region_id'],'value':value,'unit':'mm' if field in _DISPLACEMENT else 'MPa','mandatory':observation['mandatory'],'node_count':len(ids),'roi':roi,'displacement_reference_mm':reference,'recovery':'native_extrapolated_averaged_nodal','location':_location(ids,values,points,aggregation)})
     scope=_scope(spec,{'fields':raw},policy)
     binding=_binding(spec)
-    return {'schema_version':'AnalysisLevelValidation/v1','case_id':case['case_id'],'level':receipt['level'],'binding':binding,'mesh':{'sha256':receipt['artifacts']['native_mesh']['sha256'],'node_count':receipt['node_count'],'element_count':receipt['element_count'],'size_mm':level['size']['value']},'numerical_status':'passed' if all(check['status']=='passed' for check in checks) else 'failed','checks':checks,'observables':observables,'raw_global_peaks':{'maximum_displacement_mm':max(_norm(vector) for vector in raw['displacement']['values']),'maximum_von_mises_MPa':max(raw['von_mises']['values']),'maximum_principal_MPa':max(row[0] for row in raw['principal_stress']['values']),'minimum_principal_MPa':min(row[2] for row in raw['principal_stress']['values'])},'applicability_status':scope['status'],'applicability':scope,'reactions':reaction}
+    global_values={'maximum_displacement_mm':[_norm(vector) for vector in raw['displacement']['values']],'maximum_von_mises_MPa':raw['von_mises']['values'],'maximum_principal_MPa':[row[0] for row in raw['principal_stress']['values']],'minimum_principal_MPa':[row[2] for row in raw['principal_stress']['values']]}
+    locations={name:_location(raw['node_ids'],values,points,'min' if name.startswith('minimum') else 'max') for name,values in global_values.items()}
+    return {'schema_version':'AnalysisLevelValidation/v1','case_id':case['case_id'],'level':receipt['level'],'binding':binding,'mesh':{'sha256':receipt['artifacts']['native_mesh']['sha256'],'node_count':receipt['node_count'],'element_count':receipt['element_count'],'size_mm':level['size']['value']},'numerical_status':'passed' if all(check['status']=='passed' for check in checks) else 'failed','checks':checks,'observables':observables,'raw_global_peaks':{name:location['native_scalar'] for name,location in locations.items()},'raw_global_peak_locations':locations,'applicability_status':scope['status'],'applicability':scope,'reactions':reaction}
 
 
 def evaluate_convergence(spec,levels):

@@ -19,7 +19,7 @@ from referencing.exceptions import NoSuchResource
 from .analysis_types import AnalysisError, JsonObject
 from .analysis_units import canonical_decimal, validate_normalized_quantity
 
-_NAMES = frozenset({"prepare-request", "spec", "session", "run", "region", "result", "gui-request", "gui-receipt", "manifest", "completion", "configuration", "geometry-request", "geometry", "region-selectors", "region-bindings", "load-ledger", "source-binding", "knowledge-receipt", "preview-receipt", "approval", "revision", "worker-control-request", "worker-control-response", "queue", "worker-claim", "run-request", "idempotency", "mesh-level", "mesh-receipt", "evaluation-policy"})
+_NAMES = frozenset({"prepare-request", "spec", "session", "run", "region", "result", "gui-request", "gui-receipt", "manifest", "completion", "configuration", "geometry-request", "geometry", "region-selectors", "region-bindings", "load-ledger", "source-binding", "knowledge-receipt", "preview-receipt", "approval", "revision", "worker-control-request", "worker-control-response", "queue", "worker-claim", "run-request", "idempotency", "mesh-level", "mesh-receipt", "evaluation-policy", "visual-review", "acceptance"})
 _PREFIX = "urn:mechanical-design:analysis:"
 _MAX_BYTES = 4 * 1024 * 1024
 
@@ -147,6 +147,19 @@ def parse_record(text: str, *, schema_name: str) -> JsonObject:
         raise AnalysisError("ANALYSIS_JSON_INVALID", "invalid analysis JSON") from exc
     _validate(record, schema_name)
     return record
+
+
+def parse_json_value(text,*,expected):
+    """Same strict bounded JSON boundary for CLI/MCP reference arrays."""
+    if type(text) is not str:raise AnalysisError('ANALYSIS_JSON_INVALID','analysis JSON must be UTF-8 text')
+    try:
+        if len(text.encode('utf-8'))>_MAX_BYTES:raise AnalysisError('ANALYSIS_JSON_LIMIT','analysis JSON exceeds the supported size')
+        value=json.loads(text,object_pairs_hook=_pairs,parse_constant=_constant)
+    except AnalysisError:raise
+    except (ValueError,RecursionError,UnicodeError) as exc:raise AnalysisError('ANALYSIS_JSON_INVALID','invalid bounded analysis JSON') from exc
+    _check_json(value)
+    if type(value) is not expected:raise AnalysisError('ANALYSIS_JSON_INVALID','analysis JSON has the wrong top-level type')
+    return value
 
 
 def _normalize(value):

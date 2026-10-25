@@ -35,15 +35,25 @@ CAD_OR_REPORT_SUFFIXES = {
     ".pdf",
 }
 PRIVATE_PATH_PARTS = {"designs", "output", "knowledge", "vendor", ".env" + ".local"}
-EXPECTED_PUBLIC_CI = (".github/workflows/windows.yml",)
+EXPECTED_PUBLIC_CI = ('.github/workflows/windows.yml', '.github/workflows/fea-gui-automation.yml', '.github/workflows/fea-p0-paths.yml', '.github/workflows/fea-p0-r1.yml', '.github/workflows/fea-p0.yml')
 EXPECTED_PUBLIC_SCRIPTS = (
-    "scripts/windows_database_deployment_acceptance.ps1",
-    "scripts/windows_release_acceptance.ps1",
+    'scripts/windows_database_deployment_acceptance.ps1',
+    'scripts/windows_release_acceptance.ps1',
+    'scripts/fea_acceptance.py',
+    'scripts/fea_gui_acceptance.py',
+    'scripts/fea_gui_automation.py',
+    'scripts/fea_gui_environment.py',
+    'scripts/fea_p0_config.py',
+    'scripts/fea_path_matrix.py',
+    'scripts/fea_r1_acceptance.py',
+    'scripts/fea_r1_prepare.py',
+    'scripts/fea_r2_prepare.py',
 )
 EXPECTED_PROJECT_SKILL_SOURCE_TREES = (
     ".agents/skills/freecad-model-validation",
     ".agents/skills/freecad-standard-parts",
     ".agents/skills/mechanical-design",
+    ".agents/skills/mechanical-fea",
 )
 REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/database_deployment_helpers.py",
@@ -96,6 +106,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert manifest.source_trees == (
         *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
         "examples/product_families",
+        "runtime-patches/freecad-1.1.3-faceforce-r1",
         "src/mechanical_design_agent",
     )
     assert manifest.public_ci == EXPECTED_PUBLIC_CI

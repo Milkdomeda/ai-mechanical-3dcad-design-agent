@@ -108,7 +108,8 @@ def _owner_lock(path,checkpoint):
 
 
 @contextmanager
-def native_scratch(root: Path,*,checkpoint=None):
+def native_scratch(root: Path,*,checkpoint=None,retain=False):
+    if type(retain) is not bool:raise ValueError('NATIVE_SCRATCH_RETAIN_ROLE_INVALID')
     root=Path(root)
     if not root.is_absolute() or not str(root).isascii():raise ValueError('NATIVE_SCRATCH_REQUIRES_ABSOLUTE_ASCII_ROOT')
     repository=Path(__file__).resolve().parent
@@ -138,4 +139,4 @@ def native_scratch(root: Path,*,checkpoint=None):
             _assert_identity(root_lock);_assert_identity(owner_lock)
             # Only after the caller's owned process scope finished normally.
             # Keep the owner lock held while clearing; exceptions preserve data.
-            _clear_owned_scratch(owned)
+            if not retain:_clear_owned_scratch(owned)

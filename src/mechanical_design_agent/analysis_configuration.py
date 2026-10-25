@@ -133,13 +133,20 @@ def load_analysis_configuration(runtime, *, checkpoint=None) -> JsonObject:
     return {"schema_version": "AnalysisSettings/v1", "workspace": str(workspace), "configuration_path": str(selected), "configuration_sha256": pinned.sha256, "configuration": config, "tools": tools, "runtime": proof, "native_scratch_root": str(scratch), "verification_scope": "configured file identities; no native process or GUI probe executed"}
 
 
-def analysis_capabilities(runtime, *, design_id: str | None = None) -> JsonObject:
+def analysis_capabilities(runtime, *, design_id: str | None = None, include_qualification=False) -> JsonObject:
     if design_id is not None:
         require_safe_id(design_id, "design_id")
     result = {"schema_version": "AnalysisCapabilities/v1", "analysis_type": "linear_static", "conclusion_levels": ["screening_only", "criteria_evaluated"], "engineering_certification": False}
     try:
         settings = load_analysis_configuration(runtime)
-        return {**result, "status": "runtime_configured", "code": "FEA_RUNTIME_FILES_VERIFIED", "tools": settings["tools"], "runtime": settings["runtime"], "verification_scope": settings["verification_scope"], "gui_status": "not_probed", "numerical_acceptance": "not_executed"}
+        configured={**result, "status": "runtime_configured", "code": "FEA_RUNTIME_FILES_VERIFIED", "tools": settings["tools"], "runtime": settings["runtime"], "verification_scope": settings["verification_scope"], "gui_status": "not_probed", "numerical_acceptance": "not_executed"}
+        if include_qualification:
+            from .analysis_qualification import require_qualification
+            try:
+                qualification=require_qualification(settings)
+                return {**configured,**qualification,'gui_status':'qualified_native_automation','numerical_acceptance':'qualified_synthetic_benchmarks','scope':'Runtime software qualification; each engineering run requires its own numerical and actual visual review.'}
+            except AnalysisError as exc:return {**configured,**exc.as_dict(),'status':'setup_required','next_action':'Run analysis doctor --qualify for this exact installed package and isolated runtime.'}
+        return configured
     except AnalysisError as exc:
         return {**result, **exc.as_dict(), "status": "setup_required", "next_action": "Configure and verify the isolated FEA runtime; CAD remains independent."}
     except DiagnosticGateError as exc:

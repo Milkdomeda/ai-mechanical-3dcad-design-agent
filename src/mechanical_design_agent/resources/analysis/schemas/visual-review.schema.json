@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:visual-review:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisVisualReview/v1"
+    },
+    "design_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "analysis_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "run_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "spec_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "operator": {
+      "const": "assistant"
+    },
+    "status": {
+      "const": "reviewed"
+    },
+    "gui_receipt_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "images": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+      }
+    },
+    "statement": {
+      "const": "I inspected the exact registered native figures, their framing, fields, units, legends, step, recovery and deformation display."
+    },
+    "human_mouse_actions": {
+      "const": "not_claimed"
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schema_version",
+    "design_id",
+    "analysis_id",
+    "run_id",
+    "spec_sha256",
+    "operator",
+    "status",
+    "gui_receipt_sha256",
+    "images",
+    "statement",
+    "human_mouse_actions",
+    "reviewed_at"
+  ],
+  "additionalProperties": false
+}

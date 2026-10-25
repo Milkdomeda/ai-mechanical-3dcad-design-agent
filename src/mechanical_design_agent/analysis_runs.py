@@ -54,7 +54,7 @@ def initial_run(request, request_sha):
 
 
 def change_run_unlocked(root, state, changes, *, code=None, message):
-    permitted = {'status', 'worker', 'cancel_requested', 'cancel_reason', 'attempt', 'numerical_status', 'criteria_status', 'applicability_status', 'completion_ref', 'attempt_ref', 'diagnostic'}
+    permitted = {'status', 'worker', 'cancel_requested', 'cancel_reason', 'attempt', 'numerical_status', 'criteria_status', 'applicability_status', 'completion_ref', 'attempt_ref', 'execution_ref', 'diagnostic'}
     if set(changes) - permitted:
         raise AnalysisError('ANALYSIS_RUN_IMMUTABLE', 'run input identity and history cannot be changed')
     if state['status'] in TERMINAL:
@@ -85,7 +85,7 @@ def synchronize_analysis(store, design_id, analysis_id, run):
     if state['active_run_id'] not in (None, run['run_id']):
         raise AnalysisError('ANALYSIS_BUSY', 'a different active run owns this analysis')
     terminal = run['status'] in TERMINAL
-    status = ('completed' if run['status'] == 'completed' else ('cancelled' if run['status'] == 'cancelled' else 'needs_attention')) if terminal else ('queued' if run['status'] == 'queued' else 'running')
+    status = ('completed' if run['status'] == 'completed' else ('cancelled' if run['status'] == 'cancelled' else 'needs_attention')) if terminal else ('queued' if run['status'] == 'queued' else 'awaiting_visual_review' if run['status']=='awaiting_visual_review' and run.get('execution_ref') is not None and run['worker'] is None else 'running')
     active = None if terminal else run['run_id']
     if state['active_run_id'] == active and state['status'] == status and state['latest_run_id'] == run['run_id']:
         return state
