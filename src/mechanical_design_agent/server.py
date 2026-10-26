@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import math
 import os
 from collections.abc import Callable
@@ -100,6 +101,8 @@ def create_mcp(
     knowledge_service_factory: Callable[[object], Any] | None = None,
     standard_part_service: Any | None = None,
     standard_part_service_factory: Callable[[object], Any] | None = None,
+    analysis_service: Any | None = None,
+    analysis_service_factory: Callable[..., Any] | None = None,
     tool_profile: str | None = None,
 ) -> FastMCP:
     bootstrap_runtime = runtime or BootstrapRuntime.from_process(
@@ -113,6 +116,7 @@ def create_mcp(
     local_lessons = lesson_workflow
     local_admin = knowledge_service
     local_parts = standard_part_service
+    local_analysis = analysis_service
     lock = Lock()
 
     def get_design() -> Any:
@@ -196,6 +200,80 @@ def create_mcp(
                 factory = standard_part_service_factory or StandardPartRegistry
                 local_parts = factory(settings)
         return local_parts
+
+    def get_analysis() -> Any:
+        nonlocal local_analysis
+        if local_analysis is None:
+            with lock:
+                if local_analysis is None:
+                    from .analysis_service import AnalysisService
+                    factory = analysis_service_factory or AnalysisService
+                    local_analysis = factory(bootstrap_runtime, load_context)
+        return local_analysis
+
+    async def analysis_call(operation: Callable[[], object]) -> str:
+        from .analysis_types import AnalysisError
+        try:
+            return _json(await asyncio.to_thread(operation))
+        except AnalysisError as exc:
+            raise ToolError(_json(exc.as_dict())) from None
+        except DiagnosticGateError as exc:
+            raise ToolError(_json(exc.response)) from None
+        except Exception:
+            raise ToolError(_json({'status': 'blocked', 'code': 'ANALYSIS_INTERNAL_ERROR', 'message': 'Analysis failed; inspect local diagnostics without submitting secret configuration.'})) from None
+
+    @registrar.tool()
+    async def analysis_capabilities(design_id: str = "") -> str:
+        """Inspect isolated FEA setup without starting FreeCAD or local services."""
+        return await analysis_call(lambda: get_analysis().capabilities(design_id=design_id or None))
+
+    @registrar.tool()
+    async def analysis_prepare(design_id: str, analysis_id: str, request_json: str, expected_revision: int = -1) -> str:
+        """Freeze explicit physical inputs and produce a source-bound native preview for review."""
+        def execute():
+            from .analysis_protocol import parse_record
+            request = parse_record(request_json, schema_name='prepare-request')
+            return get_analysis().prepare(design_id=design_id, analysis_id=analysis_id, request=request, expected_revision=None if expected_revision == -1 else expected_revision)
+        return await analysis_call(execute)
+
+    @registrar.tool()
+    async def analysis_approve(design_id: str, analysis_id: str, spec_sha256: str, decision_text: str, expected_revision: int) -> str:
+        """Record the human's decision for the exact physical specification and native preview."""
+        return await analysis_call(lambda: get_analysis().approve(design_id=design_id, analysis_id=analysis_id, spec_sha256=spec_sha256, decision_text=decision_text, expected_revision=expected_revision))
+
+    @registrar.tool()
+    async def analysis_run(design_id: str, analysis_id: str, spec_sha256: str, idempotency_key: str, expected_revision: int, retry_run_id: str = "") -> str:
+        """Queue the approved specification for deterministic bounded execution."""
+        return await analysis_call(lambda: get_analysis().run(design_id=design_id, analysis_id=analysis_id, spec_sha256=spec_sha256, idempotency_key=idempotency_key, expected_revision=expected_revision, retry_run_id=retry_run_id or None))
+
+    @registrar.tool()
+    async def analysis_status(design_id: str, analysis_id: str, run_id: str = "", cursor: int = 0) -> str:
+        """Read durable analysis progress without starting or repairing workers."""
+        return await analysis_call(lambda: get_analysis().status(design_id=design_id, analysis_id=analysis_id, run_id=run_id or None, cursor=cursor))
+
+    @registrar.tool()
+    async def analysis_cancel(design_id: str, analysis_id: str, run_id: str, reason: str, expected_revision: int) -> str:
+        """Request cancellation of only the owned analysis run."""
+        return await analysis_call(lambda: get_analysis().cancel(design_id=design_id, analysis_id=analysis_id, run_id=run_id, reason=reason, expected_revision=expected_revision))
+
+    @registrar.tool()
+    async def analysis_report(design_id: str, analysis_id: str, run_id: str, action: str = "get", evidence_refs_json: str = "[]", expected_revision: int = -1) -> str:
+        """Read reports, or finalize after actually viewing every exact registered PNG; never upload solver results."""
+        def execute():
+            from .analysis_protocol import parse_json_value
+            from .analysis_types import AnalysisError
+            if action not in {'get', 'finalize_visual', 'rebuild_figures'}:
+                raise AnalysisError('ANALYSIS_REPORT_ACTION_INVALID', 'report action must be get, rebuild_figures or finalize_visual')
+            refs = parse_json_value(evidence_refs_json, expected=list)
+            if any(type(item) is not str for item in refs):
+                raise AnalysisError('ANALYSIS_VISUAL_UNVERIFIED', 'evidence references must be registered relative path strings')
+            return get_analysis().report(design_id=design_id, analysis_id=analysis_id, run_id=run_id, action=action, evidence_refs=refs, expected_revision=None if expected_revision == -1 else expected_revision)
+        return await analysis_call(execute)
+
+    @registrar.tool()
+    async def analysis_confirm(design_id: str, analysis_id: str, run_id: str, manifest_sha256: str, decision_text: str, expected_revision: int) -> str:
+        """Record a separate human acceptance of the exact current delivery; never certify engineering safety."""
+        return await analysis_call(lambda: get_analysis().confirm(design_id=design_id, analysis_id=analysis_id, run_id=run_id, manifest_sha256=manifest_sha256, decision_text=decision_text, expected_revision=expected_revision))
 
     @registrar.tool()
     def design_system_status() -> str:

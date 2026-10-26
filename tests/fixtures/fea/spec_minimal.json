@@ -1,0 +1,39 @@
+{
+  "schema_version": "AnalysisSpec/v1",
+  "design_id": "synthetic-design",
+  "analysis_id": "axial",
+  "revision": 1,
+  "status": "draft",
+  "analysis_type": "linear_static",
+  "conclusion_level": "screening_only",
+  "unit_system": "N-mm-s-tonne",
+  "source": null,
+  "material": {
+    "name": "Synthetic elastic material",
+    "youngs_modulus": {
+      "value": "1000.0",
+      "unit": "MPa"
+    },
+    "poisson_ratio": {
+      "value": ".3",
+      "unit": "1"
+    },
+    "density": null,
+    "evidence": [
+      "Synthetic software benchmark; not a production material."
+    ]
+  },
+  "cases": [],
+  "mesh": null,
+  "validation": null,
+  "tool_constraints": null,
+  "budget": null,
+  "assumptions": [
+    "Synthetic fixture for protocol tests."
+  ],
+  "unresolved": [
+    "Geometry, load, policy and budget are not yet bound."
+  ],
+  "criteria": [],
+  "frame_mass": null
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mechanical Static FEA"
+  short_description: "Review, run, and inspect governed FreeCAD static analyses"
+  default_prompt: "Use $mechanical-fea to prepare and inspect a source-bound FreeCAD static analysis."
+policy:
+  allow_implicit_invocation: true

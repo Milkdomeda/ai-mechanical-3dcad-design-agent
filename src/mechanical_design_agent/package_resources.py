@@ -26,6 +26,12 @@ def freecad_scripts_directory() -> Iterator[Path]:
 
 
 @contextmanager
+def analysis_resources_directory() -> Iterator[Path]:
+    with _resource_directory("analysis") as root:
+        yield root
+
+
+@contextmanager
 def standard_part_provider_config() -> Iterator[Path]:
     with _resource_directory("config") as root:
         yield root / "standard_part_providers.json"

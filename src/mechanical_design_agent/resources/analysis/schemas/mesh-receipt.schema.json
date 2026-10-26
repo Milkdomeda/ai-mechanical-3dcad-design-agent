@@ -1,0 +1,229 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisMeshReceipt/v1"
+    },
+    "geometry_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "region_bindings_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "level": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "element_type": {
+      "const": "C3D10"
+    },
+    "node_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "element_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "disk_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "checked_elements": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_det_mm3": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_scaled_jacobian": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sample_points_per_element": {
+          "const": 15
+        },
+        "bernstein_scaled_lower_bound": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bound_subdivision_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "thickness_rays": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+              },
+              "covered_mm": {
+                "type": "number",
+                "minimum": 0
+              },
+              "elements": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "id",
+              "covered_mm",
+              "elements"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "checked_elements",
+        "min_det_mm3",
+        "min_scaled_jacobian",
+        "sample_points_per_element",
+        "bernstein_scaled_lower_bound",
+        "bound_subdivision_depth",
+        "thickness_rays"
+      ],
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "mapping": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "native_mesh": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "gmsh_geometry": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "level": {
+          "type": "object",
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\:\\x00]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "relative_path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "data",
+        "mapping",
+        "native_mesh",
+        "gmsh_geometry",
+        "level"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "geometry_sha256",
+    "region_bindings_sha256",
+    "level",
+    "element_type",
+    "node_count",
+    "element_count",
+    "disk_bytes",
+    "quality",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:mesh-receipt:v1"
+}

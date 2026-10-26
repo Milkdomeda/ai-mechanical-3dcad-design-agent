@@ -1,0 +1,84 @@
+import os
+from types import SimpleNamespace
+import sys
+import pytest
+
+
+def test_startup_receipt_is_invisible_until_complete_and_never_overwrites(tmp_path,monkeypatch):
+    import json
+    import threading
+    import fea_gui_identity as identity
+    target=tmp_path/'startup 中文.json';writing=threading.Event();resume=threading.Event();errors=[]
+    def paused_dump(value,stream,**kwargs):
+        stream.write('{"request_id":');stream.flush();writing.set()
+        assert resume.wait(5)
+        stream.write('"ours"}')
+    monkeypatch.setattr(identity.json,'dump',paused_dump)
+    def produce():
+        try:identity.write_json(target,{'request_id':'ours'})
+        except BaseException as exc:errors.append(exc)
+    worker=threading.Thread(target=produce);worker.start()
+    try:
+        assert writing.wait(5)
+        assert not target.exists(),'Polling readers can observe an incomplete native startup receipt'
+    finally:
+        resume.set();worker.join(5)
+    assert not worker.is_alive() and errors==[]
+    assert json.loads(target.read_text(encoding='utf-8'))=={'request_id':'ours'}
+    original=target.read_bytes()
+    with pytest.raises(FileExistsError):identity.write_json(target,{'request_id':'changed'})
+    assert target.read_bytes()==original
+    assert sorted(p.name for p in tmp_path.iterdir())==[target.name]
+
+
+def test_failed_native_receipt_serialization_publishes_nothing(tmp_path):
+    from fea_gui_identity import write_json
+    target=tmp_path/'startup.json'
+    with pytest.raises(ValueError):write_json(target,{'invalid':float('nan')})
+    assert list(tmp_path.iterdir())==[]
+
+
+@pytest.mark.parametrize('wrong_temp',[False,True])
+def test_identity_collects_only_current_context_and_requires_actual_private_temp(tmp_path,monkeypatch,wrong_temp):
+    import fea_r1_runtime
+    from fea_gui_identity import collect
+    home=tmp_path/'home';home.mkdir();scratch=tmp_path/'temp';scratch.mkdir()
+    module=SimpleNamespace()
+    app=SimpleNamespace(listDocuments=lambda:{},getUserAppDataDir=lambda:str(home),getTempPath=lambda:str(home if wrong_temp else scratch))
+    monkeypatch.setitem(sys.modules,'FreeCAD',app)
+    monkeypatch.setitem(sys.modules,'femmesh',SimpleNamespace(meshtools=module))
+    monkeypatch.setattr(fea_r1_runtime,'loaded_module_receipt',lambda expected,actual:{'module_sha256':'a'*64})
+    monkeypatch.setattr(fea_r1_runtime,'native_identity',lambda:{'app_version':['1','1','3']})
+    request={'session_id':'ours','case_id':None,'home':str(home),'scratch':str(scratch),'native_expected':{}}
+    if wrong_temp:
+        with pytest.raises(ValueError,match='directory'):collect(request)
+    else:
+        value=collect(request)
+        assert value['documents']==[] and value['pid']==os.getpid()
+        assert value['session_id']=='ours' and value['startup_verified'] is True
+
+
+def test_startup_identity_does_not_accept_an_already_open_document(tmp_path,monkeypatch):
+    import fea_r1_runtime
+    from fea_gui_identity import collect
+    app=SimpleNamespace(listDocuments=lambda:{'unexpected':object()},getUserAppDataDir=lambda:str(tmp_path),getTempPath=lambda:str(tmp_path))
+    monkeypatch.setitem(sys.modules,'FreeCAD',app)
+    monkeypatch.setitem(sys.modules,'femmesh',SimpleNamespace(meshtools=object()))
+    monkeypatch.setattr(fea_r1_runtime,'loaded_module_receipt',lambda expected,actual:{'module_sha256':'a'*64})
+    monkeypatch.setattr(fea_r1_runtime,'native_identity',lambda:{})
+    with pytest.raises(ValueError,match='empty'):collect({'session_id':'ours','case_id':None,'home':str(tmp_path),'scratch':str(tmp_path),'native_expected':{}})
+
+
+def test_actual_console_entry_runs_without_host_product_or_site_packages(tmp_path):
+    import json
+    from pathlib import Path
+    import subprocess
+    tests=Path(__file__).resolve().parent;worker=tests/'fea_gui_identity.py'
+    request=tmp_path/'request.json';response=tmp_path/'response.json'
+    request.write_text(json.dumps({'session_id':'isolated','response_path':str(response)}))
+    statement=f"import sys,runpy;sys.dont_write_bytecode=True;sys.path.insert(0,{str(tests)!r});sys.argv=[{str(worker)!r},{str(request)!r}];runpy.run_path({str(worker)!r},run_name='__main__')"
+    result=subprocess.run([sys.executable,'-I','-S','-B','-c',statement],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    value=json.loads(response.read_text())
+    assert value['session_id']=='isolated' and 'FreeCAD' in value['error']
+    assert 'mechanical_design_agent' not in value['error']

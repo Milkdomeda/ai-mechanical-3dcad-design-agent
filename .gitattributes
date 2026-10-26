@@ -1,0 +1,5 @@
+# Native source patch context and verbatim license text contain intentional
+# whitespace; normalize line endings while preserving those upstream bytes.
+runtime-patches/** text eol=lf
+runtime-patches/**/*.patch whitespace=-blank-at-eol
+runtime-patches/**/COPYING.LESSER whitespace=-blank-at-eol

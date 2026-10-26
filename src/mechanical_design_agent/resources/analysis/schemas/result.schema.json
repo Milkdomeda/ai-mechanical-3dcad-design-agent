@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:result:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisResult/v1"
+    },
+    "design_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "analysis_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "run_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "spec_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "status": {
+      "enum": [
+        "validated",
+        "invalid"
+      ]
+    },
+    "numerical_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "criteria_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive",
+        "not_evaluated"
+      ]
+    },
+    "applicability_status": {
+      "enum": [
+        "within_declared_scope",
+        "limited_screening",
+        "outside_scope"
+      ]
+    },
+    "currentness": {
+      "enum": [
+        "current",
+        "source_changed",
+        "spec_changed"
+      ]
+    },
+    "snapshot_integrity": {
+      "const": "passed"
+    },
+    "spec_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "attempt_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "gui_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "visual_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "conclusion_level": {
+      "enum": [
+        "screening_only",
+        "criteria_evaluated"
+      ]
+    },
+    "engineering_certification": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "design_id",
+    "analysis_id",
+    "run_id",
+    "spec_sha256",
+    "status",
+    "numerical_status",
+    "criteria_status",
+    "applicability_status",
+    "currentness",
+    "snapshot_integrity",
+    "spec_ref",
+    "attempt_ref",
+    "gui_ref",
+    "visual_ref",
+    "conclusion_level",
+    "engineering_certification"
+  ],
+  "additionalProperties": false
+}

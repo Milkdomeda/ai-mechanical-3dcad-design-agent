@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 - 2026-10-25
+
+- Add source-bound linear static FEA with explicit physical review, deterministic C3D10 meshes, native FEM input, complete fields, equilibrium and convergence gates, and separate human report acceptance.
+- Add isolated reviewed R1/R2 runtime preparation, installed-package qualification, a durable owned supervisor and read-only progress polling on macOS and Windows.
+- Rebuild standard native GUI results from safe geometry and validated fields, generate figures, publish portable immutable report bundles after actual visual inspection, and open a separate interactive result task without restoring persistent FEM files.
+- Add eight backward-compatible design MCP tools, shared CLI commands and a bundled mechanical-fea skill. No FreeCAD binaries, customer models or runtime evidence are distributed.
+
 ## 0.7.1 - 2026-09-01
 
 - Store immutable Design Lesson review cards under model-SHA-addressed paths so evidence from an earlier model revision cannot block a confirmed newer revision.

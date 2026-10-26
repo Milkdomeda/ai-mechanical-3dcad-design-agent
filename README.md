@@ -12,6 +12,8 @@ The package provides the `mechanical-design` CLI and
 reasoning, while an external FreeCAD GUI MCP performs interactive CAD work. The
 package does not embed a language model and does not replace engineering review.
 
+The development version also provides [source-bound static FEA](docs/FEA_STATIC_ANALYSIS.md): explicit physical review, deterministic native execution, displacement/stress figures, verified reports and a separate interactive result window. It uses a qualified isolated FreeCAD runtime and preserves the daily installation.
+
 ## Design process
 
 ```text

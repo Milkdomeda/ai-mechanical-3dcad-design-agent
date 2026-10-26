@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:acceptance:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisAcceptance/v1"
+    },
+    "design_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "analysis_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "run_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "manifest_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "actor_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/text"
+    },
+    "scope": {
+      "$ref": "urn:mechanical-design:analysis:run-request:v1#/properties/scope"
+    },
+    "decision_text": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/text"
+    },
+    "acceptance_state": {
+      "const": "APPROVE"
+    },
+    "accepted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "engineering_certification": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "design_id",
+    "analysis_id",
+    "run_id",
+    "manifest_sha256",
+    "actor_id",
+    "scope",
+    "decision_text",
+    "acceptance_state",
+    "accepted_at",
+    "engineering_certification"
+  ],
+  "additionalProperties": false
+}

@@ -22,6 +22,14 @@ DESIGN_TOOL_NAMES = frozenset(
         "standard_part_providers_get",
         "standard_part_sources_status",
         "standard_part_download_register",
+        "analysis_capabilities",
+        "analysis_prepare",
+        "analysis_approve",
+        "analysis_run",
+        "analysis_status",
+        "analysis_cancel",
+        "analysis_report",
+        "analysis_confirm",
     }
 )
 

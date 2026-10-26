@@ -1,9 +1,10 @@
 # Third-Party Notices
 
-AI Mechanical 3DCAD Design Agent project-owned source is licensed under Apache-2.0.
+AI Mechanical 3DCAD Design Agent project-owned source is licensed under Apache-2.0, except explicitly marked source-only native maintenance patches under their per-file licenses.
 Third-party components retain their original ownership and licenses; this index does not relicense them.
 Every listed component is separately installed or external and is not distributed by this project.
 External service and catalog terms apply independently and do not grant rights to downloaded CAD data.
+The distributed LGPL native source-only R1 face-force and R2 RF patches, their attribution and licenses are recorded in `src/mechanical_design_agent/resources/analysis/runtime-patches/faceforce-r1/` and `src/mechanical_design_agent/resources/analysis/runtime-patches/nodal-rf-r2/`; no FreeCAD binaries are bundled.
 
 ## Installed runtime dependencies
 
@@ -226,7 +227,7 @@ External service and catalog terms apply independently and do not grant rights t
 - Relationship: `installed_dependency`
 - Distribution: `not_distributed_by_project`
 - Scope: `runtime`
-- Purpose: Installed Python runtime dependency.
+- Purpose: Direct runtime schema validation for versioned FEA contracts; also required transitively by MCP.
 - Official source: https://pypi.org/project/jsonschema/4.26.0/
 - License or terms: https://pypi.org/project/jsonschema/4.26.0/
 - Evidence: https://files.pythonhosted.org/packages/b3/fc/e067678238fa451312d4c62bf6e6cf5ec56375422aee02f9cb5f909b3047/jsonschema-4.26.0.tar.gz

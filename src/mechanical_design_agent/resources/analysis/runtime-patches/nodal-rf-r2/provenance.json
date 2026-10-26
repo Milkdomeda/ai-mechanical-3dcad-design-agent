@@ -1,0 +1,30 @@
+{
+  "profile": "freecad-1.1.3-fem-faceforce-r1-nodal-rf-r2",
+  "base_profile": "freecad-1.1.3-fem-faceforce-r1",
+  "upstream_commit": "145529fe741292ff0b3977a01195bf0247425794",
+  "upstream_url": "https://github.com/FreeCAD/FreeCAD/blob/145529fe741292ff0b3977a01195bf0247425794/src/Mod/Fem/femsolver/calculix/write_step_output.py",
+  "target": "src/Mod/Fem/femsolver/calculix/write_step_output.py",
+  "original_lf_sha256": "f4a9c2e60671293de4c5781e02336121839c2dc6e4f59ea1037706be72ca4b1d",
+  "proposed_lf_sha256": "5f20da802c3e3f37161b0925194ad4952315f5d6887f334d2ecd2d588d5477c2",
+  "patch_sha256": "5b6bac5aab9ae6515e15d4b35149f6a312032eed8c9486da692b01b51c9c22df",
+  "license": "LGPL-2.0-or-later",
+  "changed_lines": 1,
+  "change": "fixed-constraint NODE PRINT RF: TOTALS=ONLY -> TOTALS=YES; retain total and add per-node RF",
+  "not_changed": [
+    "T6 integration",
+    "force distribution",
+    "stiffness",
+    "material",
+    "mesh",
+    "constraints",
+    "loads",
+    "solver",
+    "acceptance thresholds",
+    "displacement-constraint writer"
+  ],
+  "deployment": "Only a new separately hash-pinned runtime copy, never an existing installation or frozen R1 copy.",
+  "schema_version": "FreeCADNativePatch/v1",
+  "distribution": "Reviewed one-line source patch only; no FreeCAD binaries or project evidence.",
+  "upstream_attribution": "Copyright (c) 2021 Bernd Hahnebach and FreeCAD contributors",
+  "license_source_url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt"
+}

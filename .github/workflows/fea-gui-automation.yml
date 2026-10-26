@@ -1,0 +1,247 @@
+name: Native FEA GUI automation
+
+on:
+  push:
+    branches: [codex/fea-deployable-static]
+  workflow_dispatch:
+    inputs:
+      acceptance_scope:
+        description: Explicit acceptance group to repeat; pushes always run all groups
+        type: choice
+        required: true
+        default: all
+        options: [all, native, installed]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+        python_arch: [x64]
+        scope: ${{ fromJSON(inputs.acceptance_scope == 'native' && '["native"]' || inputs.acceptance_scope == 'installed' && '["installed"]' || '["installed","native"]') }}
+    runs-on: ${{ matrix.runner }}
+    # Additional independent product mesh/deck checks verify complete runtime
+    # inventories. Keep every native phase timeout and numerical gate intact.
+    timeout-minutes: 120
+    steps:
+      - name: Preserve reviewed native source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python_arch }}
+      - name: Prepare test environment and record actual platform
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.11.21
+          uv sync --frozen --group test --python 3.12
+          if ($LASTEXITCODE -ne 0) { throw 'Python environment setup failed' }
+          $platform = @{
+            runner_label = '${{ matrix.runner }}'
+            os_caption = (Get-CimInstance Win32_OperatingSystem).Caption
+            os_version = [Environment]::OSVersion.Version.ToString()
+            os_architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            powershell_process_architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+            python_architecture = '${{ matrix.python_arch }}'
+            freecad_archive_architecture = 'x64'
+            compatibility_scope = 'Exact recorded OS/CPU combination; ARM host uses x64 compatibility, not native ARM FreeCAD'
+            image_version = $env:ImageVersion
+          }
+          $platform | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'gui-platform.json')
+      - name: Prewarm clean-install tests and run complete offline suite
+        shell: pwsh
+        run: |
+          $cache = (uv cache dir | Out-String).Trim()
+          $env:UV_CACHE_DIR = $cache
+          "UV_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $primaryDrive = [IO.Path]::GetPathRoot([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+          $volume = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.FileSystem -eq 'NTFS' -and $_.DeviceID -ne $primaryDrive } | Select-Object -First 1
+          if (-not $volume) {
+            $letter = @('D','R','S','T','U','V','W','X','Y','Z') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
+            if (-not $letter) { throw 'No free test-volume drive letter' }
+            $vhd = Join-Path $env:RUNNER_TEMP 'fea-second-volume.vhdx'
+            if (Test-Path -LiteralPath $vhd) { throw 'Refuse to reuse an existing virtual disk' }
+            $diskScript = Join-Path $env:RUNNER_TEMP 'fea-create-test-volume.txt'
+            @"
+          create vdisk file="$vhd" maximum=512 type=expandable
+          select vdisk file="$vhd"
+          attach vdisk
+          create partition primary
+          format fs=ntfs quick label=FEA_TEST
+          assign letter=$letter
+          exit
+          "@ | Set-Content -Encoding ascii -LiteralPath $diskScript
+            diskpart /s $diskScript | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'Ephemeral second NTFS creation failed' }
+            "FEA_OWNED_TEST_VHD=$vhd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $volume = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.DeviceID -eq "${letter}:" -and $_.FileSystem -eq 'NTFS' } | Select-Object -First 1
+          }
+          if (-not $volume -or $volume.DeviceID -eq $primaryDrive) { throw 'A distinct fixed NTFS test volume is required' }
+          $second = Join-Path ($volume.DeviceID + '\') 'fea-second-ntfs'
+          New-Item -ItemType Directory -Force -Path $second | Out-Null
+          $env:MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT = $second
+          $dist = Join-Path $env:RUNNER_TEMP 'gui-build-prewarm'
+          $venv = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm'
+          $constraints = Join-Path $env:RUNNER_TEMP 'gui-constraints.txt'
+          uv build --wheel --sdist --out-dir $dist
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm build failed' }
+          uv export --frozen --group test --format requirements-txt --no-emit-project --no-hashes --output-file $constraints
+          uv venv --python 3.12 $venv
+          $python = Join-Path $venv 'Scripts/python.exe'
+          $wheel = Get-ChildItem -LiteralPath $dist -Filter '*.whl' | Select-Object -First 1
+          uv pip install --link-mode copy --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0
+          if ($LASTEXITCODE -ne 0) { throw 'Prewarm install failed' }
+          $env:UV_OFFLINE = '1'
+          uv run --offline --group test python -m pytest -q -rs --junitxml="$env:RUNNER_TEMP/gui-offline.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Offline regression failed' }
+          # A prior native run exposed an intermittent concurrent CAS failure.
+          # Preserve repeated fresh-process failures with full causal tracebacks;
+          # a single green rerun does not resolve that finding.
+          for ($attempt = 1; $attempt -le 8; $attempt++) {
+            uv run --offline --group test python -m pytest tests/test_windows_secure_fs.py::test_native_windows_concurrent_cas_publishers_converge_without_temporaries -q -rs --junitxml="$env:RUNNER_TEMP/gui-cas-$attempt.xml"
+            if ($LASTEXITCODE -ne 0) { throw "Native concurrent CAS failed on repetition $attempt" }
+          }
+      - name: Download and pin official FreeCAD 1.1.3 x64
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'FreeCAD.7z'
+          Invoke-WebRequest 'https://github.com/FreeCAD/FreeCAD/releases/download/1.1.3/FreeCAD_1.1.3-Windows-x86_64-py311.7z' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4') { throw 'Official archive digest mismatch' }
+          $tools = Join-Path $env:RUNNER_TEMP 'freecad-tools'
+          7z x $archive "-o$tools" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
+          uv run --offline --group test python scripts/fea_p0_config.py --root $tools --output "$env:RUNNER_TEMP/fea-config.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned tool discovery failed' }
+      - name: Install isolated runtime and qualify through installed wheel
+        if: matrix.scope == 'installed'
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
+          $workspace = Join-Path $env:RUNNER_TEMP 'Installed FEA workspace 中文'
+          $base = Get-Content -LiteralPath "$env:RUNNER_TEMP/fea-config.json" -Raw | ConvertFrom-Json
+          $source = Split-Path (Split-Path $base.tools.freecadcmd.path -Parent) -Parent
+          & $python -I -B -m mechanical_design_agent.cli init --workspace $workspace --actor fixture-engineer --organization synthetic-org --design-group synthetic-group
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable installed workspace initialization failed' }
+          & $python -I -B -m mechanical_design_agent.cli analysis setup --workspace $workspace --source-root $source --destination "$env:RUNNER_TEMP/freecad-r2-runtime" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --software-opengl
+          if ($LASTEXITCODE -ne 0) { throw 'Installed isolated R1/R2 setup failed' }
+          & $python -I -B -m mechanical_design_agent.cli analysis doctor --workspace $workspace --qualify
+          if ($LASTEXITCODE -ne 0) { throw 'Installed native qualification failed; preserve original thresholds' }
+          & $python -I -B -m mechanical_design_agent.cli analysis capabilities --workspace $workspace
+          if ($LASTEXITCODE -ne 0) { throw 'Installed qualification activation failed' }
+      - name: Verify installed default detached executor without checkout imports
+        if: matrix.scope == 'installed'
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'gui-install-prewarm/Scripts/python.exe'
+          $harness = Join-Path $env:RUNNER_TEMP 'fea_installed_e2e.py'
+          Copy-Item -LiteralPath tests/fea_installed_e2e.py -Destination $harness
+          Set-Location $env:RUNNER_TEMP
+          & $python -I -B $harness --workspace "$env:RUNNER_TEMP/Installed FEA workspace 中文"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed default executor failed; visual review remains separately pending' }
+      - name: Prepare isolated reviewed R1 runtime
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_r1_prepare.py --source-root "$env:RUNNER_TEMP/freecad-tools" --destination "$env:RUNNER_TEMP/freecad-r1-runtime" --base-config "$env:RUNNER_TEMP/fea-config.json" --source-archive-sha256 9c6959dc9c4dba64dd818a62447e3dfedb4221d776fb044b239d462f150bcec4
+          if ($LASTEXITCODE -ne 0) { throw 'R1 runtime preparation failed' }
+      - name: Run unchanged numerical P0 checks
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_acceptance.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --workspace "$env:RUNNER_TEMP/GUI numerical P0 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --phase p0 --automated-only
+          if ($LASTEXITCODE -ne 0) { throw 'Unchanged numerical P0 gates failed' }
+      - name: Materialize separate official bundled OpenGL GUI test environment
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_gui_environment.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/config.json" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --output "$env:RUNNER_TEMP/gui-environment.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Explicit native GUI environment preparation failed' }
+      - name: Verify product geometry mesh and FEM writer in one pinned transaction
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json"
+          $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py -q --basetemp "$env:RUNNER_TEMP/Product native 中文" --junitxml="$env:RUNNER_TEMP/product-native.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Product native geometry, C3D10 quality, physical regions or standard FEM writer checks failed' }
+          Remove-Item Env:FEA_GUI_LIVE_CONFIG
+          Remove-Item Env:FEA_GUI_LIVE_SCRATCH
+      - name: Run five native GUI cases and independent-process round trip
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_gui_automation.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/GUI automation 中文" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --gui-environment "$env:RUNNER_TEMP/gui-environment.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native GUI checks failed; do not substitute headless or mark a skip as passed' }
+          $report = Get-Content -LiteralPath "$env:RUNNER_TEMP/GUI automation 中文/gui-automation.json" -Raw | ConvertFrom-Json
+          if ($report.automated_status -ne 'passed' -or @($report.cases.PSObject.Properties).Count -ne 5) { throw 'Incomplete GUI matrix' }
+          if ($report.manual_gui_status -ne 'not_executed' -or $report.overall_p0_status -ne 'blocked') { throw 'Automation must preserve accurate evidence scope' }
+      - name: Prepare separately owned reviewed R2 output runtime
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          uv run --offline --group test python scripts/fea_r2_prepare.py --config "$env:RUNNER_TEMP/freecad-r1-runtime/gui-config.json" --workspace "$env:RUNNER_TEMP/R2 setup workspace" --native-scratch-root "$env:RUNNER_TEMP/gui-native-cache" --destination "$env:RUNNER_TEMP/freecad-r2-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Separate R2 runtime copy, signature or loaded-code verification failed' }
+      - name: Verify R2 fields balance and two-case three-level convergence
+        if: matrix.scope == 'native'
+        shell: pwsh
+        run: |
+          $env:FEA_GUI_LIVE_CONFIG = "$env:RUNNER_TEMP/freecad-r2-runtime/config.json"
+          $env:FEA_GUI_LIVE_SCRATCH = "$env:RUNNER_TEMP/gui-native-cache"
+          $env:FEA_PRODUCT_GUI_LIVE = '1'
+          uv run --offline --group test python -m pytest tests/test_analysis_geometry_live.py tests/test_analysis_mesh_live.py tests/test_analysis_deck_live.py tests/test_analysis_pipeline_live.py tests/test_analysis_gui_live.py -q --basetemp "$env:RUNNER_TEMP/Product R2 native 中文" --junitxml="$env:RUNNER_TEMP/product-r2-native.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'R2 native input, per-node RF, original total, full fields or balance failed' }
+          Remove-Item Env:FEA_GUI_LIVE_CONFIG
+          Remove-Item Env:FEA_GUI_LIVE_SCRATCH
+          Remove-Item Env:FEA_PRODUCT_GUI_LIVE
+      - name: Detach only the virtual disk created by this job
+        if: always() && env.FEA_OWNED_TEST_VHD != ''
+        shell: pwsh
+        run: |
+          $vhd = $env:FEA_OWNED_TEST_VHD
+          $expected = Join-Path $env:RUNNER_TEMP 'fea-second-volume.vhdx'
+          if ($vhd -ne $expected) { throw 'Owned virtual disk path mismatch' }
+          $script = Join-Path $env:RUNNER_TEMP 'fea-detach-test-volume.txt'
+          @"
+          select vdisk file="$vhd"
+          detach vdisk
+          exit
+          "@ | Set-Content -Encoding ascii -LiteralPath $script
+          diskpart /s $script | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Owned virtual disk detach failed' }
+      - name: Upload synthetic checks and platform/runtime identities
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fea-native-gui-${{ matrix.runner }}-${{ matrix.scope }}
+          path: |
+            ${{ runner.temp }}/GUI automation 中文/
+            ${{ runner.temp }}/GUI numerical P0 中文/
+            ${{ runner.temp }}/gui-platform.json
+            ${{ runner.temp }}/gui-environment.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-materialization/
+            ${{ runner.temp }}/gui-offline.xml
+            ${{ runner.temp }}/gui-cas-*.xml
+            ${{ runner.temp }}/Product R2 native 中文/
+            ${{ runner.temp }}/product-r2-native.xml
+            ${{ runner.temp }}/freecad-r2-runtime/config.json
+            ${{ runner.temp }}/freecad-r2-runtime/runtime-manifest.json
+            ${{ runner.temp }}/freecad-r2-runtime/identity/
+            ${{ runner.temp }}/freecad-r2-runtime/compile/
+            ${{ runner.temp }}/freecad-r2-runtime/version-*/
+            ${{ runner.temp }}/Installed FEA workspace 中文/
+            !${{ runner.temp }}/Installed FEA workspace 中文/data/analysis-scheduler/claims/**
+            ${{ runner.temp }}/Product native 中文/
+            ${{ runner.temp }}/product-native.xml
+            ${{ runner.temp }}/freecad-r1-runtime/config.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-config.json
+            ${{ runner.temp }}/freecad-r1-runtime/gui-runtime-manifest.json
+            ${{ runner.temp }}/freecad-r1-runtime/runtime-manifest.json
+            ${{ runner.temp }}/freecad-r1-runtime/identity/
+          retention-days: 14
+          include-hidden-files: true

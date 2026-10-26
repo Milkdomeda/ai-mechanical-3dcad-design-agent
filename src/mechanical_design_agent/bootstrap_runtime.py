@@ -289,5 +289,10 @@ class BootstrapRuntime:
             catalog_root=sources.effective_root,
         )
 
+    def analysis_settings(self) -> dict[str, object]:
+        from .analysis_configuration import load_analysis_configuration
+
+        return load_analysis_configuration(self)
+
 
 __all__ = ["BootstrapRuntime", "run_freecad_version"]

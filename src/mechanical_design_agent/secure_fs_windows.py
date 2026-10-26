@@ -7,7 +7,8 @@ import importlib
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Iterator
+import time
+from typing import Any, Callable, Iterator, TypeVar
 
 from .secure_fs import (
     FileIdentity,
@@ -435,6 +436,46 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                 )
             finally:
                 _close_handle(handle)
+
+
+@contextmanager
+def try_exclusive_file_lock(path: Path) -> Iterator[bool]:
+    api = load_win32_api()
+    lexical = _absolute(path)
+    with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
+        handle = None
+        acquired = False
+        overlapped = api.pywintypes.OVERLAPPED()
+        try:
+            handle = api.win32file.CreateFile(str(parent.path / lexical.name), getattr(api.win32con, 'GENERIC_READ', 0x80000000) | getattr(api.win32con, 'GENERIC_WRITE', 0x40000000), getattr(api.win32con, 'FILE_SHARE_READ', 1) | getattr(api.win32con, 'FILE_SHARE_WRITE', 2), None, getattr(api.win32con, 'OPEN_ALWAYS', 4), getattr(api.win32con, 'FILE_ATTRIBUTE_NORMAL', 0x80) | getattr(api.win32con, 'FILE_FLAG_OPEN_REPARSE_POINT', 0x00200000), None)
+            _, attributes = _handle_facts(handle, api)
+            _assert_not_reparse(attributes, api)
+            if _handle_link_count(handle, api) != 1:
+                raise SecureFilesystemError('MANAGED_FILE_CONFLICT', 'worker owner lock must have one regular file identity')
+            try:
+                flags = getattr(api.win32con, 'LOCKFILE_EXCLUSIVE_LOCK', 2) | getattr(api.win32con, 'LOCKFILE_FAIL_IMMEDIATELY', 1)
+                api.win32file.LockFileEx(handle, flags, 0xFFFFFFFF, 0xFFFFFFFF, overlapped)
+            except Exception as exc:
+                if getattr(exc, 'winerror', None) == 33:
+                    acquired = False
+                else:
+                    raise
+            else:
+                acquired = True
+        except SecureFilesystemError:
+            if handle is not None: _close_handle(handle)
+            raise
+        except Exception as exc:
+            if handle is not None: _close_handle(handle)
+            raise SecureFilesystemError('WINDOWS_PATH_IDENTITY_CHANGED', 'worker lock cannot be acquired safely') from exc
+        try:
+            yield acquired
+        finally:
+            if handle is not None:
+                try:
+                    if acquired: api.win32file.UnlockFileEx(handle, 0xFFFFFFFF, 0xFFFFFFFF, overlapped)
+                finally:
+                    _close_handle(handle)
 
 
 @contextmanager
@@ -1039,12 +1080,39 @@ def list_managed_directory(path: Path) -> tuple[ManagedDirectoryEntry, ...]:
                 _close_handle(handle)
 
 
+_CasOpen = TypeVar("_CasOpen")
+
+
+def _cas_open_after_publish(operation: Callable[[], _CasOpen]) -> _CasOpen:
+    """Wait briefly for another CAS publisher's MoveFileEx handle to close.
+
+    Windows can expose the new name before the publisher releases its rename
+    handle. Keep the original no-delete-share, reparse and identity checks;
+    only ERROR_SHARING_VIOLATION during a CAS open can be retried. Every attempt
+    must acquire and validate the handle normally. Permanent conflicts fail.
+    """
+    for attempt in range(8):
+        try:
+            return operation()
+        except SecureFilesystemError as exc:
+            if (
+                exc.code != "WINDOWS_PATH_IDENTITY_CHANGED"
+                or getattr(exc.__cause__, "winerror", None) != 32
+                or attempt == 7
+            ):
+                raise
+            time.sleep(min(0.01 * 2**attempt, 0.05))
+    raise AssertionError("unreachable CAS retry state")
+
+
 def verify_cas_file(path: Path, expected_sha256: str) -> tuple[str, int]:
     api = load_win32_api()
     lexical = _absolute(path)
     with _pinned_path(lexical.parent, allow_missing_leaf=False) as parent:
         target = parent.path / lexical.name
-        handle, identity, attributes = _open_regular_handle(target, api)
+        handle, identity, attributes = _cas_open_after_publish(
+            lambda: _open_regular_handle(target, api)
+        )
         try:
             if not attributes & getattr(
                 api.win32con, "FILE_ATTRIBUTE_READONLY", 0x1
@@ -1115,10 +1183,8 @@ def ingest_cas_file(
                 )
                 replace = False
                 if target.exists():
-                    expected_target, target_attributes = _entry_facts(
-                        target,
-                        api,
-                        directory=False,
+                    expected_target, target_attributes = _cas_open_after_publish(
+                        lambda: _entry_facts(target, api, directory=False)
                     )
                     _assert_not_reparse(target_attributes, api)
                     readonly = getattr(

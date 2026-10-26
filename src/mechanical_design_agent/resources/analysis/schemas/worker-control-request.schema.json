@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:worker-control-request:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisWorkerControlRequest/v1"
+    },
+    "body": {
+      "type": "object",
+      "properties": {
+        "worker_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_ns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "enum": [
+            "identity",
+            "cancel"
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "worker_uuid",
+        "challenge",
+        "pid",
+        "created_ns",
+        "action",
+        "run_id"
+      ],
+      "additionalProperties": false
+    },
+    "mac": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "body",
+    "mac"
+  ],
+  "additionalProperties": false
+}

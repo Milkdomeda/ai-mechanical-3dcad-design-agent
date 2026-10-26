@@ -1,0 +1,101 @@
+"""Windows: suspended creation, worker-owned kill-on-close Job Object."""
+from __future__ import annotations
+
+import os
+import subprocess
+
+
+class Child:
+    def __init__(self, process, pid, job):
+        self.process = process
+        self.pid = pid
+        self.job = job
+
+    def poll(self):
+        import win32event
+        import win32process
+        if win32event.WaitForSingleObject(self.process, 0) == 258:
+            return None
+        return win32process.GetExitCodeProcess(self.process)
+
+    def terminate(self):
+        import win32event
+        import win32job
+        import win32process
+        win32job.TerminateJobObject(self.job, 1)
+        if win32event.WaitForSingleObject(self.process, 4000) == 258:
+            raise RuntimeError("Windows owned job did not terminate")
+        return win32process.GetExitCodeProcess(self.process)
+
+    def close(self):
+        import win32api
+        self.job.Close()
+        win32api.CloseHandle(self.process)
+
+    def memory_bytes(self):
+        import win32job
+        # Windows reports peak committed bytes for the owned Job. This is
+        # explicitly recorded as a different observation from POSIX RSS.
+        return int(win32job.QueryInformationJobObject(self.job,win32job.JobObjectExtendedLimitInformation)['PeakJobMemoryUsed'])
+
+    def owns_pid(self,pid):
+        import pywintypes
+        import win32api
+        import win32job
+        # Query membership in this exact living Job, never attach by PID.
+        # https://learn.microsoft.com/windows/win32/api/jobapi/nf-jobapi-isprocessinjob
+        try:handle=win32api.OpenProcess(0x1000,False,pid)
+        except pywintypes.error as exc:
+            if exc.winerror in (5,87,1168):return False
+            raise
+        try:return self.poll() is None and bool(win32job.IsProcessInJob(handle,self.job))
+        finally:handle.Close()
+
+
+def current_memory_bytes():
+    import win32api
+    import win32process
+    return int(win32process.GetProcessMemoryInfo(win32api.GetCurrentProcess())['WorkingSetSize'])
+
+
+def start(request, token, stdout, stderr):
+    import _winapi
+    import msvcrt
+    import win32api
+    import win32con
+    import win32job
+    import win32process
+    job = win32job.CreateJobObject(None, "")
+    limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+    limits["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
+    process = None
+    thread = None
+    null = open(os.devnull, "rb")
+    streams = [null, stdout, stderr]
+    handles = [msvcrt.get_osfhandle(stream.fileno()) for stream in streams]
+    try:
+        for handle in handles:
+            os.set_handle_inheritable(handle, True)
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= win32con.STARTF_USESTDHANDLES
+        startup.hStdInput, startup.hStdOutput, startup.hStdError = handles
+        startup.lpAttributeList = {"handle_list": handles}
+        # CPython's Windows adapter supplies STARTUPINFOEX and a handle allowlist.
+        # Keep the primary thread suspended until the worker-owned Job accepts it.
+        process, thread, pid, _ = _winapi.CreateProcess(None, subprocess.list2cmdline(request.argv), None, None, True, win32process.CREATE_SUSPENDED | win32process.CREATE_NEW_PROCESS_GROUP | win32process.CREATE_UNICODE_ENVIRONMENT, dict(request.env), str(request.cwd), startup)
+        win32job.AssignProcessToJobObject(job, process)
+        win32process.ResumeThread(thread)
+        return Child(process, pid, job)
+    except BaseException:
+        if process is not None:
+            win32process.TerminateProcess(process, 1)
+            win32api.CloseHandle(process)
+        job.Close()
+        raise
+    finally:
+        if thread is not None:
+            win32api.CloseHandle(thread)
+        for handle in handles:
+            os.set_handle_inheritable(handle, False)
+        null.close()

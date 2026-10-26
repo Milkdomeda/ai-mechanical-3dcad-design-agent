@@ -9,6 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1] / ".agents" / "skills"
 EXPECTED = {
+    "mechanical-fea",
     "mechanical-design",
     "freecad-model-validation",
     "freecad-standard-parts",

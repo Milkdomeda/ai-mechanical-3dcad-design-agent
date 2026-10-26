@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:region-bindings:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisRegionBindings/v1"
+    },
+    "geometry_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:mechanical-design:analysis:region:v1"
+      },
+      "minItems": 1,
+      "maxItems": 128
+    },
+    "bindings_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "geometry_sha256",
+    "source_sha256",
+    "bindings",
+    "bindings_sha256"
+  ],
+  "additionalProperties": false
+}

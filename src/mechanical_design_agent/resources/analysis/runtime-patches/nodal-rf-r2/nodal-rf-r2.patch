@@ -1,0 +1,11 @@
+--- a/src/Mod/Fem/femsolver/calculix/write_step_output.py
++++ b/src/Mod/Fem/femsolver/calculix/write_step_output.py
+@@ -71,7 +71,7 @@
+             f.write("** reaction forces for Constraint fixed\n")
+             for femobj in ccxwriter.member.cons_fixed:
+                 # femobj --> dict, FreeCAD document object is femobj["Object"]
+-                f.write("*NODE PRINT, NSET={}, TOTALS=ONLY\n".format(femobj["Object"].Name))
++                f.write("*NODE PRINT, NSET={}, TOTALS=YES\n".format(femobj["Object"].Name))
+                 f.write("RF\n")
+         if ccxwriter.member.cons_displacement:
+             # reaction forces for Constraint displacement constraining translation

@@ -358,6 +358,7 @@ skills automatically:
 - [`mechanical-design`](../.agents/skills/mechanical-design/SKILL.md)
 - [`freecad-standard-parts`](../.agents/skills/freecad-standard-parts/SKILL.md)
 - [`freecad-model-validation`](../.agents/skills/freecad-model-validation/SKILL.md)
+- [`mechanical-fea`](../.agents/skills/mechanical-fea/SKILL.md)
 
 OpenCode natively discovers `.agents/skills/<name>/SKILL.md`; do not duplicate
 them under `.opencode/skills`. Do not run `/init` over this repository unless

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:geometry-request:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisGeometryRequest/v1"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "included_object": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+    },
+    "excluded_objects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "uniqueItems": true,
+      "maxItems": 1024
+    },
+    "partitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "axis": {
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ]
+          },
+          "coordinate": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+              },
+              "unit": {
+                "const": "mm"
+              },
+              "input": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+                  },
+                  "unit": {
+                    "enum": [
+                      "mm",
+                      "m",
+                      "cm",
+                      "um",
+                      "mm^2",
+                      "m^2",
+                      "mm^3",
+                      "m^3",
+                      "tonne",
+                      "kg",
+                      "g",
+                      "s",
+                      "N",
+                      "kN",
+                      "MPa",
+                      "N/mm^2",
+                      "Pa",
+                      "GPa",
+                      "tonne/mm^3",
+                      "kg/m^3",
+                      "g/cm^3",
+                      "mm/s^2",
+                      "m/s^2",
+                      "N*mm",
+                      "N*m",
+                      "J",
+                      "1"
+                    ]
+                  }
+                },
+                "required": [
+                  "value",
+                  "unit"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "axis",
+          "coordinate"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 16
+    },
+    "volume_tolerance": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+        },
+        "unit": {
+          "const": "mm^3"
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+            },
+            "unit": {
+              "enum": [
+                "mm",
+                "m",
+                "cm",
+                "um",
+                "mm^2",
+                "m^2",
+                "mm^3",
+                "m^3",
+                "tonne",
+                "kg",
+                "g",
+                "s",
+                "N",
+                "kN",
+                "MPa",
+                "N/mm^2",
+                "Pa",
+                "GPa",
+                "tonne/mm^3",
+                "kg/m^3",
+                "g/cm^3",
+                "mm/s^2",
+                "m/s^2",
+                "N*mm",
+                "N*m",
+                "J",
+                "1"
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "unit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_sha256",
+    "included_object",
+    "excluded_objects",
+    "partitions",
+    "volume_tolerance"
+  ],
+  "additionalProperties": false
+}

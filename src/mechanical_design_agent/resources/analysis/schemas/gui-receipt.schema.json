@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mechanical-design:analysis:gui-receipt:v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "AnalysisGuiReceipt/v1"
+    },
+    "design_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "analysis_id": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "spec_sha256": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/sha256"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "kind": {
+      "enum": [
+        "preview",
+        "final_result"
+      ]
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed"
+      ]
+    },
+    "request_ref": {
+      "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+    },
+    "cases": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "properties": {
+          "case_id": {
+            "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/id"
+          },
+          "evidence_ref": {
+            "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+          }
+        },
+        "required": [
+          "case_id",
+          "evidence_ref"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "preview_ref": {
+      "anyOf": [
+        {
+          "$ref": "urn:mechanical-design:analysis:common:v1#/$defs/artifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "design_id",
+    "analysis_id",
+    "run_id",
+    "spec_sha256",
+    "request_id",
+    "kind",
+    "status",
+    "request_ref",
+    "cases",
+    "preview_ref"
+  ],
+  "additionalProperties": false
+}

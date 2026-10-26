@@ -35,15 +35,26 @@ CAD_OR_REPORT_SUFFIXES = {
     ".pdf",
 }
 PRIVATE_PATH_PARTS = {"designs", "output", "knowledge", "vendor", ".env" + ".local"}
-EXPECTED_PUBLIC_CI = (".github/workflows/windows.yml",)
+EXPECTED_PUBLIC_CI = ('.github/workflows/windows.yml', '.github/workflows/fea-gui-automation.yml', '.github/workflows/fea-p0-paths.yml', '.github/workflows/fea-p0-r1.yml', '.github/workflows/fea-p0.yml')
 EXPECTED_PUBLIC_SCRIPTS = (
-    "scripts/windows_database_deployment_acceptance.ps1",
-    "scripts/windows_release_acceptance.ps1",
+    'scripts/windows_database_deployment_acceptance.ps1',
+    'scripts/windows_release_acceptance.ps1',
+    'scripts/fea_acceptance.py',
+    'scripts/fea_gui_acceptance.py',
+    'scripts/fea_gui_automation.py',
+    'scripts/fea_gui_environment.py',
+    'scripts/fea_live.json.example',
+    'scripts/fea_p0_config.py',
+    'scripts/fea_path_matrix.py',
+    'scripts/fea_r1_acceptance.py',
+    'scripts/fea_r1_prepare.py',
+    'scripts/fea_r2_prepare.py',
 )
 EXPECTED_PROJECT_SKILL_SOURCE_TREES = (
     ".agents/skills/freecad-model-validation",
     ".agents/skills/freecad-standard-parts",
     ".agents/skills/mechanical-design",
+    ".agents/skills/mechanical-fea",
 )
 REQUIRED_DATABASE_DEPLOYMENT_PUBLIC_TESTS = {
     "tests/database_deployment_helpers.py",
@@ -96,6 +107,7 @@ def test_manifest_authorizes_every_public_file_and_is_self_scanned() -> None:
     assert manifest.source_trees == (
         *EXPECTED_PROJECT_SKILL_SOURCE_TREES,
         "examples/product_families",
+        "runtime-patches/freecad-1.1.3-faceforce-r1",
         "src/mechanical_design_agent",
     )
     assert manifest.public_ci == EXPECTED_PUBLIC_CI
@@ -164,6 +176,16 @@ def test_manifest_explicitly_excludes_private_development_content() -> None:
         "tests/test_runtime_hardcode_packaging.py",
     ):
         assert path in excluded
+
+
+def test_git_tracked_tree_matches_the_public_release_allowlist() -> None:
+    manifest = load_public_repository_manifest(PROJECT_ROOT)
+    allowed = {path.as_posix() for path in iter_public_repository_files(PROJECT_ROOT, manifest)}
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=PROJECT_ROOT, check=True,
+        capture_output=True, text=True,
+    )
+    assert set(tracked.stdout.rstrip("\0").split("\0")) == allowed
 
 
 def test_repository_ignores_runtime_design_and_release_artifacts() -> None:
@@ -286,12 +308,12 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume",
         "Prewarm the pinned build and runtime dependencies",
         "uv export --frozen --group test",
-        "uv pip install --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0",
+        "uv pip install --link-mode copy --python $python --constraint $constraints $wheel.FullName pytest==9.1.1 jsonschema==4.26.0",
         "UV_OFFLINE",
         "pytest -q",
         "--junitxml=windows-public-offline.xml",
         "--junitxml=windows-public-boundary.xml",
-        "$expectedSkipped = 18",
+        "$expectedSkipped = 74",
         "$expectedSkipped = 3",
         "$failed -ne 0 -or $skipped -ne $expectedSkipped",
         "uv build --offline",
@@ -309,6 +331,33 @@ def test_public_windows_workflow_is_immutable_and_noninteractive() -> None:
         "tests/test_private_public_release_gate.py",
     ):
         assert forbidden not in workflow
+
+
+def test_public_windows_release_uses_real_second_ntfs_and_owned_cleanup() -> None:
+    import yaml
+
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["public-windows"]["steps"]
+    setup = next(step["run"] for step in steps if step.get("name") == "Prepare isolated Windows runner roots")
+    for required in (
+        "DriveType=3",
+        "$_.FileSystem -eq 'NTFS'",
+        "$_.DeviceID -ne $primaryDrive",
+        "create vdisk",
+        "format fs=ntfs",
+        "$volume.DeviceID -eq $primaryDrive",
+        "MECH_DESIGN_WINDOWS_SECOND_NTFS_ROOT=$secondVolume",
+        "FEA_OWNED_TEST_VHD=$vhd",
+    ):
+        assert required in setup
+    cleanup = next(step for step in steps if step.get("name") == "Detach only the virtual disk created by this job")
+    assert cleanup["if"] == "always() && env.FEA_OWNED_TEST_VHD != ''"
+    assert "if ($vhd -ne $expected)" in cleanup["run"]
+    assert "detach vdisk" in cleanup["run"]
+    assert "Owned virtual disk detach failed" in cleanup["run"]
+    assert not any(step.get("continue-on-error") for step in steps)
 
 
 def test_github_actions_have_exact_build_inventory_entries() -> None:
