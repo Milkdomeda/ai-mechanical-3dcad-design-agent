@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 - 2026-11-04
+
+- Fix Windows FreeCAD startup by translating local extended paths at the native process boundary while preserving canonical filesystem identities and executable SHA-256 checks.
+- Share a bounded FreeCAD runtime environment between version probes and CAD execution, including the selected Windows installation's runtime directories and system directories without inheriting unrelated Python, Qt, or credential variables.
+- Add installed-wheel Windows MCP regression coverage for readiness, new design creation, resume, FCStd reopening, and STEP normalization with spaces, Unicode, extended paths, and two fixed NTFS volumes.
+
 ## 0.8.0 - 2026-10-25
 
 - Add source-bound linear static FEA with explicit physical review, deterministic C3D10 meshes, native FEM input, complete fields, equilibrium and convergence gates, and separate human report acceptance.

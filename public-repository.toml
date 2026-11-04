@@ -64,6 +64,8 @@ public_tests = [
   "tests/test_freecad_gui_mcp_integration_live.py",
   "tests/test_freecad_packaging.py",
   "tests/test_freecad_runner.py",
+  "tests/test_freecad_process.py",
+  "tests/windows_freecad_startup.py",
   "tests/test_knowledge_matching.py",
   "tests/test_long_term_knowledge_database.py",
   "tests/test_long_term_knowledge_migration.py",
@@ -213,6 +215,7 @@ public_tests = [
 ]
 
 public_ci = [
+  ".github/workflows/windows-freecad-startup.yml",
   ".github/workflows/windows.yml",
   ".github/workflows/fea-gui-automation.yml",
   ".github/workflows/fea-p0-paths.yml",

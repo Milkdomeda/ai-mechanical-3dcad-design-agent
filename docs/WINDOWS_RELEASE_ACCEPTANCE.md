@@ -1,5 +1,29 @@
 # Windows release acceptance
 
+## FreeCAD startup regression
+
+The `Windows FreeCAD startup regression` workflow installs the candidate wheel
+outside the checkout and runs real MCP stdio requests on `windows-2025` x64 and
+Windows 11 ARM with x64 Python and FreeCAD under Windows compatibility. It uses
+the SHA-256-pinned official FreeCAD 1.1.3 x64 archive. These are distinct platform
+scopes; the ARM runner does not constitute native ARM FreeCAD certification.
+
+The required candidate matrix covers two fixed NTFS volumes, spaces, Unicode,
+ordinary and extended local path inputs, and a parent PATH without FreeCAD.
+Each cell requires readiness, `design_start`, a nonempty inspectable FCStd,
+same-Job resume, reopening in FreeCAD, and STEP normalization with preserved
+source bytes and a valid 6000 mm³ test solid. Synthetic output and diagnostics
+are uploaded as Actions artifacts. The separate v0.8.0 baseline is diagnostic
+only; no candidate failure is allowed or converted into a skip.
+
+FreeCAD version probes and CAD execution share the selected installation's
+bounded environment. Filesystem canonicalization and identity checks retain
+extended paths internally; only the external FreeCAD boundary translates safe
+local drive spellings. A readiness result is still a version/identity probe;
+the native regression verifies actual document creation and reopening.
+
+## Full platform acceptance
+
 Windows is a first-class runtime target. Release acceptance uses Windows 11
 x64, Python 3.12 or newer, official FreeCAD 1.1.3 x64, Git, and Docker Desktop
 with Linux containers when knowledge integration is tested.
