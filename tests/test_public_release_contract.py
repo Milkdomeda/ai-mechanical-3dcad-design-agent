@@ -35,7 +35,7 @@ CAD_OR_REPORT_SUFFIXES = {
     ".pdf",
 }
 PRIVATE_PATH_PARTS = {"designs", "output", "knowledge", "vendor", ".env" + ".local"}
-EXPECTED_PUBLIC_CI = ('.github/workflows/windows.yml', '.github/workflows/fea-gui-automation.yml', '.github/workflows/fea-p0-paths.yml', '.github/workflows/fea-p0-r1.yml', '.github/workflows/fea-p0.yml')
+EXPECTED_PUBLIC_CI = ('.github/workflows/windows-freecad-startup.yml', '.github/workflows/windows.yml', '.github/workflows/fea-gui-automation.yml', '.github/workflows/fea-p0-paths.yml', '.github/workflows/fea-p0-r1.yml', '.github/workflows/fea-p0.yml')
 EXPECTED_PUBLIC_SCRIPTS = (
     'scripts/windows_database_deployment_acceptance.ps1',
     'scripts/windows_release_acceptance.ps1',

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Sequence
 
 from .secure_fs import FileIdentity, SecureFilesystemError, read_managed_file, validate_managed_path
+from .freecad_process import freecad_environment, native_process_path
 
 
 class FreeCADExecutableTrustError(RuntimeError):
@@ -81,24 +81,6 @@ def _pin_executable(
         )
 
 
-def _scrubbed_environment(controlled_directory: Path) -> dict[str, str]:
-    environment: dict[str, str] = {
-        "HOME": str(controlled_directory),
-        "TMPDIR": str(controlled_directory),
-        "TMP": str(controlled_directory),
-        "TEMP": str(controlled_directory),
-        "USERPROFILE": str(controlled_directory),
-        "PATH": os.defpath,
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-    }
-    for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
-        value = os.environ.get(key)
-        if value:
-            environment[key] = value
-    return environment
-
-
 def run_freecad_script(
     freecadcmd: Path,
     script: Path,
@@ -128,29 +110,36 @@ def run_freecad_script(
         expected_sha256=expected_sha256,
         expected_identity=expected_identity,
     )
-    command_argv = [str(script), *(str(item) for item in arguments)]
+    native_executable = Path(native_process_path(freecadcmd))
+    if native_executable != freecadcmd:
+        _pin_executable(native_executable, expected_sha256=expected_sha256, expected_identity=expected_identity)
+    command_argv = [native_process_path(script), *(native_process_path(item) for item in arguments)]
     runner = (
         "import sys, traceback\n"
         f"sys.argv = {command_argv!r}\n"
-        f"_script = {str(script)!r}\n"
+        f"_script = {native_process_path(script)!r}\n"
         "try:\n"
         "    exec(compile(open(_script, 'rb').read(), _script, 'exec'), {'__name__': '__main__'})\n"
         "except BaseException:\n"
         "    traceback.print_exc()\n"
         "    raise\n"
     )
-    console_command = f"exec({runner!r})"
+    # The Windows FreeCAD console command transport is not Unicode-clean.
+    # ASCII Python escapes reconstruct exact Unicode paths inside Python.
+    console_command = f"exec({ascii(runner)})"
     try:
         completed = subprocess.run(
-            [str(freecadcmd), "-c", console_command],
+            [str(native_executable), "-c", console_command],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             check=False,
-            cwd=controlled,
-            env=_scrubbed_environment(controlled),
+            cwd=native_process_path(controlled),
+            env=freecad_environment(native_executable, controlled),
         )
         return subprocess.CompletedProcess(
             args=completed.args,

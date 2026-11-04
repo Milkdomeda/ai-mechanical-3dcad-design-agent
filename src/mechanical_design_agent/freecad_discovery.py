@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import Protocol
+from .freecad_process import freecad_environment, native_process_path
 
 from .secure_fs import (
     FileIdentity,
@@ -191,30 +192,18 @@ def _require_x64_pe(path: Path) -> None:
 def run_freecad_version(path: Path) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="mechanical-design-freecad-probe-") as temporary:
         controlled = Path(temporary)
-        environment = {
-            "HOME": str(controlled),
-            "TMPDIR": str(controlled),
-            "TMP": str(controlled),
-            "TEMP": str(controlled),
-            "USERPROFILE": str(controlled),
-            "PATH": os.defpath,
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-        }
-        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
-            value = os.environ.get(key)
-            if value:
-                environment[key] = value
         return subprocess.run(
-            [str(path), "--version"],
+            [native_process_path(path), "--version"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
-            cwd=controlled,
-            env=environment,
+            cwd=native_process_path(controlled),
+            env=freecad_environment(path, controlled),
         )
 
 
