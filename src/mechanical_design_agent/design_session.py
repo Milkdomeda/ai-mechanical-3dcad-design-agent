@@ -63,15 +63,30 @@ def _strict_json_object(value: object, label: str) -> dict[str, Any]:
     return copied
 
 
-def _shape_free_fcstd(contents: bytes) -> bool:
+def _shape_free_fcstd(contents: bytes, *, allow_design_audit: bool = False) -> bool:
     inspect_fcstd_bytes(contents)
     with zipfile.ZipFile(BytesIO(contents), "r") as archive:
         document = archive.read("Document.xml")
+        members = set(archive.namelist())
     root = ET.fromstring(document)
-    for element in root.iter():
-        if element.tag.casefold() == "object":
-            return False
-    return True
+    objects = [element for element in root.iter() if element.tag.casefold() == "object"]
+    if not objects:
+        return True
+    if not allow_design_audit or len(objects) != 2:
+        return False
+    # The packaged generator creates a native, null-shape audit object. Accept
+    # only that internal metadata, never an arbitrary model as a new-design seed.
+    declared = root.findall("./Objects/Object")
+    data = root.findall("./ObjectData/Object")
+    if (len(declared) != 1 or len(data) != 1
+        or declared[0].get("type") != "Part::Feature"
+        or any(item.get("name") != "DesignAudit" for item in objects)
+        or not members <= {"Document.xml", "GuiDocument.xml"}):
+        return False
+    shapes = data[0].findall("./Properties/Property[@name='Shape']")
+    return (len(shapes) == 1 and shapes[0].get("type") == "Part::PropertyPartShape"
+            and len(shapes[0]) == 1 and shapes[0][0].tag == "Part"
+            and shapes[0][0].get("file") == "")
 
 
 def _session_identity(state: Mapping[str, Any]) -> tuple[object, ...]:
@@ -377,7 +392,7 @@ class DesignSessionService:
 
         self.seed_creator(model_path)
         read = read_managed_file(model_path)
-        if not _shape_free_fcstd(read.content):
+        if not _shape_free_fcstd(read.content, allow_design_audit=True):
             raise ValueError("created new-design seed must be shape-free")
         return read.sha256
 

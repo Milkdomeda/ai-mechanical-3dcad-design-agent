@@ -228,6 +228,37 @@ def test_new_design_can_reuse_only_a_shape_free_fcstd_seed(tmp_path: Path) -> No
         )
 
 
+def _audit_seed(*, kind="Part::Feature", shape_file="", name="DesignAudit") -> bytes:
+    output = BytesIO()
+    xml = (f'<Document SchemaVersion="4"><Objects Count="1"><Object type="{kind}" name="{name}"/></Objects>'
+           f'<ObjectData Count="1"><Object name="{name}"><Properties><Property name="Shape" type="Part::PropertyPartShape">'
+           f'<Part file="{shape_file}"/></Property></Properties></Object></ObjectData></Document>')
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("Document.xml", xml)
+    return output.getvalue()
+
+
+def test_generated_neutral_seed_accepts_only_the_inert_design_audit(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.seed_creator = lambda destination: destination.write_bytes(_audit_seed())
+    result = _start(service)
+    assert Path(result["model_path"]).read_bytes() == _audit_seed()
+    # The exception is internal to our generator; user-provided seeds retain the
+    # original object-free rule, including an object with the same audit name.
+    supplied = tmp_path / "supplied.FCStd"
+    supplied.write_bytes(_audit_seed())
+    with pytest.raises(ValueError, match="shape-free"):
+        _start(service, design_id="supplied-seed", source_path=str(supplied))
+
+
+@pytest.mark.parametrize("changes", [{"shape_file": "Shape.brp"}, {"name": "ExistingPart"}, {"kind": "PartDesign::Body"}])
+def test_generated_audit_exception_rejects_geometry_and_other_objects(tmp_path: Path, changes: dict) -> None:
+    service = _service(tmp_path)
+    service.seed_creator = lambda destination: destination.write_bytes(_audit_seed(**changes))
+    with pytest.raises(ValueError, match="shape-free"):
+        _start(service)
+
+
 def test_existing_fcstd_is_snapshotted_and_never_edited(tmp_path: Path) -> None:
     source = tmp_path / "Original Model.FCStd"
     source.write_bytes(_fcstd(object_name="OriginalPart"))
