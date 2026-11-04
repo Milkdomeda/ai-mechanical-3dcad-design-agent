@@ -124,7 +124,9 @@ def run_freecad_script(
         "    traceback.print_exc()\n"
         "    raise\n"
     )
-    console_command = f"exec({runner!r})"
+    # The Windows FreeCAD console command transport is not Unicode-clean.
+    # ASCII Python escapes reconstruct exact Unicode paths inside Python.
+    console_command = f"exec({ascii(runner)})"
     try:
         completed = subprocess.run(
             [str(native_executable), "-c", console_command],

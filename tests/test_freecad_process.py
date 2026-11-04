@@ -87,6 +87,7 @@ def test_runner_translates_every_native_path_and_keeps_both_pin_checks(monkeypat
     runner.run_freecad_script(executable, script, [destination, "literal argument"],
         timeout_seconds=3, expected_sha256="a" * 64, expected_identity=object(), controlled_directory=controlled)
     argv, options = calls[0]
+    assert argv[2].isascii(), "Windows FreeCAD console transport must carry ASCII escapes"
     assert argv[0] == r"C:\FreeCAD tools\bin\FreeCADCmd.exe"
     assert options["cwd"] == r"D:\workspace 中文\attempt"
     assert options["env"]["HOME"] == options["cwd"]

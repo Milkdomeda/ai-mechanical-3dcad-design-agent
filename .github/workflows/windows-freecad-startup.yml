@@ -51,9 +51,9 @@ jobs:
           $tools = Join-Path $env:RUNNER_TEMP 'Startup FreeCAD tools'
           7z x $archive "-o$tools" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'FreeCAD extraction failed' }
-          $exe = @(Get-ChildItem -LiteralPath $tools -Recurse -File -Filter FreeCADCmd.exe)
-          if ($exe.Count -ne 1) { throw 'Expected one official FreeCADCmd' }
-          "STARTUP_FREECADCMD=$($exe[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $exe = python -c "import sys; from pathlib import Path; sys.path.insert(0,'tests'); from fea_native_probe import select_bundled_tool; print(select_bundled_tool(Path(sys.argv[1]),'freecadcmd'))" $tools
+          if ($LASTEXITCODE -ne 0) { throw 'Official FreeCADCmd selection failed' }
+          "STARTUP_FREECADCMD=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Record v0.8.0 baseline reproduction
         shell: pwsh
         run: |
